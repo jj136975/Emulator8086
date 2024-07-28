@@ -228,7 +228,7 @@ impl ModRM<ByteWrapper, u8> for Runtime<'_> {
             0b11 => self.read_reg_byte(rm),
             _ => panic!()
         };
-        (self.ref_reg_byte((mod_rm >> 2) & 0b111), r2)
+        (self.ref_reg_byte((mod_rm >> 3) & 0b111), r2)
     }
 
     fn mod_rm_rhs(&mut self) -> (ByteWrapper, u8) {
@@ -256,7 +256,7 @@ impl ModRM<ByteWrapper, u8> for Runtime<'_> {
                 0b11 => self.ref_reg_byte(rm),
                 _ => panic!()
             },
-            self.read_reg_byte((mod_rm >> 2) & 0b111)
+            self.read_reg_byte((mod_rm >> 3) & 0b111)
         )
     }
 
@@ -291,7 +291,7 @@ impl ModRM<WordWrapper, u16> for Runtime<'_> {
             0b11 => self.read_reg_word(rm),
             _ => panic!()
         };
-        (self.ref_reg_word((mod_rm >> 2) & 0b111), r2)
+        (self.ref_reg_word((mod_rm >> 3) & 0b111), r2)
     }
 
     fn mod_rm_rhs(&mut self) -> (WordWrapper, u16) {
@@ -319,7 +319,7 @@ impl ModRM<WordWrapper, u16> for Runtime<'_> {
                 0b11 => self.ref_reg_word(rm),
                 _ => panic!()
             },
-            self.read_reg_word((mod_rm >> 2) & 0b111)
+            self.read_reg_word((mod_rm >> 3) & 0b111)
         )
     }
 

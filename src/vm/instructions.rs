@@ -93,6 +93,8 @@ pub fn process(vm: &mut Runtime<'_>) {
             if is_word {
                 let (modrm, word): (WordWrapper, u16) = if directional { vm.mod_rm_lhs() } else { vm.mod_rm_rhs() };
                 // let word = vm.fetch_word();
+                
+                println!("FETCHED: {}", word);
 
                 let prev = modrm.word();
                 let (res, overflow) = prev.overflowing_add(word);

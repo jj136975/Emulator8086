@@ -20,6 +20,7 @@ fn main() {
     match File::open(args.path) {
         Ok(mut file) => match Executable::from_reader(&mut file) {
             Ok(mut exe) => {
+                println!("{:?}", exe);
                 env_logger::init();
                 let mut runtime = Runtime::new(&mut exe);
                 runtime.run();

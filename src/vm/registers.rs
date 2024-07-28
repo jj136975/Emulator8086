@@ -55,10 +55,12 @@ impl ByteWrapper {
         }
     }
 
+    #[inline(always)]
     pub fn byte(&self) -> u8 {
         unsafe { *self.inner }
     }
 
+    #[inline(always)]
     pub fn set(&self, byte: u8) {
         unsafe { *self.inner = byte }
     }
