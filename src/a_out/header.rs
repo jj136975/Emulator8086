@@ -1,6 +1,8 @@
 use std::io;
-use byteorder::{ReadBytesExt, LittleEndian};
 use std::io::Read;
+
+use byteorder::{LittleEndian, ReadBytesExt};
+
 use crate::a_out::cpuid::CPUid;
 
 const MAGIC: u16 = 0x0301;

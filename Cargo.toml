@@ -1,0 +1,13 @@
+[package]
+name = "disassembler_8086"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = "4.5.4"
+clap_derive = "4.5.4"
+byteorder = "1.5.0"
+log = "0.4.22"
+env_logger = "0.11.5"

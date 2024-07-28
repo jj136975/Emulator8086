@@ -1,5 +1,6 @@
 use std::io;
-use std::io::{Result, Cursor, Read};
+use std::io::{Cursor, Read, Result};
+
 use byteorder::ReadBytesExt;
 
 use crate::a_out::header::Header;
@@ -7,12 +8,12 @@ use crate::a_out::header::Header;
 #[derive(Debug)]
 pub struct Executable {
     header: Header,
-    text_segment: Vec<u8>,
-    data_segment: Vec<u8>,
+    pub text_segment: Vec<u8>,
+    pub data_segment: Vec<u8>,
 }
 
 impl Executable {
-    pub fn from_reader(data: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(data: &mut impl Read) -> Result<Self> {
         let header = Header::from_reader(data)?;
 
         let mut text_segment: Vec<u8> = vec![0; header.text];
