@@ -1,6 +1,6 @@
 use crate::vm::registers::{ByteWrapper, HIGH_IDX, LOW_IDX, Register, WordWrapper};
 
-pub const SEGMENT_SIZE: usize = 1 << 16;
+pub const SEGMENT_SIZE: usize = 1 << u16::BITS;
 pub const MEMORY_SIZE: usize = SEGMENT_SIZE * 5;
 
 pub struct Memory {
@@ -78,7 +78,7 @@ impl Segment {
     }
 
     #[inline(always)]
-    fn phys_address(&self, address: u16) -> usize {
+    pub fn phys_address(&self, address: u16) -> usize {
         ((self.offset.word() as usize) << 4) + address as usize
     }
 

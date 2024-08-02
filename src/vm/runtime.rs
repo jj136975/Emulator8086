@@ -1,11 +1,12 @@
 use std::fmt::{Debug, Formatter};
-use std::ops::{Add, DerefMut};
+use std::ops::{Add, DerefMut, Sub};
+use clap::builder::Str;
 
 use crate::a_out::executable::Executable;
 use crate::vm::instructions::process;
-use crate::vm::memory::{Memory, Segment};
+use crate::vm::memory::{Memory, Segment, SEGMENT_SIZE};
 use crate::vm::registers::Registers;
-use crate::vm::runtime::CpuFlag::{AuxCarry, Carry, Directional, Interrupt, Overflow, Parity, Sign, Trap, Zero};
+use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Zero};
 use crate::vm::runtime::Prefix::Queued;
 
 #[derive(Clone, Copy)]
@@ -47,7 +48,7 @@ pub enum Prefix {
     Rep(bool),
     Lock,
     Seg(SegmentType),
-    Queued(Box<Prefix>)
+    Queued(Box<Prefix>),
 }
 
 pub struct Runtime {
@@ -60,9 +61,9 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn new(exe: &Executable) -> Self {
+    pub fn new(exe: &Executable, args: Vec<String>) -> Self {
         let mut memory = Box::new(Memory::new());
-        let registers = Registers::new(memory.deref_mut());
+        let mut registers = Registers::new(memory.deref_mut());
 
         registers.cs.copy_data(0, exe.text_segment.as_slice());
         registers.ds.copy_data(0, exe.data_segment.as_slice());
@@ -73,10 +74,42 @@ impl Runtime {
             flags: 0,
             running: true,
             status: 0,
-            prefix: None
+            prefix: None,
         };
         vm.set_flag(Interrupt);
+        vm.init_args(args);
         vm
+    }
+
+    fn init_args(&mut self, args: Vec<String>) {
+        let mut argv: Vec<u16> = Vec::with_capacity(args.len());
+        let env = "PATH=/usr:/usr/bin";
+
+        self.push_byte(0);
+        for c in env.bytes().rev() {
+            self.push_byte(c);
+        }
+        let env_addr = self.registers.sp.word();
+        // Push strings
+        for arg in args.iter() {
+            self.push_byte(0);
+            for c in arg.bytes().rev() {
+                self.push_byte(c);
+            }
+            argv.push(self.registers.sp.word());
+        }
+
+        // Push empty env
+        self.push_word(0);
+        self.push_word(env_addr);
+        // Push NULL ptr of argv
+        self.push_word(0);
+        // Push argv addresses
+        for address in argv.iter().rev() {
+            self.push_word(*address);
+        }
+        // Push argc
+        self.push_word(argv.len() as u16);
     }
 
     pub fn exit(&mut self, status: u16) {
@@ -104,19 +137,19 @@ impl Runtime {
         }
         &mut self.registers.ds
     }
-    
+
     #[inline]
     pub fn set_prefix(&mut self, prefix: Prefix) {
         self.prefix = Some(Queued(Box::new(prefix)));
     }
 
     #[inline]
-    pub fn peek_byte(&mut self) -> u8 {
+    pub fn peek_byte(&self) -> u8 {
         self.registers.cs.read_byte(self.registers.pc.word())
     }
 
     #[inline]
-    pub fn peek_word(&mut self) -> u16 {
+    pub fn peek_word(&self) -> u16 {
         self.registers.cs.read_word(self.registers.pc.word())
     }
 
@@ -156,23 +189,25 @@ impl Runtime {
     }
 
     pub fn push_word(&mut self, word: u16) {
-        self.registers.ss.write_word(self.registers.sp, word);
-        self.registers.sp += 2;
+        let address = self.registers.sp.operation(2, u16::wrapping_add);
+        self.registers.ss.write_word(address, word);
     }
 
     pub fn push_byte(&mut self, byte: u8) {
-        self.registers.ss.write_byte(self.registers.sp, byte);
-        self.registers.sp += 1;
+        let address = self.registers.sp.operation(1, u16::wrapping_sub);
+        self.registers.ss.write_byte(address, byte);
     }
 
     pub fn pop_word(&mut self) -> u16 {
-        self.registers.sp -= 2;
-        self.registers.ss.read_word(self.registers.sp)
+        let address = self.registers.sp.word();
+        self.registers.sp.operation(2, u16::wrapping_add);
+        self.registers.ss.read_word(address)
     }
 
     pub fn pop_byte(&mut self) -> u8 {
-        self.registers.sp -= 1;
-        self.registers.ss.read_byte(self.registers.sp)
+        let address = self.registers.sp.word();
+        self.registers.sp.operation(1, u16::wrapping_add);
+        self.registers.ss.read_byte(address)
     }
 
     pub fn get_segment(&mut self, segment: SegmentType) -> &mut Segment {
@@ -185,22 +220,34 @@ impl Runtime {
     }
 }
 
+// AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP
+// 0000 0000 0000 0000 ffdc 0000 0000 0000 ---- 0000:31ed
+
+#[inline(always)]
+fn show_flag(vm: &Runtime, flag: CpuFlag, c: char) -> char {
+    if vm.check_flag(flag) {
+        return c;
+    }
+    '-'
+}
+
 impl Debug for Runtime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.registers)?;
-        writeln!(f, "================ FLAGS ===================")?;
-        writeln!(f, " C  | P  | AC | Z  | S  | T  | I  | D  | O")?;
-        writeln!(f,
-                 " {}  | {}  | {}  | {}  | {}  | {}  | {}  | {}  | {}",
-                 self.check_flag(Carry) as u8,
-                 self.check_flag(Parity) as u8,
-                 self.check_flag(AuxCarry) as u8,
-                 self.check_flag(Zero) as u8,
-                 self.check_flag(Sign) as u8,
-                 self.check_flag(Trap) as u8,
-                 self.check_flag(Interrupt) as u8,
-                 self.check_flag(Directional) as u8,
-                 self.check_flag(Overflow) as u8,
+        write!(f, " {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{} {:04x}:{:02x}",
+                 self.registers.ax.word(),
+                 self.registers.bx.word(),
+                 self.registers.cx.word(),
+                 self.registers.dx.word(),
+                 self.registers.sp.word(),
+                 self.registers.bp.word(),
+                 self.registers.si.word(),
+                 self.registers.di.word(),
+                 show_flag(self, Overflow, 'O'),
+                 show_flag(self, Sign, 'S'),
+                 show_flag(self, Zero, 'Z'),
+                 show_flag(self, Carry, 'C'),
+                 self.registers.pc.word(),
+                 self.peek_byte(),
         )?;
         Ok(())
     }

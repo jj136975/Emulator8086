@@ -1,8 +1,8 @@
+use std::env;
 use std::fs::File;
 
 use clap::Parser;
 use clap_derive::Parser;
-use log::{logger, set_logger, SetLoggerError};
 
 use crate::a_out::executable::Executable;
 use crate::vm::runtime::Runtime;
@@ -15,16 +15,19 @@ mod minix2;
 #[derive(Parser, Debug)]
 struct CLI {
     path: std::path::PathBuf,
+    args: Vec<String>,
 }
 
 fn main() {
-    let args = CLI::parse();
+    let mut args = CLI::parse();
+    args.args.insert(0, env::args().collect::<Vec<String>>()[0].clone());
     match File::open(args.path) {
         Ok(mut file) => match Executable::from_reader(&mut file) {
-            Ok(mut exe) => {
+            Ok(exe) => {
                 println!("{:?}", exe);
                 env_logger::init();
-                let mut runtime = Runtime::new(&mut exe);
+                let mut runtime = Runtime::new(&exe, args.args);
+                println!("  AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP");
                 runtime.run();
             },
             Err(error) => eprintln!("{:?}", error)

@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Formatter};
+
 use crate::vm::memory::{Memory, Segment, SEGMENT_SIZE};
 
 #[repr(C)]
@@ -266,10 +266,10 @@ pub struct Registers {
     pub bx: Register,
     pub cx: Register,
     pub dx: Register,
-    pub si: u16,
-    pub di: u16,
-    pub sp: u16,
-    pub bp: u16,
+    pub si: Register,
+    pub di: Register,
+    pub sp: Register,
+    pub bp: Register,
     pub cs: Segment,
     pub ds: Segment,
     pub es: Segment,
@@ -285,10 +285,10 @@ impl  Registers {
             bx: Register::default(),
             cx: Register::default(),
             dx: Register::default(),
-            si: 0,
-            di: 0,
-            sp: 0,
-            bp: 0,
+            si: Register::default(),
+            di: Register::default(),
+            sp: Register::default(),
+            bp: Register::default(),
             cs: Segment::new((SEGMENT_SIZE >> 4) as u16, memory),
             ds: Segment::new(((SEGMENT_SIZE * 2) >> 4) as u16, memory),
             es: Segment::new(((SEGMENT_SIZE * 3) >> 4) as u16, memory),
@@ -335,10 +335,10 @@ impl  Registers {
             0b001 => &mut self.cx,
             0b010 => &mut self.dx,
             0b011 => &mut self.bx,
-            0b100 => &mut self.ax,
-            0b101 => &mut self.cx,
-            0b110 => &mut self.dx,
-            0b111 => &mut self.bx,
+            0b100 => &mut self.sp,
+            0b101 => &mut self.bp,
+            0b110 => &mut self.si,
+            0b111 => &mut self.di,
             _ => unreachable!()
         })
     }
@@ -350,46 +350,11 @@ impl  Registers {
             0b001 => self.cx.word(),
             0b010 => self.dx.word(),
             0b011 => self.bx.word(),
-            0b100 => self.sp,
-            0b101 => self.bp,
-            0b110 => self.si,
-            0b111 => self.di,
+            0b100 => self.sp.word(),
+            0b101 => self.bp.word(),
+            0b110 => self.si.word(),
+            0b111 => self.di.word(),
             _ => unreachable!()
         }
-    }
-}
-
-impl Debug for Registers {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "============= Registers ===============")?;
-        writeln!(f, " AX    | BX    | CX    | DX")?;
-        unsafe {
-            writeln!(f,
-                     " {:#04X}  | {:#04X}  | {:#04X}  | {:#04X}",
-                     self.ax.word,
-                     self.bx.word,
-                     self.cx.word,
-                     self.dx.word,
-            )?;
-            writeln!(f, "============= Positional ==============")?;
-            writeln!(f, " SI    | DI    | SP    | BP")?;
-            writeln!(f,
-                     " {:#04X}  | {:#04X}  | {:#04X}  | {:#04X}",
-                     self.si,
-                     self.di,
-                     self.sp,
-                     self.bp,
-            )?;
-            writeln!(f, "============= Segments ================")?;
-            writeln!(f, " CS    | DS    | ES    | SS")?;
-            writeln!(f,
-                     " {:#04X}  | {:#04X}  | {:#04X}  | {:#04X}",
-                     self.cs.reg().word,
-                     self.ds.reg().word,
-                     self.es.reg().word,
-                     self.ss.reg().word,
-            )?;
-        }
-        Ok(())
     }
 }

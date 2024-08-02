@@ -1,2 +1,2 @@
-mod interruption;
-mod syscall;
+pub mod interruption;
+pub mod syscall;

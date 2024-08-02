@@ -1,5 +1,7 @@
 use std::ops::{Add, BitAnd, BitOr, BitXor, Mul, Sub};
 use log::error;
+use crate::minix2::interruption::Message;
+use crate::minix2::syscall::handle_interrupt;
 use crate::utils::number::{div_rem, extend_sign, SpecialOps};
 use crate::vm::modrm::{direct_address, ModRM, rm_address};
 use crate::vm::runtime::{Prefix, Runtime, SegmentType};
@@ -60,11 +62,11 @@ pub fn process(vm: &mut Runtime) {
     let opcode = vm.fetch_byte();
     let is_word: bool = opcode & WORD_MASK != 0;
     let directional: bool = opcode & DIRECTION_MASK != 0;
-    if let Some(Prefix::Queued(prefix)) = vm.prefix.take() {
+    if let Some(Queued(prefix)) = vm.prefix.take() {
         vm.prefix = Some(*prefix);
     }
 
-    println!("OP: {:#02X}", opcode);
+    //println!("{:#06X} | OP: {:#02X}", vm.registers.cs.phys_address(vm.registers.pc.word()), opcode);
 
     match opcode {
         // ADD ac,data
@@ -243,10 +245,12 @@ pub fn process(vm: &mut Runtime) {
             vm.registers.cs.reg_mut().set(segment);
             vm.registers.pc.set(address);
         }
-        // CALL disp16
-        0xE8 => {
-            let address = vm.fetch_word();
-            vm.push_word(vm.registers.pc.word());
+        // CALL | JMP disp16
+        0xE8|0xE9 => {
+            let address = vm.fetch_word() + vm.registers.pc.word();
+            if !is_word {
+                vm.push_word(vm.registers.pc.word());
+            }
             vm.registers.pc.set(address);
         }
         // GRP5 CALL Mod R/M
@@ -313,36 +317,36 @@ pub fn process(vm: &mut Runtime) {
         // CMPS
         0b_1010_0110 | 0b_1010_0111 => {
             if is_word {
-                let address = vm.registers.si;
+                let address = vm.registers.si.word();
                 let word1 = vm.data_segment().read_word(address);
-                let word2 = vm.registers.es.read_word(vm.registers.di);
+                let word2 = vm.registers.es.read_word(vm.registers.di.word());
                 let (res, overflow, carry) = word1.oc_sub(word2);
 
                 update_arithmetic_flags_word(vm, res, overflow, carry);
                 // TODO: check aux carry
 
                 if vm.check_flag(Directional) {
-                    vm.registers.si -= 2;
-                    vm.registers.di -= 2;
+                    vm.registers.si.operation(2, u16::sub);
+                    vm.registers.di.operation(2, u16::sub);
                 } else {
-                    vm.registers.si += 2;
-                    vm.registers.di += 2;
+                    vm.registers.si.operation(2, u16::add);
+                    vm.registers.di.operation(2, u16::add);
                 }
             } else {
-                let address = vm.registers.si;
+                let address = vm.registers.si.word();
                 let byte1 = vm.data_segment().read_byte(address);
-                let byte2 = vm.registers.es.read_byte(vm.registers.di);
+                let byte2 = vm.registers.es.read_byte(vm.registers.di.word());
                 let (res, overflow, carry) = byte1.oc_sub(byte2);
 
                 update_arithmetic_flags_byte(vm, res, overflow, carry);
                 // TODO: check aux carry
 
                 if vm.check_flag(Directional) {
-                    vm.registers.si -= 1;
-                    vm.registers.di -= 1;
+                    vm.registers.si.operation(1, u16::sub);
+                    vm.registers.di.operation(1, u16::sub);
                 } else {
-                    vm.registers.si += 1;
-                    vm.registers.di += 1;
+                    vm.registers.si.operation(1, u16::add);
+                    vm.registers.di.operation(1, u16::add);
                 }
             }
         }
@@ -389,7 +393,25 @@ pub fn process(vm: &mut Runtime) {
         }
         // (GRP) DEC, INC
         0b_1111_1110 | 0b_1111_1111 => {
-            // TODO
+            if is_word {
+                let (modrm, reg) = u16::mod_rm_single(vm);
+
+                match reg & 0b_111 {
+                    // INC
+                    0b_000 => {
+                        let (w, o, _) = modrm.word().oc_add(1);
+                        modrm.set(w);
+                        update_arithmetic_flags_word(vm, w, o, vm.check_flag(Carry));
+                    }
+                    // DEC
+                    0b_001 => {
+                        let (w, o, _) = modrm.word().oc_sub(1);
+                        modrm.set(w);
+                        update_arithmetic_flags_word(vm, w, o, vm.check_flag(Carry));
+                    }
+                    _ => unreachable!(),
+                };
+            }
         }
         // DEC
         0b_0100_1000..=0b_0100_1111 => {
@@ -404,9 +426,35 @@ pub fn process(vm: &mut Runtime) {
 
             rh.set(res);
         }
-        // (GRP) DIV, IDIV, AND
+        // (GRP) DIV, IDIV, AND, TEST
         0b_1111_0110 | 0b_1111_0111 => {
-            // TODO
+            if is_word {
+                let (modrm, reg) = u16::mod_rm_single(vm);
+                let word = vm.fetch_word();
+
+                let (w, o, c) = match reg & 0b_111 {
+                    // TEST
+                    0b_000 => (modrm.word().bitand(word), false, false),
+                    _ => unreachable!(),
+                };
+                update_arithmetic_flags_word(vm, w, o, c);
+                if reg != 0b_000 {
+                    modrm.set(w);
+                }
+            } else {
+                let (modrm, reg) = u8::mod_rm_single(vm);
+                let byte = vm.fetch_byte();
+
+                let (b, o, c) = match reg & 0b_111 {
+                    // TEST
+                    0b_000 => (modrm.byte().bitand(byte), false, false),
+                    _ => unreachable!(),
+                };
+                update_arithmetic_flags_byte(vm, b, o, c);
+                if reg != 0b_000 {
+                    modrm.set(b);
+                }
+            }
         }
         // ESC
         0b_1101_1000..=0b_1101_1111 => {
@@ -440,28 +488,33 @@ pub fn process(vm: &mut Runtime) {
         }
         // INT
         0b_1100_1100 | 0b_1100_1101 => {
-            vm.push_word(vm.flags);
-
-            vm.unset_flag(Interrupt);
-            vm.unset_flag(Trap);
-
-            vm.push_word(vm.registers.cs.reg().word());
-
-            let cs_address: usize;
-            let pc_address: usize;
-
-            if is_word {
-                pc_address = vm.fetch_byte() as usize * 4;
-                cs_address = pc_address + 2;
-            } else {
-                pc_address = 0x0000C;
-                cs_address = 0x0000E;
+            let _ = vm.fetch_byte();
+            let message = Message::new(vm);
+            unsafe {
+                handle_interrupt(vm, &mut *message);
             }
-
-            let cs: u16 = vm.memory.read_word(cs_address);
-            vm.registers.cs.reg_mut().set(cs);
-            let pc: u16 = vm.memory.read_word(pc_address);
-            vm.registers.pc.set(pc);
+            // vm.push_word(vm.flags);
+            //
+            // vm.unset_flag(Interrupt);
+            // vm.unset_flag(Trap);
+            //
+            // vm.push_word(vm.registers.cs.reg().word());
+            //
+            // let cs_address: usize;
+            // let pc_address: usize;
+            //
+            // if is_word {
+            //     pc_address = vm.fetch_byte() as usize * 4;
+            //     cs_address = pc_address + 2;
+            // } else {
+            //     pc_address = 0x0000C;
+            //     cs_address = 0x0000E;
+            // }
+            //
+            // let cs: u16 = vm.memory.read_word(cs_address);
+            // vm.registers.cs.reg_mut().set(cs);
+            // let pc: u16 = vm.memory.read_word(pc_address);
+            // vm.registers.pc.set(pc);
         }
         // INT0
         0xCE => {
@@ -603,22 +656,22 @@ pub fn process(vm: &mut Runtime) {
         }
         // LODS
         0b_1010_1100 | 0b_1010_1101 => {
-            let address = vm.registers.si;
+            let address = vm.registers.si.word();
             if is_word {
                 let word = vm.data_segment().read_word(address);
                 vm.registers.ax.set(word);
                 if !vm.check_flag(Directional) {
-                    vm.registers.si += 2;
+                    vm.registers.si.operation(2, u16::add);
                 } else {
-                    vm.registers.si -= 2;
+                    vm.registers.si.operation(2, u16::sub);
                 }
             } else {
                 let byte = vm.data_segment().read_byte(address);
                 vm.registers.ax.set_low(byte);
                 if !vm.check_flag(Directional) {
-                    vm.registers.si += 1;
+                    vm.registers.si.operation(1, u16::add);
                 } else {
-                    vm.registers.si -= 1;
+                    vm.registers.si.operation(1, u16::sub);
                 }
             }
         }
@@ -727,17 +780,17 @@ pub fn process(vm: &mut Runtime) {
         }
         // MOVS
         0b_1010_0100 | 0b_1010_0101 => {
-            let address = vm.registers.si;
+            let address = vm.registers.si.word();
             if is_word {
                 let word = vm.data_segment().read_word(address);
-                vm.registers.es.write_word(vm.registers.di, word);
-                vm.registers.si += 2;
-                vm.registers.di += 2;
+                vm.registers.es.write_word(vm.registers.di.word(), word);
+                vm.registers.si.operation(2, u16::add);
+                vm.registers.di.operation(2, u16::add);
             } else {
                 let byte = vm.data_segment().read_byte(address);
-                vm.registers.es.write_byte(vm.registers.di, byte);
-                vm.registers.si += 1;
-                vm.registers.di += 1;
+                vm.registers.es.write_byte(vm.registers.di.word(), byte);
+                vm.registers.si.operation(1, u16::add);
+                vm.registers.di.operation(1, u16::add);
             }
         }
         // NOP
@@ -940,7 +993,7 @@ pub fn process(vm: &mut Runtime) {
 
             vm.registers.pc.set(pc);
             vm.registers.cs.reg_mut().set(cs);
-            vm.registers.sp -= disp;
+            vm.registers.sp.operation(disp, u16::add);
         }
         // RET disp16
         0xC2 => {
@@ -948,7 +1001,7 @@ pub fn process(vm: &mut Runtime) {
             let pc = vm.pop_word();
 
             vm.registers.pc.set(pc);
-            vm.registers.sp -= disp;
+            vm.registers.sp.operation(disp, u16::add);
         }
         // SAHF
         0x9E => {
@@ -976,10 +1029,10 @@ pub fn process(vm: &mut Runtime) {
         0b_1000_0000..=0b_1000_0011 => {
             if is_word || directional {
                 let (modrm, reg) = u16::mod_rm_single(vm);
-                let word = if is_word {
-                    vm.fetch_word()
-                } else {
+                let word = if directional {
                     extend_sign(vm.fetch_byte())
+                } else {
+                    vm.fetch_word()
                 };
 
                 let (w, o, c) = match reg & 0b_111 {
@@ -996,12 +1049,15 @@ pub fn process(vm: &mut Runtime) {
                     // XOR
                     0b_110 => (modrm.operation(word, u16::bitxor), false, false),
                     // CMP
-                    0b_111 => (modrm.word().bitxor(word), false, false),
+                    0b_111 => modrm.word().oc_sub(word),
+
                     _ => unreachable!()
                 };
                 // TODO: check aux carry
                 update_arithmetic_flags_word(vm, w, o, c);
-                modrm.set(w);
+                if reg != 0b_111 {
+                    modrm.set(w);
+                }
             } else {
                 let (modrm, reg) = u8::mod_rm_single(vm);
                 let byte = vm.fetch_byte();
@@ -1020,12 +1076,14 @@ pub fn process(vm: &mut Runtime) {
                     // XOR
                     0b_110 => (modrm.operation(byte, u8::bitxor), false, false),
                     // CMP
-                    0b_111 => (modrm.byte().bitxor(byte), false, false),
+                    0b_111 => modrm.byte().oc_sub(byte),
                     _ => unreachable!()
                 };
                 // TODO: check aux carry
                 update_arithmetic_flags_byte(vm, b, o, c);
-                modrm.set(b);
+                if reg != 0b_111 {
+                    modrm.set(b);
+                }
             }
         }
         // SBB
@@ -1052,7 +1110,7 @@ pub fn process(vm: &mut Runtime) {
         }
         // SCAS
         0b_1010_1110 | 0b_1010_1111 => {
-            let address = vm.registers.si;
+            let address = vm.registers.si.word();
             if is_word {
                 let word = vm.data_segment().read_word(address);
                 let (res, overflow, carry) = vm.registers.ax.word().oc_sub(word);
@@ -1061,9 +1119,9 @@ pub fn process(vm: &mut Runtime) {
                 // TODO: check aux carry
 
                 if vm.check_flag(Directional) {
-                    vm.registers.di -= 2;
+                    vm.registers.di.operation(2, u16::sub);
                 } else {
-                    vm.registers.di += 2;
+                    vm.registers.di.operation(2, u16::add);
                 }
             } else {
                 let byte = vm.data_segment().read_byte(address);
@@ -1073,9 +1131,9 @@ pub fn process(vm: &mut Runtime) {
                 // TODO: check aux carry
 
                 if vm.check_flag(Directional) {
-                    vm.registers.di -= 1;
+                    vm.registers.di.operation(1, u16::sub);
                 } else {
-                    vm.registers.di += 1;
+                    vm.registers.di.operation(1, u16::add);
                 }
             }
         }
@@ -1085,22 +1143,22 @@ pub fn process(vm: &mut Runtime) {
         }
         // STOS
         0b_1010_1010 | 0b_1010_1011 => {
-            let address = vm.registers.si;
+            let address = vm.registers.si.word();
             if is_word {
                 let word = vm.registers.ax.word();
                 vm.data_segment().write_word(address, word);
                 if !vm.check_flag(Directional) {
-                    vm.registers.di += 2;
+                    vm.registers.di.operation(2, u16::add);
                 } else {
-                    vm.registers.di -= 2;
+                    vm.registers.di.operation(2, u16::sub);
                 }
             } else {
                 let byte = vm.registers.ax.low();
                 vm.data_segment().write_byte(address, byte);
                 if !vm.check_flag(Directional) {
-                    vm.registers.di += 1;
+                    vm.registers.di.operation(1, u16::add);
                 } else {
-                    vm.registers.di -= 1;
+                    vm.registers.di.operation(1, u16::sub);
                 }
             }
         }

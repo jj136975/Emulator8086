@@ -12,13 +12,13 @@ pub trait ModRM {
 #[inline(always)]
 pub fn rm_address(vm: &Runtime, rm: u8) -> u16 {
     match rm {
-        0b000 => vm.registers.bx.word() + vm.registers.si,
-        0b001 => vm.registers.bx.word() + vm.registers.di,
-        0b010 => vm.registers.bp + vm.registers.si,
-        0b011 => vm.registers.bp + vm.registers.di,
-        0b100 => vm.registers.si,
-        0b101 => vm.registers.di,
-        0b110 => vm.registers.bp,
+        0b000 => vm.registers.bx.word() + vm.registers.si.word(),
+        0b001 => vm.registers.bx.word() + vm.registers.di.word(),
+        0b010 => vm.registers.bp.word() + vm.registers.si.word(),
+        0b011 => vm.registers.bp.word() + vm.registers.di.word(),
+        0b100 => vm.registers.si.word(),
+        0b101 => vm.registers.di.word(),
+        0b110 => vm.registers.bp.word(),
         0b111 => vm.registers.bx.word(),
         _ => unreachable!()
     }
@@ -27,12 +27,12 @@ pub fn rm_address(vm: &Runtime, rm: u8) -> u16 {
 #[inline(always)]
 pub fn direct_address(vm: &mut Runtime, rm: u8) -> u16 {
     match rm {
-        0b000 => vm.registers.bx.word() + vm.registers.si,
-        0b001 => vm.registers.bx.word() + vm.registers.di,
-        0b010 => vm.registers.bp + vm.registers.si,
-        0b011 => vm.registers.bp + vm.registers.di,
-        0b100 => vm.registers.si,
-        0b101 => vm.registers.di,
+        0b000 => vm.registers.bx.word() + vm.registers.si.word(),
+        0b001 => vm.registers.bx.word() + vm.registers.di.word(),
+        0b010 => vm.registers.bp.word() + vm.registers.si.word(),
+        0b011 => vm.registers.bp.word() + vm.registers.di.word(),
+        0b100 => vm.registers.si.word(),
+        0b101 => vm.registers.di.word(),
         0b110 => vm.fetch_word(),
         0b111 => vm.registers.bx.word(),
         _ => unreachable!()

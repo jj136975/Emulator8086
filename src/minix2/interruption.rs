@@ -1,3 +1,4 @@
+use crate::vm::runtime::Runtime;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -74,4 +75,14 @@ pub struct Message {
     pub m_source: u16,                 /* who sent the message */
     pub m_type: u16,                   /* what kind of message is it */
     pub m_u: MessageParam
+}
+
+impl Message {
+    pub fn new(vm: &mut Runtime) -> *mut Self {
+        let address = vm.registers.bx.word();
+        unsafe {
+            let message = vm.data_segment().as_ptr_at(address);
+            std::mem::transmute(message)
+        }
+    }
 }
