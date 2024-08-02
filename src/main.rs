@@ -9,6 +9,8 @@ use crate::vm::runtime::Runtime;
 
 mod a_out;
 mod vm;
+mod utils;
+mod minix2;
 
 #[derive(Parser, Debug)]
 struct CLI {
