@@ -1,10 +1,9 @@
 use std::fmt::{Debug, Formatter};
-use std::ops::{Add, DerefMut, Sub};
-use clap::builder::Str;
+use std::ops::{Add, DerefMut};
 
 use crate::a_out::executable::Executable;
 use crate::vm::instructions::process;
-use crate::vm::memory::{Memory, Segment, SEGMENT_SIZE};
+use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Zero};
 use crate::vm::runtime::Prefix::Queued;
@@ -63,7 +62,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(exe: &Executable, args: Vec<String>) -> Self {
         let mut memory = Box::new(Memory::new());
-        let mut registers = Registers::new(memory.deref_mut());
+        let registers = Registers::new(memory.deref_mut());
 
         registers.cs.copy_data(0, exe.text_segment.as_slice());
         registers.ds.copy_data(0, exe.data_segment.as_slice());
@@ -85,6 +84,7 @@ impl Runtime {
         let mut argv: Vec<u16> = Vec::with_capacity(args.len());
         let env = "PATH=/usr:/usr/bin";
 
+        println!("{:?}", args);
         self.push_byte(0);
         for c in env.bytes().rev() {
             self.push_byte(c);
@@ -233,7 +233,7 @@ fn show_flag(vm: &Runtime, flag: CpuFlag, c: char) -> char {
 
 impl Debug for Runtime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, " {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{} {:04x}:{:02x}",
+        write!(f, "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{} {:04x}:{:02x}",
                  self.registers.ax.word(),
                  self.registers.bx.word(),
                  self.registers.cx.word(),

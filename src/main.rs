@@ -20,14 +20,14 @@ struct CLI {
 
 fn main() {
     let mut args = CLI::parse();
-    args.args.insert(0, env::args().collect::<Vec<String>>()[0].clone());
+    args.args.insert(0, env::args().collect::<Vec<String>>()[1].clone());
     match File::open(args.path) {
         Ok(mut file) => match Executable::from_reader(&mut file) {
             Ok(exe) => {
-                println!("{:?}", exe);
+                // println!("{:?}", exe);
                 env_logger::init();
                 let mut runtime = Runtime::new(&exe, args.args);
-                println!("  AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP");
+                println!(" AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP");
                 runtime.run();
             },
             Err(error) => eprintln!("{:?}", error)

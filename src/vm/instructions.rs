@@ -1,5 +1,6 @@
-use std::ops::{Add, BitAnd, BitOr, BitXor, Mul, Sub};
+use std::ops::{Add, BitAnd, BitOr, BitXor, Mul, Not, Sub};
 use log::error;
+use num_traits::Euclid;
 use crate::minix2::interruption::Message;
 use crate::minix2::syscall::handle_interrupt;
 use crate::utils::number::{div_rem, extend_sign, SpecialOps};
@@ -54,6 +55,21 @@ fn update_logical_flags_byte(vm: &mut Runtime, res: u8) {
     vm.update_flag(Zero, res == 0);
     vm.update_flag(Sign, (res as i8) < 0);
     vm.update_flag(Parity, res.count_ones() & 1 == 0);
+}
+
+fn div_zero(vm: &mut Runtime) {
+    vm.push_word(vm.flags);
+
+    vm.unset_flag(Interrupt);
+    vm.unset_flag(Trap);
+
+    vm.push_word(vm.registers.cs.reg().word());
+    vm.push_word(vm.registers.pc.word());
+
+    let cs = vm.memory.read_word(0x00002);
+    let pc = vm.memory.read_word(0x00000);
+    vm.registers.cs.reg_mut().set(cs);
+    vm.registers.pc.set(pc);
 }
 
 pub fn process(vm: &mut Runtime) {
@@ -137,6 +153,7 @@ pub fn process(vm: &mut Runtime) {
             vm.update_flag(Sign, al & BYTE_SIGN_FLAG != 0);
             vm.update_flag(Parity, al.count_ones() & 1 == 0);
         }
+
         // AAM
         0xD4 => {
             let factor = vm.fetch_byte();
@@ -209,7 +226,7 @@ pub fn process(vm: &mut Runtime) {
             }
         }
         // AND ac,data
-        0b_0010_0100 => {
+        0b_0010_0100 | 0b_0010_0101 => {
             if is_word {
                 let word = vm.fetch_word();
                 let word = vm.registers.ax.operation(word, u16::bitand);
@@ -223,7 +240,7 @@ pub fn process(vm: &mut Runtime) {
             }
         }
         // AND Mod R/M
-        0b_0010_0000 | 0b_0010_0001 => {
+        0b_0010_0000..=0b_0010_0011 => {
             if is_word {
                 let (modrm, word) = if directional { u16::mod_rm_lhs(vm) } else { u16::mod_rm_rhs(vm) };
                 let word = modrm.operation(word, u16::bitand);
@@ -253,10 +270,6 @@ pub fn process(vm: &mut Runtime) {
             }
             vm.registers.pc.set(address);
         }
-        // GRP5 CALL Mod R/M
-        // 0xFF => {
-        //     let (cs, pc) = vm.mod_rm_rhs();
-        // },
         // CBW
         0x98 => {
             let al = vm.registers.ax.low();
@@ -391,7 +404,7 @@ pub fn process(vm: &mut Runtime) {
             vm.update_flag(Sign, (al as i8) < 0);
             vm.update_flag(Parity, al.count_ones() & 1 == 0);
         }
-        // (GRP) DEC, INC
+        // (GRP) DEC, INC, CALL, JMP, PUSH
         0b_1111_1110 | 0b_1111_1111 => {
             if is_word {
                 let (modrm, reg) = u16::mod_rm_single(vm);
@@ -408,6 +421,45 @@ pub fn process(vm: &mut Runtime) {
                         let (w, o, _) = modrm.word().oc_sub(1);
                         modrm.set(w);
                         update_arithmetic_flags_word(vm, w, o, vm.check_flag(Carry));
+                    }
+                    // CALL mem/reg
+                    0b_010 => {
+                        vm.push_word(vm.registers.pc.word());
+                        vm.registers.pc.set(modrm.word());
+                    },
+                    // CALL mem
+                    0b_011 => {
+                        vm.push_word(vm.registers.cs.reg().word());
+                        vm.push_word(vm.registers.pc.word());
+                        vm.registers.cs.reg_mut().set(modrm.word());
+                        unsafe { vm.registers.pc.set(modrm.next()); }
+                    },
+                    // JMP mem/reg
+                    0b_100 => vm.registers.pc.set(modrm.word()),
+                    // JMP mem
+                    0b_101 => {
+                        vm.registers.pc.set(modrm.word());
+                        unsafe { vm.registers.cs.reg_mut().set(modrm.next()); }
+                    },
+                    // PUSH
+                    0b_110 => vm.push_word(modrm.word()),
+                    _ => unreachable!(),
+                };
+            } else {
+                let (modrm, reg) = u8::mod_rm_single(vm);
+
+                match reg & 0b_111 {
+                    // INC
+                    0b_000 => {
+                        let (b, o, _) = modrm.byte().oc_add(1);
+                        modrm.set(b);
+                        update_arithmetic_flags_byte(vm, b, o, vm.check_flag(Carry));
+                    }
+                    // DEC
+                    0b_001 => {
+                        let (b, o, _) = modrm.byte().oc_sub(1);
+                        modrm.set(b);
+                        update_arithmetic_flags_byte(vm, b, o, vm.check_flag(Carry));
                     }
                     _ => unreachable!(),
                 };
@@ -426,39 +478,161 @@ pub fn process(vm: &mut Runtime) {
 
             rh.set(res);
         }
-        // (GRP) DIV, IDIV, AND, TEST
+        // TEST, NOT, NEG, MUL, IMUL, DIV, IDIV
         0b_1111_0110 | 0b_1111_0111 => {
             if is_word {
                 let (modrm, reg) = u16::mod_rm_single(vm);
-                let word = vm.fetch_word();
 
                 let (w, o, c) = match reg & 0b_111 {
                     // TEST
-                    0b_000 => (modrm.word().bitand(word), false, false),
+                    0b_000 => {
+                        let word = vm.fetch_word();
+                        (modrm.word().bitand(word), false, false)
+                    },
+                    // NOT
+                    0b_010 => {
+                        let res = modrm.word().not();
+                        modrm.set(res);
+                        (res, false, false)
+                    },
+                    // NEG
+                    0b_011 => {
+                        let res = 0u16.oc_sub(modrm.word());
+                        modrm.set(res.0);
+                        res
+                    },
+                    // MUL
+                    0b_100 => {
+                        let res: u32 = (vm.registers.ax.word() as u32) * (modrm.word() as u32);
+                        let dx: u16 = (res >> 16) as u16;
+                        vm.registers.dx.set(dx);
+                        vm.registers.ax.set(res as u16);
+                        (res as u16, dx != 0, dx != 0)
+                    },
+                    // IMUL
+                    0b_101 => {
+                        let res: i32 = (vm.registers.ax.word() as i32) * (modrm.word() as i32);
+                        let dx: u16 = ((res as u32) >> 16) as u16;
+                        vm.registers.dx.set(dx);
+                        vm.registers.ax.set(res as u16);
+                        (res as u16, dx != 0, dx != 0)
+                    },
+                    // DIV
+                    0b_110 => {
+                        let numerator: u32 = (vm.registers.dx.word() as u32) << 16 | (vm.registers.ax.word() as u32);
+                        let denum = modrm.word() as u32;
+
+                        if denum == 0 {
+                            div_zero(vm);
+                        } else {
+                            let (quot, rem) = numerator.div_rem_euclid(&denum);
+                            if quot > u16::MAX as u32 {
+                                div_zero(vm);
+                            } else {
+                                vm.registers.ax.set(quot as u16);
+                                vm.registers.dx.set(rem as u16);
+                            }
+                        }
+                        (0, false, false)
+                    },
+                    // IDIV
+                    0b_111 => {
+                        let numerator: i32 = ((vm.registers.dx.word() as u32) << 16 | (vm.registers.ax.word() as u32)) as i32;
+                        let denum = modrm.word() as u32 as i32;
+
+                        if denum == 0 {
+                            div_zero(vm);
+                        } else {
+                            let (quot, rem) = numerator.div_rem_euclid(&denum);
+                            if quot > 0x7FFF {
+                                div_zero(vm);
+                            } else {
+                                vm.registers.ax.set(quot as i16 as u16);
+                                vm.registers.dx.set(rem as i16 as u16);
+                            }
+                        }
+                        (0, false, false)
+                    },
                     _ => unreachable!(),
                 };
                 update_arithmetic_flags_word(vm, w, o, c);
-                if reg != 0b_000 {
-                    modrm.set(w);
-                }
             } else {
                 let (modrm, reg) = u8::mod_rm_single(vm);
-                let byte = vm.fetch_byte();
 
                 let (b, o, c) = match reg & 0b_111 {
                     // TEST
-                    0b_000 => (modrm.byte().bitand(byte), false, false),
+                    0b_000 => {
+                        let byte = vm.fetch_byte();
+                        (modrm.operation(byte, u8::bitand), false, false)
+                    },
+                    // NOT
+                    0b_010 => {
+                        let res = modrm.byte().not();
+                        modrm.set(res);
+                        (res, false, false)
+                    },
+                    // NEG
+                    0b_011 => {
+                        let res = 0u8.oc_sub(modrm.byte());
+                        modrm.set(res.0);
+                        res
+                    },
+                    // MUL
+                    0b_100 => {
+                        let res: u16 = (vm.registers.ax.low() as u16) * (modrm.byte() as u16);
+                        vm.registers.ax.set(res);
+                        (res as u8, res & 0xF0 != 0, res & 0xF0 != 0)
+                    },
+                    // IMUL
+                    0b_101 => {
+                        let res: i16 = (vm.registers.ax.low() as i8 as i16) * (modrm.byte() as i8 as i16);
+                        vm.registers.ax.set(res as u16);
+                        (res as u8, res & 0xF0 != 0, res & 0xF0 != 0)
+                    },
+                    // DIV
+                    0b_110 => {
+                        let numerator: u16 = vm.registers.ax.word();
+                        let denum = modrm.byte() as u16;
+
+                        if denum == 0 {
+                            div_zero(vm);
+                        } else {
+                            let (quot, rem) = numerator.div_rem_euclid(&denum);
+                            if quot > u8::MAX as u16 {
+                                div_zero(vm);
+                            } else {
+                                vm.registers.ax.set_low(quot as u8);
+                                vm.registers.ax.set_high(rem as u8);
+                            }
+                        }
+                        (0, false, false)
+                    },
+                    // IDIV
+                    0b_111 => {
+                        let numerator: i16 = vm.registers.ax.word() as i16;
+                        let denum = modrm.byte() as i8 as i16;
+
+                        if denum == 0 {
+                            div_zero(vm);
+                        } else {
+                            let (quot, rem) = numerator.div_rem_euclid(&denum);
+                            if quot > 0x7F {
+                                div_zero(vm);
+                            } else {
+                                vm.registers.ax.set_low(quot as i8 as u8);
+                                vm.registers.ax.set_high(rem as i8 as u8);
+                            }
+                        }
+                        (0, false, false)
+                    },
                     _ => unreachable!(),
                 };
                 update_arithmetic_flags_byte(vm, b, o, c);
-                if reg != 0b_000 {
-                    modrm.set(b);
-                }
             }
         }
         // ESC
         0b_1101_1000..=0b_1101_1111 => {
-            // TODO
+            // TODO No BUS yet
         }
         // HLT
         0xF4 => {
@@ -539,7 +713,6 @@ pub fn process(vm: &mut Runtime) {
             vm.registers.cs.reg_mut().set(cs);
             vm.flags = flags;
         }
-
         // JMP CONDITIONAL disp
         0x70..=0x7F => {
             let disp = vm.fetch_byte() as i8;
@@ -565,7 +738,6 @@ pub fn process(vm: &mut Runtime) {
                 vm.registers.pc.operation(disp as i16, u16::wrapping_add_signed);
             }
         }
-
         // JCXZ disp
         0xE3 => {
             let disp = vm.fetch_byte() as i8;
@@ -745,7 +917,7 @@ pub fn process(vm: &mut Runtime) {
                 vm.data_segment().write_byte(address, byte);
             }
         }
-        // MOVE segreg,mem/reg
+        // MOV segreg,mem/reg
         0x8E => {
             let mod_rm = vm.fetch_byte();
             let rm = mod_rm & 0b111;
@@ -774,9 +946,33 @@ pub fn process(vm: &mut Runtime) {
                 .reg_mut()
                 .set(word);
         }
-        // MOVE mem/reg,segreg
+        // MOV mem/reg,segreg
         0x8C => {
-            // TODO
+            let (modrm, reg) = u16::mod_rm_single(vm);
+            let word = vm.get_segment(SegmentType::from((reg) & 0b011))
+                .reg()
+                .word();
+            modrm.set(word);
+        }
+        // MOV mem/reg,data
+        0b_1100_0110 | 0b_1100_0111 => {
+            if is_word {
+                let (modrm, reg) = u16::mod_rm_single(vm);
+                let word = vm.fetch_word();
+
+                match reg & 0b_111 {
+                    0b_000 => modrm.set(word),
+                    _ => unreachable!()
+                }
+            } else {
+                let (modrm, reg) = u8::mod_rm_single(vm);
+                let byte = vm.fetch_byte();
+
+                match reg & 0b_111 {
+                    0b_000 => modrm.set(byte),
+                    _ => unreachable!()
+                }
+            }
         }
         // MOVS
         0b_1010_0100 | 0b_1010_0101 => {
@@ -885,7 +1081,7 @@ pub fn process(vm: &mut Runtime) {
             vm.push_word(vm.registers.read_reg_word(reg));
         }
         // PUSH sreg
-        0b_0000_0110 | 0b_0001_0110 | 0b_0001_1110 => {
+        0b_0000_0110 | 0b_0000_1110 | 0b_0001_0110 | 0b_0001_1110 => {
             let word = match (opcode >> 3) & 0b11 {
                 0b00 => vm.registers.es.reg_mut(),
                 0b10 => vm.registers.ss.reg_mut(),
@@ -1038,6 +1234,8 @@ pub fn process(vm: &mut Runtime) {
                 let (w, o, c) = match reg & 0b_111 {
                     // ADD
                     0b_000 => modrm.word().oc_add(word),
+                    // OR
+                    0b_001 => (modrm.operation(word, u16::bitor), false, false),
                     // ADC
                     0b_010 => modrm.word().oc_carry_add(word, vm.check_flag(Carry)),
                     // SBB
@@ -1065,6 +1263,8 @@ pub fn process(vm: &mut Runtime) {
                 let (b, o, c) = match reg & 0b_111 {
                     // ADD
                     0b_000 => modrm.byte().oc_add(byte),
+                    // OR
+                    0b_001 => (modrm.operation(byte, u8::bitor), false, false),
                     // ADC
                     0b_010 => modrm.byte().oc_carry_add(byte, vm.check_flag(Carry)),
                     // SBB
@@ -1081,7 +1281,7 @@ pub fn process(vm: &mut Runtime) {
                 };
                 // TODO: check aux carry
                 update_arithmetic_flags_byte(vm, b, o, c);
-                if reg != 0b_111 {
+                if reg & 0b_111 != 0b_111 {
                     modrm.set(b);
                 }
             }
@@ -1217,7 +1417,7 @@ pub fn process(vm: &mut Runtime) {
             }
         }
         // TEST Mod R/M
-        0b_1000_0100 => {
+        0b_1000_0100 | 0b_1000_0101 => {
             if is_word {
                 let (modrm, word) = u16::mod_rm_lhs(vm);
                 let word = modrm.word().bitand(word);

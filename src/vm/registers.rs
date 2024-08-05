@@ -1,4 +1,4 @@
-
+use std::ops::Add;
 use crate::vm::memory::{Memory, Segment, SEGMENT_SIZE};
 
 #[repr(C)]
@@ -165,6 +165,10 @@ impl WordWrapper {
     #[inline]
     pub fn swap_register(&mut self, register: &mut Register) {
         unsafe { core::ptr::swap(self.inner as *mut u16, &mut register.word) };
+    }
+
+    pub unsafe fn next(&self) -> u16 {
+        unsafe { *(self.inner as *mut u16).add(2) }
     }
 }
 
