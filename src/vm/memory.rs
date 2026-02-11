@@ -84,7 +84,7 @@ impl Segment {
 
     pub fn copy_data(&self, offset: u16, data: &[u8]) {
         let offset = self.phys_address(offset);
-        unsafe { (*self.mem).mem[offset..offset+data.len()].copy_from_slice(data); }
+        unsafe {(&mut (*self.mem).mem)[offset..offset+data.len()].copy_from_slice(data); }
     }
     #[inline]
     pub fn ref_byte(&mut self, address: u16) -> ByteWrapper {

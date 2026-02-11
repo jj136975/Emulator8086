@@ -264,7 +264,7 @@ pub fn process(vm: &mut Runtime) {
         }
         // CALL | JMP disp16
         0xE8|0xE9 => {
-            let address = vm.fetch_word() + vm.registers.pc.word();
+            let address = vm.fetch_word().wrapping_add(vm.registers.pc.word());
             if !is_word {
                 vm.push_word(vm.registers.pc.word());
             }
@@ -367,9 +367,9 @@ pub fn process(vm: &mut Runtime) {
         0x99 => {
             let ax = vm.registers.ax.word();
             if ax & WORD_SIGN_FLAG != 0 {
-                vm.registers.bx.set(0xFFFF);
+                vm.registers.dx.set(0xFFFF);
             } else {
-                vm.registers.bx.set(0);
+                vm.registers.dx.set(0);
             }
         }
         // DAA
@@ -563,7 +563,7 @@ pub fn process(vm: &mut Runtime) {
                     // TEST
                     0b_000 => {
                         let byte = vm.fetch_byte();
-                        (modrm.operation(byte, u8::bitand), false, false)
+                        (modrm.apply(byte, u8::bitand), false, false)
                     },
                     // NOT
                     0b_010 => {
@@ -667,6 +667,7 @@ pub fn process(vm: &mut Runtime) {
             unsafe {
                 handle_interrupt(vm, &mut *message);
             }
+            vm.registers.ax.set(0);
             // vm.push_word(vm.flags);
             //
             // vm.unset_flag(Interrupt);
@@ -778,14 +779,12 @@ pub fn process(vm: &mut Runtime) {
                 0b01 => {
                     let displacement = vm.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
-                    address.checked_add_signed(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement))
+                    address.wrapping_add_signed(displacement)
                 }
                 0b10 => {
                     let displacement = vm.fetch_word();
                     let address = rm_address(vm, rm);
-                    address.checked_add(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement))
+                    address.wrapping_add(displacement)
                 }
                 0b11 => vm.registers.read_reg_word(rm),
                 _ => unreachable!()
@@ -804,21 +803,19 @@ pub fn process(vm: &mut Runtime) {
                 0b01 => {
                     let displacement = vm.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
-                    address.checked_add_signed(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement))
+                    address.wrapping_add_signed(displacement)
                 }
                 0b10 => {
                     let displacement = vm.fetch_word();
                     let address = rm_address(vm, rm);
-                    address.checked_add(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement))
+                    address.wrapping_add(displacement)
                 }
                 0b11 => vm.registers.read_reg_word(rm),
                 _ => unreachable!()
             };
             let word = vm.data_segment().read_word(address);
             vm.registers.ref_reg_word((mod_rm >> 3) & 0b111).set(word);
-            let word = vm.data_segment().read_word(address + 2);
+            let word = vm.data_segment().read_word(address.wrapping_add(2));
             vm.registers.es.reg_mut().set(word);
         }
         // LOCK
@@ -853,7 +850,7 @@ pub fn process(vm: &mut Runtime) {
             vm.registers.cx.operation(1, u16::sub);
 
             if vm.registers.cx.word() != 0 {
-                vm.registers.pc.set(vm.registers.op_pc + disp);
+                vm.registers.pc.set(vm.registers.op_pc.wrapping_add(disp));
             }
         }
         // LOOPZ disp, LOOPE disp
@@ -862,7 +859,7 @@ pub fn process(vm: &mut Runtime) {
             vm.registers.cx.operation(1, u16::sub);
 
             if vm.registers.cx.word() != 0 && vm.check_flag(Zero) {
-                vm.registers.pc.set(vm.registers.op_pc + disp);
+                vm.registers.pc.set(vm.registers.op_pc.wrapping_add(disp));
             }
         }
         // LOOPNZ disp, LOOPNE disp
@@ -871,7 +868,7 @@ pub fn process(vm: &mut Runtime) {
             vm.registers.cx.operation(1, u16::sub);
 
             if vm.registers.cx.word() != 0 && !vm.check_flag(Zero) {
-                vm.registers.pc.set(vm.registers.op_pc + disp);
+                vm.registers.pc.set(vm.registers.op_pc.wrapping_add(disp));
             }
         }
         // MOV Mod R/M
@@ -930,14 +927,12 @@ pub fn process(vm: &mut Runtime) {
                 0b01 => {
                     let displacement = vm.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
-                    vm.data_segment().read_word(address.checked_add_signed(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement)))
+                    vm.data_segment().read_word(address.wrapping_add_signed(displacement))
                 }
                 0b10 => {
                     let displacement = vm.fetch_word();
                     let address = rm_address(vm, rm);
-                    vm.data_segment().read_word(address.checked_add(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement)))
+                    vm.data_segment().read_word(address.wrapping_add(displacement))
                 }
                 0b11 => vm.registers.read_reg_word(rm),
                 _ => unreachable!()
@@ -1043,14 +1038,12 @@ pub fn process(vm: &mut Runtime) {
                 0b01 => {
                     let displacement = vm.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
-                    vm.data_segment().ref_word(address.checked_add_signed(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement)))
+                    vm.data_segment().ref_word(address.wrapping_add_signed(displacement))
                 }
                 0b10 => {
                     let displacement = vm.fetch_word();
                     let address = rm_address(vm, rm);
-                    vm.data_segment().ref_word(address.checked_add(displacement)
-                        .unwrap_or_else(|| panic!("Invalid memory address: {} + {}", address, displacement)))
+                    vm.data_segment().ref_word(address.wrapping_add(displacement))
                 }
                 0b11 => vm.registers.ref_reg_word(rm),
                 _ => unreachable!()
@@ -1120,7 +1113,14 @@ pub fn process(vm: &mut Runtime) {
                         _ => unreachable!()
                     };
                     if reg & 0b_100 != 0 {
-                        update_arithmetic_flags_word(vm, w, ((word ^ w) as i16) < 0, c);
+                        let overflow = if reg & 0b_001 == 0 {
+                            // SHL/SAL: OF = MSB(result) XOR CF
+                            ((w as i16) < 0) != c
+                        } else {
+                            // SHR/SAR
+                            ((word ^ w) as i16) < 0
+                        };
+                        update_arithmetic_flags_word(vm, w, overflow, c);
                     } else {
                         vm.update_flag(Carry, c);
                         vm.update_flag(Overflow, ((word ^ w) as i16) < 0);
@@ -1148,7 +1148,14 @@ pub fn process(vm: &mut Runtime) {
                         _ => unreachable!()
                     };
                     if reg & 0b_100 != 0 {
-                        update_arithmetic_flags_byte(vm, b, ((byte ^ b) as i8) < 0, c);
+                        let overflow = if reg & 0b_001 == 0 {
+                            // SHL/SAL: OF = MSB(result) XOR CF
+                            ((b as i8) < 0) != c
+                        } else {
+                            // SHR/SAR
+                            ((byte ^ b) as i8) < 0
+                        };
+                        update_arithmetic_flags_byte(vm, b, overflow, c);
                     } else {
                         vm.update_flag(Carry, c);
                         vm.update_flag(Overflow, ((byte ^ b) as i8) < 0);
@@ -1362,7 +1369,7 @@ pub fn process(vm: &mut Runtime) {
                 }
             }
         }
-        // SBB
+        // SUB AL/AX, imm
         0b_0010_1100 | 0b_0010_1101 => {
             if is_word {
                 let word = vm.fetch_word();
@@ -1370,6 +1377,7 @@ pub fn process(vm: &mut Runtime) {
                 let (res, overflow, carry) = ax.oc_sub(word);
 
                 update_arithmetic_flags_word(vm, res, overflow, carry);
+                vm.registers.ax.set(res);
                 // TODO: check aux carry
             } else {
                 let byte = vm.fetch_byte();
@@ -1377,6 +1385,7 @@ pub fn process(vm: &mut Runtime) {
                 let (res, overflow, carry) = al.oc_sub(byte);
 
                 update_arithmetic_flags_byte(vm, res, overflow, carry);
+                vm.registers.ax.set_low(res);
                 // TODO: check aux carry
             }
         }
@@ -1450,7 +1459,7 @@ pub fn process(vm: &mut Runtime) {
         }
         // XLAT
         0xD7 => {
-            let address = (vm.registers.ax.low() as u16) + vm.registers.bx.word();
+            let address = (vm.registers.ax.low() as u16).wrapping_add(vm.registers.bx.word());
             let byte = vm.data_segment().read_byte(address);
             vm.registers.ax.set_low(byte);
         }

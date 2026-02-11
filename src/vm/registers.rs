@@ -291,12 +291,12 @@ impl  Registers {
             dx: Register::default(),
             si: Register::default(),
             di: Register::default(),
-            sp: Register::default(),
+            sp: Register::new(0xFFFF),
             bp: Register::default(),
             cs: Segment::new((SEGMENT_SIZE >> 4) as u16, memory),
             ds: Segment::new(((SEGMENT_SIZE * 2) >> 4) as u16, memory),
             es: Segment::new(((SEGMENT_SIZE * 3) >> 4) as u16, memory),
-            ss: Segment::new(((SEGMENT_SIZE * 4) >> 4) as u16, memory),
+            ss: Segment::new(((SEGMENT_SIZE * 2) >> 4) as u16, memory),  // SS == DS in MINIX separate I&D
             pc: Register::default(),
             op_pc: 0,
         }

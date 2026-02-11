@@ -84,21 +84,42 @@ pub enum SyscallInterrupt {
 
 fn minix_write(vm: &mut Runtime, fd: u16, addr: u16, len: u16) -> usize {
     debug!("<write({}, 0x{:04x}, {})", fd, addr, len);
-    let slice = slice_from_raw_parts_mut( unsafe { vm.registers.ds.as_ptr_at(addr) }, len as usize);
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(vm.registers.ds.as_ptr_at(addr), len as usize)
+    };
 
     let ret = match fd {
-        0 =>  { error!("Cannot write to STDIN"); 0},
-        1 => unsafe { std::io::stdout().write(&*slice) }
-            .unwrap_or_else(|e| {error!("STDIN: {}", e); 0}),
-        2 => unsafe { std::io::stderr().write(&*slice) }
-            .unwrap_or_else(|e| {error!("STDOUT: {}", e); 0}),
-        _ => {0}
+        0 => { error!("Cannot write to STDIN"); 0 },
+        1 => {
+            let s = String::from_utf8_lossy(bytes);
+            print!("{}", s);
+            std::io::stdout().flush().ok();
+            bytes.len()
+        },
+        2 => {
+            let s = String::from_utf8_lossy(bytes);
+            eprint!("{}", s);
+            std::io::stderr().flush().ok();
+            bytes.len()
+        },
+        _ => 0
     };
     debug!(" => {}>\n", ret);
     vm.registers.ax.set(0);
 
-    // clea carry required?
     return ret;
+}
+
+fn minix_brk(vm: &mut Runtime, addr: u16) -> u16 {
+    debug!("<brk(0x{:04x})>\n", addr);
+    // Accept any break within the 64KB DS segment
+    0
+}
+
+fn minix_ioctl(vm: &mut Runtime, fd: u16, request: u16) -> u16 {
+    debug!("<ioctl({}, 0x{:04x})>\n", fd, request);
+    // Return -EINVAL (emulator cannot perform real ioctl)
+    (-22i16) as u16
 }
 
 fn minix_exit(vm: &mut Runtime, status: u16) {
@@ -107,11 +128,12 @@ fn minix_exit(vm: &mut Runtime, status: u16) {
 }
 
 pub fn handle_interrupt(vm: &mut Runtime, message: &mut Message) {
-    match SyscallInterrupt::from_u16(message.m_type) {
+    let m_type = message.m_type;
+    match SyscallInterrupt::from_u16(m_type) {
         Some(syscall) => match syscall {
             SyscallInterrupt::EXIT => unsafe { minix_exit(vm, message.m_u.m1.i1 ) },
             SyscallInterrupt::READ => {
-                
+
             },
             SyscallInterrupt::WRITE => {
                 let ret = unsafe { minix_write(vm, message.m_u.m1.i1, message.m_u.m1.p1, message.m_u.m1.i2) };
@@ -120,8 +142,18 @@ pub fn handle_interrupt(vm: &mut Runtime, message: &mut Message) {
             SyscallInterrupt::OPEN => {
 
             },
-            _ => error!("Not handled syscall: {}", message.m_type),
+            SyscallInterrupt::BRK => {
+                let addr = unsafe { message.m_u.m1.p1 };
+                let ret = minix_brk(vm, addr);
+                message.m_type = ret;
+                unsafe { message.m_u.m2.p1 = addr };
+            },
+            SyscallInterrupt::IOCTL => {
+                let ret = unsafe { minix_ioctl(vm, message.m_u.m1.i1, message.m_u.m1.i3) };
+                message.m_type = ret;
+            },
+            _ => error!("Not handled syscall: {}", m_type),
         },
-        None => error!("Unknown syscall: {}", message.m_type),
+        None => error!("Unknown syscall: {}", m_type),
     }
 }

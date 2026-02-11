@@ -84,14 +84,14 @@ impl Runtime {
         let mut argv: Vec<u16> = Vec::with_capacity(args.len());
         let env = "PATH=/usr:/usr/bin";
 
-        println!("{:?}", args);
+        eprintln!("{:?}", args);
         self.push_byte(0);
         for c in env.bytes().rev() {
             self.push_byte(c);
         }
         let env_addr = self.registers.sp.word();
-        // Push strings
-        for arg in args.iter() {
+        // Push strings (in reverse order so argv[0] ends up at lowest address)
+        for arg in args.iter().rev() {
             self.push_byte(0);
             for c in arg.bytes().rev() {
                 self.push_byte(c);
@@ -99,13 +99,17 @@ impl Runtime {
             argv.push(self.registers.sp.word());
         }
 
-        // Push empty env
+        // Word-align the stack before pushing pointers
+        if self.registers.sp.word() & 1 != 0 {
+            self.push_byte(0);
+        }
+        // Push envp = [env_addr, NULL]
         self.push_word(0);
         self.push_word(env_addr);
         // Push NULL ptr of argv
         self.push_word(0);
-        // Push argv addresses
-        for address in argv.iter().rev() {
+        // Push argv addresses (argv is in reverse order from string push)
+        for address in argv.iter() {
             self.push_word(*address);
         }
         // Push argc
@@ -183,13 +187,13 @@ impl Runtime {
 
     pub fn run(&mut self) {
         while self.running {
-            println!("{:?}", self);
+            eprintln!("{:?}", self);
             process(self);
         }
     }
 
     pub fn push_word(&mut self, word: u16) {
-        let address = self.registers.sp.operation(2, u16::wrapping_add);
+        let address = self.registers.sp.operation(2, u16::wrapping_sub);
         self.registers.ss.write_word(address, word);
     }
 
@@ -213,9 +217,9 @@ impl Runtime {
     pub fn get_segment(&mut self, segment: SegmentType) -> &mut Segment {
         match segment {
             SegmentType::ES => &mut self.registers.es,
-            SegmentType::CS => &mut self.registers.es,
-            SegmentType::SS => &mut self.registers.es,
-            SegmentType::DS => &mut self.registers.es,
+            SegmentType::CS => &mut self.registers.cs,
+            SegmentType::SS => &mut self.registers.ss,
+            SegmentType::DS => &mut self.registers.ds,
         }
     }
 }
@@ -233,7 +237,8 @@ fn show_flag(vm: &Runtime, flag: CpuFlag, c: char) -> char {
 
 impl Debug for Runtime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{} {:04x}:{:02x}",
+        let pc = self.registers.pc.word();
+        write!(f, "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{} {:04x}:{:02x}{:02x}",
                  self.registers.ax.word(),
                  self.registers.bx.word(),
                  self.registers.cx.word(),
@@ -246,8 +251,9 @@ impl Debug for Runtime {
                  show_flag(self, Sign, 'S'),
                  show_flag(self, Zero, 'Z'),
                  show_flag(self, Carry, 'C'),
-                 self.registers.pc.word(),
-                 self.peek_byte(),
+                 pc,
+                 self.registers.cs.read_byte(pc),
+                 self.registers.cs.read_byte(pc.wrapping_add(1)),
         )?;
         Ok(())
     }

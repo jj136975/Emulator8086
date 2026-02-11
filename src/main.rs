@@ -27,7 +27,7 @@ fn main() {
                 // println!("{:?}", exe);
                 env_logger::init();
                 let mut runtime = Runtime::new(&exe, args.args);
-                println!(" AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP");
+                eprintln!(" AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP");
                 runtime.run();
             },
             Err(error) => eprintln!("{:?}", error)

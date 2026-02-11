@@ -1,6 +1,6 @@
 use crate::vm::runtime::Runtime;
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Mess1 {
     pub i1: u16, // int
@@ -11,7 +11,7 @@ pub struct Mess1 {
     pub p3: u16, // char *
 }
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Mess2 {
     pub i1: u16, // int
@@ -22,7 +22,7 @@ pub struct Mess2 {
     pub p1: u16, // char *
 }
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Mess3 {
     pub i1: u16, // int
@@ -31,7 +31,7 @@ pub struct Mess3 {
     pub ca1: [u8; 14]
 }
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Mess4 {
     pub l1: u32, // long
@@ -41,11 +41,11 @@ pub struct Mess4 {
     pub l5: u32, // long
 }
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Mess5 {
-    pub c1: char,
-    pub c2: char,
+    pub c1: u8,
+    pub c2: u8,
     pub i1: u16, // int
     pub i2: u16, // int
     pub l1: u32, // long
@@ -53,7 +53,7 @@ pub struct Mess5 {
     pub l3: u32, // long
 }
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Mess6 {
     pub i1: u16, // int
@@ -63,6 +63,7 @@ pub struct Mess6 {
     // sighandler_t f1;
 }
 
+#[repr(C, packed)]
 pub union MessageParam {
     pub m1: Mess1,
     pub m2: Mess2,
@@ -71,6 +72,8 @@ pub union MessageParam {
     pub m5: Mess5,
     pub m6: Mess6,
 }
+
+#[repr(C, packed)]
 pub struct Message {
     pub m_source: u16,                 /* who sent the message */
     pub m_type: u16,                   /* what kind of message is it */
