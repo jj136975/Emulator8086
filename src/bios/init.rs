@@ -8,6 +8,7 @@ pub fn init_bios(vm: &mut Runtime) {
     vm.bios_handlers[0x11] = Some(int11h);
     vm.bios_handlers[0x12] = Some(int12h);
     vm.bios_handlers[0x13] = Some(int13h);
+    vm.bios_handlers[0x15] = Some(int15h);
     vm.bios_handlers[0x16] = Some(int16h);
     vm.bios_handlers[0x19] = Some(int19h);
     vm.bios_handlers[0x1A] = Some(int1ah);

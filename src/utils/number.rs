@@ -47,10 +47,10 @@ macro_rules! special_uint_impl {
             }
             #[inline]
             fn oc_carry_sub(self, y: Self, carry: bool) -> (Self, bool, bool) {
-                let (a, o1) = self.overflowing_sub(y);
-                let (c, o2) = a.overflowing_sub(carry as $SelfT);
-                let (a, c1) = (self as $SignedT).overflowing_sub(y as $SignedT);
-                let (_, c2) = a.overflowing_sub(carry as $SignedT);
+                let (a, c1) = self.overflowing_sub(y);
+                let (c, c2) = a.overflowing_sub(carry as $SelfT);
+                let (a, o1) = (self as $SignedT).overflowing_sub(y as $SignedT);
+                let (_, o2) = a.overflowing_sub(carry as $SignedT);
                 (c, o1 || o2, c1 || c2)
             }
 

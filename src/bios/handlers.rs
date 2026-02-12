@@ -191,6 +191,19 @@ pub fn int13h(vm: &mut Runtime) {
     }
 }
 
+// INT 15h - System Services
+pub fn int15h(vm: &mut Runtime) {
+    let ah = vm.registers.ax.high();
+    match ah {
+        // Function not supported - set CF to indicate error
+        _ => {
+            debug!("INT 15h: unsupported function AH={:02X}", ah);
+            vm.registers.ax.set_high(0x86); // Unsupported function
+            vm.set_flag(CpuFlag::Carry);
+        }
+    }
+}
+
 // INT 16h - Keyboard Services
 pub fn int16h(vm: &mut Runtime) {
     let ah = vm.registers.ax.high();

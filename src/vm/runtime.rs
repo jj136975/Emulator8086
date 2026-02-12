@@ -245,7 +245,7 @@ impl Runtime {
 
     #[inline(always)]
     pub fn flip_flag(&mut self, flag: CpuFlag) {
-        self.update_flag(flag, self.check_flag(flag));
+        self.update_flag(flag, !self.check_flag(flag));
     }
 
     #[inline(always)]
@@ -268,9 +268,37 @@ impl Runtime {
             self.instruction_count += 1;
 
             // In BIOS mode: periodic timer tick and VGA refresh
-            if self.mode == ExecutionMode::BiosBoot && self.instruction_count % 1000 == 0 {
-                self.check_timer_tick();
-                self.check_vga_refresh();
+            if self.mode == ExecutionMode::BiosBoot {
+                if self.instruction_count % 1000 == 0 {
+                    self.check_timer_tick();
+                    self.check_vga_refresh();
+                }
+                if self.instruction_count % 10_000_000 == 0 {
+                    let cs = self.registers.cs.reg().word();
+                    let ip = self.registers.pc.word();
+                    let ss = self.registers.ss.reg().word();
+                    let sp = self.registers.sp.word();
+                    let phys = ((cs as usize) << 4).wrapping_add(ip as usize) & 0xFFFFF;
+                    let b0 = self.memory.read_byte(phys);
+                    let b1 = self.memory.read_byte(phys + 1);
+                    let b2 = self.memory.read_byte(phys + 2);
+                    let b3 = self.memory.read_byte(phys + 3);
+                    // Dump stack: 6 words from SS:SP
+                    let stack_base = ((ss as usize) << 4) & 0xFFFFF;
+                    let s: Vec<u16> = (0..6).map(|i| {
+                        self.memory.read_word((stack_base + (sp.wrapping_add(i * 2)) as usize) & 0xFFFFF)
+                    }).collect();
+                    eprintln!("[{:.1}M] {:04X}:{:04X} AX={:04X} CX={:04X} DS={:04X} ES={:04X} SS:SP={:04X}:{:04X} [{:02X} {:02X} {:02X} {:02X}] stack=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                              self.instruction_count as f64 / 1_000_000.0,
+                              cs, ip,
+                              self.registers.ax.word(),
+                              self.registers.cx.word(),
+                              self.registers.ds.reg().word(),
+                              self.registers.es.reg().word(),
+                              ss, sp,
+                              b0, b1, b2, b3,
+                              s[0], s[1], s[2], s[3], s[4], s[5]);
+                }
             }
         }
     }
