@@ -1,7 +1,13 @@
 use std::fmt::{Debug, Formatter};
 use std::ops::{Add, DerefMut};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::a_out::executable::Executable;
+use crate::io::bus::IoBus;
+use crate::io::disk::DiskImage;
+use crate::io::pic::Pic;
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
@@ -50,6 +56,12 @@ pub enum Prefix {
     Queued(Box<Prefix>),
 }
 
+#[derive(PartialEq, Clone, Copy)]
+pub enum ExecutionMode {
+    MinixAout,
+    BiosBoot,
+}
+
 pub struct Runtime {
     pub registers: Registers,
     pub memory: Box<Memory>,
@@ -57,6 +69,15 @@ pub struct Runtime {
     running: bool,
     status: u16,
     pub prefix: Option<Prefix>,
+    pub mode: ExecutionMode,
+    pub io_bus: Option<IoBus>,
+    pub bios_handlers: [Option<fn(&mut Runtime)>; 256],
+    pub disk: Option<DiskImage>,
+    pub pic: Option<Arc<Mutex<Pic>>>,
+    pub instruction_count: u64,
+    pub trace: bool,
+    last_tick: Option<Instant>,
+    last_refresh: Option<Instant>,
 }
 
 impl Runtime {
@@ -74,9 +95,57 @@ impl Runtime {
             running: true,
             status: 0,
             prefix: None,
+            mode: ExecutionMode::MinixAout,
+            io_bus: None,
+            bios_handlers: [None; 256],
+            disk: None,
+            pic: None,
+            instruction_count: 0,
+            trace: false,
+            last_tick: None,
+            last_refresh: None,
         };
         vm.set_flag(Interrupt);
         vm.init_args(args);
+        vm
+    }
+
+    pub fn new_bios(disk_path: &Path) -> Self {
+        let mut memory = Box::new(Memory::new());
+        let registers = Registers::new_bios(memory.deref_mut());
+
+        let disk = DiskImage::open(disk_path).expect("Failed to open disk image");
+
+        // Create shared PIC
+        let pic = Arc::new(Mutex::new(Pic::new()));
+
+        // Create I/O bus and register devices
+        let mut io_bus = IoBus::new();
+        io_bus.register(0x20, 0x21, Box::new(crate::io::pic::SharedPic::new(pic.clone())));
+        io_bus.register(0x40, 0x43, Box::new(crate::io::pit::Pit::new()));
+        io_bus.register(0x60, 0x64, Box::new(crate::io::keyboard::Keyboard::new()));
+        io_bus.register(0x3D4, 0x3D5, Box::new(crate::io::vga::Vga::new()));
+
+        let mut vm = Self {
+            registers,
+            memory,
+            flags: 0,
+            running: true,
+            status: 0,
+            prefix: None,
+            mode: ExecutionMode::BiosBoot,
+            io_bus: Some(io_bus),
+            bios_handlers: [None; 256],
+            disk: Some(disk),
+            pic: Some(pic),
+            instruction_count: 0,
+            trace: false,
+            last_tick: Some(Instant::now()),
+            last_refresh: Some(Instant::now()),
+        };
+
+        vm.set_flag(Interrupt);
+        crate::bios::init::init_bios(&mut vm);
         vm
     }
 
@@ -84,7 +153,6 @@ impl Runtime {
         let mut argv: Vec<u16> = Vec::with_capacity(args.len());
         let env = "PATH=/usr:/usr/bin";
 
-        eprintln!("{:?}", args);
         self.push_byte(0);
         for c in env.bytes().rev() {
             self.push_byte(c);
@@ -187,8 +255,84 @@ impl Runtime {
 
     pub fn run(&mut self) {
         while self.running {
-            eprintln!("{:?}", self);
+            if self.trace {
+                eprintln!("{:?}", self);
+            }
+
+            // In BIOS mode: check for pending hardware interrupts
+            if self.mode == ExecutionMode::BiosBoot && self.check_flag(Interrupt) {
+                self.check_hw_interrupts();
+            }
+
             process(self);
+            self.instruction_count += 1;
+
+            // In BIOS mode: periodic timer tick and VGA refresh
+            if self.mode == ExecutionMode::BiosBoot && self.instruction_count % 1000 == 0 {
+                self.check_timer_tick();
+                self.check_vga_refresh();
+            }
+        }
+    }
+
+    fn check_hw_interrupts(&mut self) {
+        let vector = if let Some(ref pic) = self.pic {
+            pic.lock().unwrap().acknowledge()
+        } else {
+            None
+        };
+
+        if let Some(vector) = vector {
+            let ivt_offset = vector as usize * 4;
+            let new_ip = self.memory.read_word(ivt_offset);
+            let new_cs = self.memory.read_word(ivt_offset + 2);
+            if new_cs != 0 || new_ip != 0 {
+                self.push_word(self.flags);
+                self.unset_flag(Interrupt);
+                self.unset_flag(CpuFlag::Trap);
+                self.push_word(self.registers.cs.reg().word());
+                self.push_word(self.registers.pc.word());
+                self.registers.cs.reg_mut().set(new_cs);
+                self.registers.pc.set(new_ip);
+            }
+        }
+    }
+
+    fn check_timer_tick(&mut self) {
+        let should_tick = if let Some(ref last_tick) = self.last_tick {
+            last_tick.elapsed().as_millis() >= 55
+        } else {
+            false
+        };
+
+        if should_tick {
+            // Increment BDA tick counter at 0x0040:006C
+            let tick_addr = crate::vm::memory::BDA_BASE + 0x6C;
+            let tick_lo = self.memory.read_word(tick_addr);
+            let tick_hi = self.memory.read_word(tick_addr + 2);
+            let tick = ((tick_hi as u32) << 16) | tick_lo as u32;
+            let new_tick = tick.wrapping_add(1);
+            self.memory.write_word(tick_addr, new_tick as u16);
+            self.memory.write_word(tick_addr + 2, (new_tick >> 16) as u16);
+
+            // Raise IRQ0 via shared PIC
+            if let Some(ref pic) = self.pic {
+                pic.lock().unwrap().raise_irq(0);
+            }
+
+            self.last_tick = Some(Instant::now());
+        }
+    }
+
+    fn check_vga_refresh(&mut self) {
+        let should_refresh = if let Some(ref last_refresh) = self.last_refresh {
+            last_refresh.elapsed().as_millis() >= 50
+        } else {
+            false
+        };
+
+        if should_refresh {
+            self.last_refresh = Some(Instant::now());
         }
     }
 

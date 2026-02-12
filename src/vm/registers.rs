@@ -302,6 +302,25 @@ impl  Registers {
         }
     }
 
+    pub fn new_bios(memory: &mut Memory) -> Self {
+        Self {
+            ax: Register::default(),
+            bx: Register::default(),
+            cx: Register::default(),
+            dx: Register::default(),
+            si: Register::default(),
+            di: Register::default(),
+            sp: Register::new(0x7C00), // Stack below boot sector
+            bp: Register::default(),
+            cs: Segment::new(0x0000, memory),
+            ds: Segment::new(0x0000, memory),
+            es: Segment::new(0x0000, memory),
+            ss: Segment::new(0x0000, memory),
+            pc: Register::default(),
+            op_pc: 0,
+        }
+    }
+
     #[inline(always)]
     pub fn ref_reg_byte(&mut self, reg: u8) -> ByteWrapper {
         match reg {

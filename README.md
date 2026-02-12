@@ -1,15 +1,59 @@
 # Emulator8086
 
-An Intel 8086 CPU emulator written in Rust, capable of loading and executing MINIX 2 a.out binaries. Implements real-mode segmented memory, ModR/M addressing, and a subset of MINIX 2 system calls.
+An Intel 8086 CPU emulator written in Rust with two execution modes: **MINIX a.out** binary execution and **BIOS boot** from floppy disk images. Implements real-mode segmented memory (1MB), IVT-based interrupt dispatch, I/O port emulation, and hardware device emulation.
 
 ## Features
 
 - **70+ instructions** including arithmetic, logic, shifts/rotates, string operations, control flow, and stack manipulation
-- **Full 8086 segmentation** with CS, DS, ES, SS segments and physical address calculation (`segment << 4 + offset`)
+- **Full 8086 segmentation** with CS, DS, ES, SS segments and 20-bit physical address calculation (`segment << 4 + offset`)
 - **ModR/M decoding** with all addressing modes (register direct, memory indirect, displacement)
 - **Instruction prefixes**: REP/REPE/REPNE, LOCK, segment overrides
 - **MINIX 2 a.out loader** with text/data segment initialization and stack setup (argc/argv/envp)
-- **MINIX 2 syscalls**: `EXIT` and `WRITE` (stdout/stderr) via `INT` instruction
+- **MINIX 2 syscalls**: `EXIT` and `WRITE` (stdout/stderr) via `INT 0x20`
+- **BIOS boot mode**: boots from raw floppy disk images (e.g. MS-DOS)
+- **I/O port subsystem** with IoDevice trait and port-mapped bus
+- **Hardware emulation**: 8259 PIC, 8253 PIT, keyboard controller (8042), VGA text mode, floppy disk
+- **BIOS services**: INT 10h (video), INT 11h (equipment), INT 12h (memory), INT 13h (disk), INT 16h (keyboard), INT 19h (bootstrap), INT 1Ah (timer)
+
+## Building and running
+
+```bash
+cargo build --release
+```
+
+### MINIX a.out mode
+
+```bash
+cargo run --release -- <path-to-minix-aout-binary> [args...]
+```
+
+Use `--trace` to enable per-instruction register trace output:
+
+```bash
+cargo run --release -- --trace <path-to-minix-aout-binary> [args...]
+```
+
+Trace format:
+```
+ AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP
+0000 0000 0000 0000 ffdc 0000 0000 0000 ---- 0000:31ed
+```
+
+Flags displayed: **O**verflow, **S**ign, **Z**ero, **C**arry.
+
+### BIOS boot mode
+
+```bash
+cargo run --release -- --bios --disk <path-to-floppy-image.img>
+```
+
+The emulator loads the boot sector from the disk image at 0x7C00, verifies the 0x55AA signature, and begins execution. BIOS service interrupts are handled in Rust; the guest OS interacts with hardware through I/O ports and BIOS INT calls.
+
+Set `RUST_LOG=debug` for verbose logging (disk I/O, BIOS calls, etc.):
+
+```bash
+RUST_LOG=debug cargo run --release -- --bios --disk dos.img
+```
 
 ## Architecture
 
@@ -19,9 +63,9 @@ src/
   vm/
     runtime.rs              CPU state, fetch-decode-execute loop, flags, stack ops
     registers.rs            16-bit general purpose, segment, and flag registers
-    memory.rs               320KB segmented memory (5 x 64KB segments)
+    memory.rs               1MB segmented memory with 20-bit address masking
     modrm.rs                ModR/M byte decoding with trait-based byte/word dispatch
-    instructions.rs         Instruction implementations (~1,500 lines)
+    instructions.rs         Instruction implementations (~1,600 lines)
     disassembler.rs         Disassembly support (incomplete)
   a_out/
     executable.rs           A.OUT binary loading
@@ -32,19 +76,42 @@ src/
   minix2/
     syscall.rs              MINIX 2 syscall dispatch (WRITE, EXIT)
     interruption.rs         Interrupt message structures
+  io/
+    bus.rs                  IoDevice trait, IoBus port dispatcher
+    pic.rs                  8259 PIC (master, ICW init state machine)
+    pit.rs                  8253 PIT (channel 0 timer)
+    keyboard.rs             8042 keyboard controller with threaded stdin input
+    vga.rs                  VGA CRT registers, ANSI terminal rendering
+    disk.rs                 Floppy disk image reader (CHS geometry)
+  bios/
+    handlers.rs             BIOS INT service handlers (10h-1Ah)
+    init.rs                 IVT setup, BDA init, DPT, bootstrap
   utils/
     number.rs               Arithmetic helpers
 ```
 
 ### Memory layout
 
-| Offset | Size  | Segment |
-|--------|-------|---------|
-| 0x00000 | 64 KB | Interrupt vector table / scratch |
-| 0x10000 | 64 KB | CS (Code) |
-| 0x20000 | 64 KB | DS (Data) |
-| 0x30000 | 64 KB | ES (Extra) |
-| 0x40000 | 64 KB | SS (Stack) |
+**BIOS mode** (1MB real-mode address space):
+
+| Address     | Size    | Description                 |
+|-------------|---------|---------------------------- |
+| `0x00000`   | 1 KB    | Interrupt Vector Table      |
+| `0x00400`   | 256 B   | BIOS Data Area              |
+| `0x07C00`   | 512 B   | Boot sector load address    |
+| `0x0A000`   |         | End of conventional memory  |
+| `0xB8000`   | 4 KB    | VGA text buffer (80x25x2)   |
+| `0xF0000`   | 64 KB   | BIOS ROM area (IRET stubs)  |
+
+**MINIX mode** (segmented, 5 x 64KB):
+
+| Segment | Base      | Description |
+|---------|-----------|-------------|
+| IVT     | `0x00000` | Scratch     |
+| CS      | `0x10000` | Code        |
+| DS      | `0x20000` | Data        |
+| ES      | `0x30000` | Extra       |
+| SS      | `0x40000` | Stack       |
 
 ### Instruction coverage
 
@@ -58,73 +125,9 @@ src/
 | Control flow | JMP, CALL, RET, RETF, IRET, Jcc (all conditions), JCXZ, LOOP, LOOPE, LOOPNE |
 | Stack | PUSH, POP, PUSHF, POPF |
 | Flags | CLC, STC, CLD, STD, CLI, STI, CMC |
-| Interrupts | INT, INTO, IRET |
-| Misc | NOP, HLT, WAIT, ESC, IN/OUT (stubs) |
-
-## Building and running
-
-```bash
-cargo build --release
-cargo run -- <path-to-minix-aout-binary> [args...]
-```
-
-The emulator prints a register trace for every executed instruction:
-
-```
- AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP
-0000 0000 0000 0000 ffdc 0000 0000 0000 ---- 0000:31ed
-```
-
-Flags displayed: **O**verflow, **S**ign, **Z**ero, **C**arry.
-
-Set `RUST_LOG=debug` for verbose logging:
-
-```bash
-RUST_LOG=debug cargo run -- ./my_program
-```
-
-## Known issues
-
-### Bugs
-
-1. **`get_segment()` always returns ES** (`runtime.rs:213-219`) -- All four arms of the segment match return `&mut self.registers.es`. This breaks segment override prefixes entirely.
-
-2. **`push_word()` increments SP instead of decrementing** (`runtime.rs:191-194`) -- Uses `wrapping_add` where it should use `wrapping_sub`. The 8086 stack grows downward: PUSH should decrement SP before writing. `push_byte()` correctly uses `wrapping_sub`.
-
-3. **STOS uses SI instead of DI** for the destination address -- The 8086 STOS instruction stores AL/AX at ES:DI, not ES:SI.
-
-4. **SCAS uses SI instead of DI** for the scan address -- Same issue; SCAS compares AL/AX with the byte/word at ES:DI.
-
-5. **Auxiliary carry flag** is not updated by several instructions (ADC, SBB, CMP and others).
-
-### Limitations
-
-- Only two MINIX syscalls implemented (WRITE and EXIT) -- no file I/O, process management, or signals
-- IN/OUT port instructions are stubs (no peripheral emulation)
-- No coprocessor (8087) support beyond ESC passthrough
-- Disassembler module is incomplete
-- No test suite
-- Unknown opcodes terminate with `exit(1)` rather than raising an invalid opcode interrupt
-
-## Recommendations
-
-Here are some suggestions ordered by impact:
-
-1. **Fix the `get_segment()` bug** -- This is a critical copy-paste error. The CS, SS, and DS arms should return their respective segments. Without this fix, any program using segment override prefixes will malfunction.
-
-2. **Fix `push_word()`** -- Change `wrapping_add` to `wrapping_sub`. This bug corrupts the stack for every word-sized PUSH (including CALL, INT, and PUSHF), which means most non-trivial programs will crash.
-
-3. **Fix STOS/SCAS register usage** -- These should use DI, not SI.
-
-4. **Add tests** -- Even simple unit tests for flag computation, ModR/M decoding, and push/pop would catch regressions and make bug-fixing safer. Integration tests that run small known-good binaries and check output would also be very valuable.
-
-5. **Implement auxiliary carry flag** -- Required for BCD instructions (DAA/DAS/AAA/AAS) to work correctly. Mark the TODO sites and address them systematically.
-
-6. **Improve error handling** -- Replace `exit(1)` on unknown opcodes with a proper invalid-opcode interrupt or at least a descriptive panic with the offending PC and opcode byte.
-
-7. **Complete the disassembler** -- Useful for debugging; could be exposed as a `--disasm` CLI flag.
-
-8. **Expand syscall support** -- READ and OPEN would allow running more interesting MINIX programs.
+| Interrupts | INT, INT 3, INTO, IRET |
+| I/O | IN, OUT (byte and word, immediate and DX-addressed) |
+| Misc | NOP, HLT, WAIT, ESC, LOCK |
 
 ## Dependencies
 
@@ -134,7 +137,3 @@ Here are some suggestions ordered by impact:
 | `byteorder` | Endian-aware byte reads |
 | `log` / `env_logger` | Logging |
 | `enum_primitive` / `num-derive` / `num-traits` | Enum-to-integer conversions |
-
-## License
-
-Not yet specified.

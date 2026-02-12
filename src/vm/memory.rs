@@ -1,16 +1,23 @@
 use crate::vm::registers::{ByteWrapper, HIGH_IDX, LOW_IDX, Register, WordWrapper};
 
 pub const SEGMENT_SIZE: usize = 1 << u16::BITS;
-pub const MEMORY_SIZE: usize = SEGMENT_SIZE * 5;
+pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
+
+pub const IVT_BASE: usize = 0x00000;
+pub const BDA_BASE: usize = 0x00400;
+pub const BOOT_ADDR: usize = 0x07C00;
+pub const CONV_MEM_END: usize = 0xA0000;
+pub const VGA_TEXT_BASE: usize = 0xB8000;
+pub const BIOS_ROM: usize = 0xF0000;
 
 pub struct Memory {
-    mem: Box<[u8; MEMORY_SIZE]>,
+    mem: Box<[u8]>,
 }
 
 impl Memory {
     pub fn new() -> Self {
         Self {
-            mem: Box::new([0; MEMORY_SIZE])
+            mem: vec![0u8; MEMORY_SIZE].into_boxed_slice()
         }
     }
 }
@@ -79,7 +86,7 @@ impl Segment {
 
     #[inline(always)]
     pub fn phys_address(&self, address: u16) -> usize {
-        ((self.offset.word() as usize) << 4) + address as usize
+        (((self.offset.word() as usize) << 4) + address as usize) & 0xFFFFF
     }
 
     pub fn copy_data(&self, offset: u16, data: &[u8]) {
