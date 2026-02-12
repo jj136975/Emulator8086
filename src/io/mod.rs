@@ -4,3 +4,4 @@ pub mod pit;
 pub mod keyboard;
 pub mod vga;
 pub mod disk;
+pub mod port61;

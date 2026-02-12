@@ -13,33 +13,17 @@ pub fn init_bios(vm: &mut Runtime) {
     vm.bios_handlers[0x19] = Some(int19h);
     vm.bios_handlers[0x1A] = Some(int1ah);
 
-    // Write IRET stubs in ROM area for hardware IRQ handlers
-    // Each stub is just an IRET (0xCF) opcode
+    // Write 256 IRET stubs in ROM area — one per interrupt vector.
+    // This ensures ANY unhandled INT (e.g. INT 2Fh, INT 33h) safely
+    // executes IRET instead of jumping to 0000:0000 and crashing.
     let iret_base = BIOS_ROM + 0x100;
-    for i in 0..16u16 {
+    let stub_seg = (BIOS_ROM >> 4) as u16;
+    for i in 0..256u16 {
         let stub_addr = iret_base + i as usize;
         vm.memory.write_byte(stub_addr, 0xCF); // IRET
-    }
 
-    // Set up IVT entries for hardware IRQs (INT 8-15 -> IRQ 0-7)
-    for i in 0..8u16 {
-        let vector = 8 + i;
-        let ivt_offset = (vector * 4) as usize;
-        let stub_addr = (iret_base + i as usize) as u16;
-        let stub_seg = (BIOS_ROM >> 4) as u16;
-        vm.memory.write_word(ivt_offset, stub_addr & 0xFFFF);
-        vm.memory.write_word(ivt_offset + 2, stub_seg);
-    }
-
-    // Also set IVT entries for BIOS service interrupts to point to stubs
-    // (These will be intercepted by the bios_handlers array before IVT lookup)
-    let bios_vectors: &[u16] = &[0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A];
-    for (idx, &vector) in bios_vectors.iter().enumerate() {
-        let ivt_offset = (vector * 4) as usize;
-        let stub_addr = (iret_base + 16 + idx) as u16;
-        let stub_seg = (BIOS_ROM >> 4) as u16;
-        vm.memory.write_byte(BIOS_ROM + 0x110 + idx, 0xCF); // IRET stub
-        vm.memory.write_word(ivt_offset, stub_addr & 0xFFFF);
+        let ivt_offset = (i * 4) as usize;
+        vm.memory.write_word(ivt_offset, (stub_addr & 0xFFFF) as u16);
         vm.memory.write_word(ivt_offset + 2, stub_seg);
     }
 
@@ -76,6 +60,16 @@ pub fn init_bios(vm: &mut Runtime) {
     let ivt_1e = 0x1E * 4;
     vm.memory.write_word(ivt_1e, (dpt_addr & 0xFFFF) as u16);
     vm.memory.write_word(ivt_1e + 2, (BIOS_ROM >> 4) as u16);
+
+    // BIOS ROM identification at FFFF:000E (physical 0xFFFFE)
+    // IBM PC AT compatible model byte
+    vm.memory.write_byte(0xFFFFE, 0xFC); // 0xFC = AT class machine
+
+    // BIOS date string at FFFF:0005 (physical 0xFFFF5) - "01/01/00"
+    let bios_date = b"01/01/00";
+    for (i, &b) in bios_date.iter().enumerate() {
+        vm.memory.write_byte(0xFFFF5 + i, b);
+    }
 
     // Clear VGA text buffer
     for i in 0..2000 {

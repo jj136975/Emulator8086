@@ -168,7 +168,11 @@ impl WordWrapper {
     }
 
     pub unsafe fn next(&self) -> u16 {
-        unsafe { *(self.inner as *mut u16).add(2) }
+        unsafe {
+            let ptr = (self.inner as *const u8).add(2);
+            let bytes = [*ptr, *ptr.add(1)];
+            u16::from_le_bytes(bytes)
+        }
     }
 }
 

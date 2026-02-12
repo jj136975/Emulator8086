@@ -15,6 +15,14 @@ impl Keyboard {
         }
     }
 
+    pub fn shared_buffer(&self) -> Arc<Mutex<VecDeque<u8>>> {
+        self.scancode_buffer.clone()
+    }
+
+    pub fn shared_irq(&self) -> Arc<Mutex<bool>> {
+        self.irq_pending.clone()
+    }
+
     pub fn start_input_thread(&self) {
         let buffer = self.scancode_buffer.clone();
         let irq_pending = self.irq_pending.clone();
@@ -58,19 +66,10 @@ impl Keyboard {
 }
 
 impl IoDevice for Keyboard {
-    fn port_in_byte(&mut self, port: u16) -> u8 {
-        match port {
-            0x60 => {
-                self.scancode_buffer.lock().unwrap()
-                    .pop_front()
-                    .unwrap_or(0)
-            }
-            0x64 => {
-                let has_data = !self.scancode_buffer.lock().unwrap().is_empty();
-                if has_data { 0x01 } else { 0x00 }
-            }
-            _ => 0xFF,
-        }
+    fn port_in_byte(&mut self, _port: u16) -> u8 {
+        self.scancode_buffer.lock().unwrap()
+            .pop_front()
+            .unwrap_or(0)
     }
 
     fn port_out_byte(&mut self, _port: u16, _value: u8) {
@@ -78,7 +77,32 @@ impl IoDevice for Keyboard {
     }
 
     fn name(&self) -> &'static str {
-        "8042 Keyboard"
+        "8042 Keyboard Data"
+    }
+}
+
+/// Separate IoDevice for port 0x64 (keyboard status register).
+/// Shares the scancode buffer with the Keyboard device.
+pub struct KeyboardStatus {
+    scancode_buffer: Arc<Mutex<VecDeque<u8>>>,
+}
+
+impl KeyboardStatus {
+    pub fn new(buffer: Arc<Mutex<VecDeque<u8>>>) -> Self {
+        Self { scancode_buffer: buffer }
+    }
+}
+
+impl IoDevice for KeyboardStatus {
+    fn port_in_byte(&mut self, _port: u16) -> u8 {
+        let has_data = !self.scancode_buffer.lock().unwrap().is_empty();
+        if has_data { 0x01 } else { 0x00 }
+    }
+
+    fn port_out_byte(&mut self, _port: u16, _value: u8) {}
+
+    fn name(&self) -> &'static str {
+        "8042 Keyboard Status"
     }
 }
 

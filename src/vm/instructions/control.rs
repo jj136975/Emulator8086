@@ -1,3 +1,4 @@
+use log::debug;
 use crate::minix2::interruption::Message;
 use crate::minix2::syscall::handle_interrupt;
 use crate::utils::number::SpecialOps;
@@ -82,7 +83,11 @@ pub(super) fn group_fe_ff(vm: &mut Runtime, is_word: bool) {
         },
         // PUSH
         0b_110 => vm.push_word(modrm.word()),
-        _ => unreachable!(),
+        // reg=7 is undefined on 8086
+        _ => {
+            log::debug!("Undefined group FF reg={} at {:04X}:{:04X}",
+                reg, vm.registers.cs.reg().word(), vm.registers.op_pc);
+        },
     };
 }
 
@@ -95,24 +100,16 @@ pub(super) fn dispatch_int(vm: &mut Runtime, vector: u8) {
         vm.registers.ax.set(0);
     } else {
         if let Some(handler) = vm.bios_handlers[vector as usize] {
-            vm.push_word(vm.flags);
-            vm.unset_flag(Interrupt);
-            vm.unset_flag(Trap);
-            vm.push_word(vm.registers.cs.reg().word());
-            vm.push_word(vm.registers.pc.word());
-
             handler(vm);
-
-            let ip = vm.pop_word();
-            let cs = vm.pop_word();
-            let flags = vm.pop_word();
-            vm.registers.pc.set(ip);
-            vm.registers.cs.reg_mut().set(cs);
-            vm.flags = flags;
         } else {
             let ivt_offset = vector as usize * 4;
             let new_ip = vm.memory.read_word(ivt_offset);
             let new_cs = vm.memory.read_word(ivt_offset + 2);
+
+            debug!("[IVT] INT {:02X}h -> {:04X}:{:04X} at {:04X}:{:04X} AH={:02X}",
+                vector, new_cs, new_ip,
+                vm.registers.cs.reg().word(), vm.registers.op_pc,
+                vm.registers.ax.high());
 
             vm.push_word(vm.flags);
             vm.unset_flag(Interrupt);

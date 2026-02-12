@@ -1,4 +1,3 @@
-use std::io::Write;
 use log::debug;
 use crate::io::keyboard::scancode_to_ascii;
 use crate::vm::memory::{BDA_BASE, VGA_TEXT_BASE};
@@ -170,10 +169,17 @@ pub fn int13h(vm: &mut Runtime) {
 
                     vm.registers.ax.set_high(0);
                     vm.registers.bx.set_low(0x04); // Drive type: 1.44MB
-                    vm.registers.cx.set_high(((max_cyl >> 2) as u8 & 0xC0) | (max_cyl as u8));
-                    vm.registers.cx.set_low(((max_cyl >> 2) as u8 & 0xC0) | spt);
+                    vm.registers.cx.set_high(max_cyl as u8);
+                    vm.registers.cx.set_low(((max_cyl as u16 >> 2) as u8 & 0xC0) | spt);
                     vm.registers.dx.set_high(max_head);
                     vm.registers.dx.set_low(1); // Number of drives
+
+                    // Set ES:DI to point to diskette parameter table (INT 1Eh vector)
+                    let dpt_ip = vm.memory.read_word(0x1E * 4);
+                    let dpt_cs = vm.memory.read_word(0x1E * 4 + 2);
+                    vm.registers.es.reg_mut().set(dpt_cs);
+                    vm.registers.di.set(dpt_ip);
+
                     vm.unset_flag(CpuFlag::Carry);
                 } else {
                     vm.registers.ax.set_high(0x07);
@@ -181,6 +187,19 @@ pub fn int13h(vm: &mut Runtime) {
                 }
             } else {
                 vm.registers.ax.set_high(0x01);
+                vm.set_flag(CpuFlag::Carry);
+            }
+        }
+        // Get disk type
+        0x15 => {
+            let dl = vm.registers.dx.low();
+            if dl < 0x80 {
+                // Floppy: return type 02 (floppy with change-line support)
+                vm.registers.ax.set_high(0x02);
+                vm.unset_flag(CpuFlag::Carry);
+            } else {
+                // No hard drives
+                vm.registers.ax.set_high(0x00); // No drive
                 vm.set_flag(CpuFlag::Carry);
             }
         }
@@ -195,6 +214,15 @@ pub fn int13h(vm: &mut Runtime) {
 pub fn int15h(vm: &mut Runtime) {
     let ah = vm.registers.ax.high();
     match ah {
+        // Wait (microsecond delay) - return immediately
+        0x86 => {
+            vm.unset_flag(CpuFlag::Carry);
+        }
+        // Get extended memory size - no extended memory in 8086
+        0x88 => {
+            vm.registers.ax.set(0); // 0 KB extended memory
+            vm.unset_flag(CpuFlag::Carry);
+        }
         // Function not supported - set CF to indicate error
         _ => {
             debug!("INT 15h: unsupported function AH={:02X}", ah);
@@ -208,50 +236,51 @@ pub fn int15h(vm: &mut Runtime) {
 pub fn int16h(vm: &mut Runtime) {
     let ah = vm.registers.ax.high();
     match ah {
-        // Wait for key
-        0x00 => {
-            // Block until a key is available
-            loop {
-                if let Some(ref mut io_bus) = vm.io_bus {
-                    let status = io_bus.port_in_byte(0x64);
-                    if status & 0x01 != 0 {
-                        let scancode = io_bus.port_in_byte(0x60);
-                        // Skip break codes
-                        if scancode & 0x80 == 0 {
-                            let ascii = scancode_to_ascii(scancode);
-                            vm.registers.ax.set_high(scancode);
-                            vm.registers.ax.set_low(ascii);
-                            return;
-                        }
+        // Wait for key / Extended wait for key
+        0x00 | 0x10 => {
+            // Try to find a make code (skip break codes) from the shared buffer
+            if let Some(ref kb_buf) = vm.keyboard_buffer {
+                let mut buf = kb_buf.lock().unwrap();
+                // Scan through buffer looking for a make code
+                while let Some(&code) = buf.front() {
+                    if code & 0x80 != 0 {
+                        // Break code - consume and skip
+                        buf.pop_front();
+                        continue;
                     }
+                    // Found a make code - consume it
+                    buf.pop_front();
+                    let ascii = scancode_to_ascii(code);
+                    vm.registers.ax.set_high(code);
+                    vm.registers.ax.set_low(ascii);
+                    return;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
             }
+            // No key available: rewind PC to re-execute this INT 16h instruction
+            // The run loop will process timer ticks/interrupts before retrying
+            vm.registers.pc.set(vm.registers.op_pc);
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // Check key (non-blocking)
-        0x01 => {
-            if let Some(ref mut io_bus) = vm.io_bus {
-                let status = io_bus.port_in_byte(0x64);
-                if status & 0x01 != 0 {
-                    // Peek - don't consume
-                    let scancode = io_bus.port_in_byte(0x60);
-                    if scancode & 0x80 == 0 {
-                        let ascii = scancode_to_ascii(scancode);
-                        vm.registers.ax.set_high(scancode);
-                        vm.registers.ax.set_low(ascii);
-                        vm.unset_flag(CpuFlag::Zero); // ZF=0 means key available
-                    } else {
-                        vm.set_flag(CpuFlag::Zero); // ZF=1 means no key
-                    }
-                } else {
-                    vm.set_flag(CpuFlag::Zero);
-                }
+        // Check key (non-blocking) / Extended check
+        0x01 | 0x11 => {
+            let found = if let Some(ref kb_buf) = vm.keyboard_buffer {
+                let buf = kb_buf.lock().unwrap();
+                // Find first make code in buffer (peek without consuming)
+                buf.iter().find(|&&code| code & 0x80 == 0).copied()
             } else {
-                vm.set_flag(CpuFlag::Zero);
+                None
+            };
+            if let Some(scancode) = found {
+                let ascii = scancode_to_ascii(scancode);
+                vm.registers.ax.set_high(scancode);
+                vm.registers.ax.set_low(ascii);
+                vm.unset_flag(CpuFlag::Zero); // ZF=0 means key available
+            } else {
+                vm.set_flag(CpuFlag::Zero); // ZF=1 means no key
             }
         }
         // Get shift flags
-        0x02 => {
+        0x02 | 0x12 => {
             vm.registers.ax.set_low(0);
         }
         _ => {}
@@ -299,6 +328,23 @@ pub fn int1ah(vm: &mut Runtime) {
             vm.registers.cx.set(tick_hi);
             vm.registers.dx.set(tick_lo);
             vm.registers.ax.set_low(0); // Midnight flag
+        }
+        // Get RTC time
+        0x02 => {
+            // Return a fixed time: 12:00:00
+            vm.registers.cx.set_high(0x12); // Hours (BCD)
+            vm.registers.cx.set_low(0x00);  // Minutes (BCD)
+            vm.registers.dx.set_high(0x00); // Seconds (BCD)
+            vm.registers.dx.set_low(0x00);  // DST flag
+            vm.unset_flag(CpuFlag::Carry);
+        }
+        // Get RTC date
+        0x04 => {
+            // Return a fixed date: 01/01/2000
+            vm.registers.cx.set(0x2000); // Century (20) + Year (00) in BCD
+            vm.registers.dx.set_high(0x01); // Month (BCD)
+            vm.registers.dx.set_low(0x01);  // Day (BCD)
+            vm.unset_flag(CpuFlag::Carry);
         }
         _ => {}
     }
@@ -354,11 +400,6 @@ fn teletype_output(vm: &mut Runtime, ch: u8) {
         io_bus.port_out_byte(0x3D5, pos as u8);
     }
 
-    // Also print to host stdout
-    let stdout = std::io::stdout();
-    let mut lock = stdout.lock();
-    let _ = lock.write_all(&[ch]);
-    let _ = lock.flush();
 }
 
 fn scroll_up(vm: &mut Runtime, lines: u8, attr: u8, top_row: usize, left_col: usize, bottom_row: usize, right_col: usize) {

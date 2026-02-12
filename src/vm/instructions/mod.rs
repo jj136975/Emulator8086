@@ -414,6 +414,10 @@ pub fn process(vm: &mut Runtime) {
         // HLT
         0xF4 => {
             if vm.mode == ExecutionMode::BiosBoot {
+                // Rewind PC so the run loop can process interrupts before retrying.
+                // When a hardware interrupt fires, its handler runs via IRET and
+                // execution resumes at the instruction *after* HLT naturally.
+                vm.registers.pc.set(vm.registers.op_pc);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             } else {
                 vm.exit(0);
@@ -541,8 +545,9 @@ pub fn process(vm: &mut Runtime) {
         0xC5 => {
             let mod_rm = vm.fetch_byte();
             let rm = mod_rm & 0b111;
+            let mod_val = (mod_rm >> 6) & 0b11;
 
-            let address: u16 = match (mod_rm >> 6) & 0b11 {
+            let address: u16 = match mod_val {
                 0b00 => direct_address(vm, rm),
                 0b01 => {
                     let displacement = vm.fetch_byte() as i8 as i16;
@@ -557,8 +562,8 @@ pub fn process(vm: &mut Runtime) {
                 0b11 => vm.registers.read_reg_word(rm),
                 _ => unreachable!()
             };
-            let offset = vm.data_segment().read_word(address);
-            let segment = vm.data_segment().read_word(address.wrapping_add(2));
+            let offset = vm.effective_segment(mod_val, rm).read_word(address);
+            let segment = vm.effective_segment(mod_val, rm).read_word(address.wrapping_add(2));
             vm.registers.ref_reg_word((mod_rm >> 3) & 0b111).set(offset);
             vm.registers.ds.reg_mut().set(segment);
         }
@@ -590,8 +595,9 @@ pub fn process(vm: &mut Runtime) {
         0xC4 => {
             let mod_rm = vm.fetch_byte();
             let rm = mod_rm & 0b111;
+            let mod_val = (mod_rm >> 6) & 0b11;
 
-            let address: u16 = match (mod_rm >> 6) & 0b11 {
+            let address: u16 = match mod_val {
                 0b00 => {
                     direct_address(vm, rm)
                 }
@@ -608,9 +614,9 @@ pub fn process(vm: &mut Runtime) {
                 0b11 => vm.registers.read_reg_word(rm),
                 _ => unreachable!()
             };
-            let word = vm.data_segment().read_word(address);
+            let word = vm.effective_segment(mod_val, rm).read_word(address);
             vm.registers.ref_reg_word((mod_rm >> 3) & 0b111).set(word);
-            let word = vm.data_segment().read_word(address.wrapping_add(2));
+            let word = vm.effective_segment(mod_val, rm).read_word(address.wrapping_add(2));
             vm.registers.es.reg_mut().set(word);
         }
         // LOCK
@@ -696,21 +702,22 @@ pub fn process(vm: &mut Runtime) {
         0x8E => {
             let mod_rm = vm.fetch_byte();
             let rm = mod_rm & 0b111;
+            let mod_val = (mod_rm >> 6) & 0b11;
 
-            let word = match (mod_rm >> 6) & 0b11 {
+            let word = match mod_val {
                 0b00 => {
                     let address = direct_address(vm, rm);
-                    vm.data_segment().read_word(address)
+                    vm.effective_segment(0b00, rm).read_word(address)
                 }
                 0b01 => {
                     let displacement = vm.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
-                    vm.data_segment().read_word(address.wrapping_add_signed(displacement))
+                    vm.effective_segment(0b01, rm).read_word(address.wrapping_add_signed(displacement))
                 }
                 0b10 => {
                     let displacement = vm.fetch_word();
                     let address = rm_address(vm, rm);
-                    vm.data_segment().read_word(address.wrapping_add(displacement))
+                    vm.effective_segment(0b10, rm).read_word(address.wrapping_add(displacement))
                 }
                 0b11 => vm.registers.read_reg_word(rm),
                 _ => unreachable!()
@@ -817,21 +824,22 @@ pub fn process(vm: &mut Runtime) {
 
             let mod_rm = vm.fetch_byte();
             let rm = mod_rm & 0b111;
+            let mod_val = (mod_rm >> 6) & 0b11;
 
-            match (mod_rm >> 6) & 0b11 {
+            match mod_val {
                 0b00 => {
                     let address = direct_address(vm, rm);
-                    vm.data_segment().ref_word(address)
+                    vm.effective_segment(0b00, rm).ref_word(address)
                 }
                 0b01 => {
                     let displacement = vm.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
-                    vm.data_segment().ref_word(address.wrapping_add_signed(displacement))
+                    vm.effective_segment(0b01, rm).ref_word(address.wrapping_add_signed(displacement))
                 }
                 0b10 => {
                     let displacement = vm.fetch_word();
                     let address = rm_address(vm, rm);
-                    vm.data_segment().ref_word(address.wrapping_add(displacement))
+                    vm.effective_segment(0b10, rm).ref_word(address.wrapping_add(displacement))
                 }
                 0b11 => vm.registers.ref_reg_word(rm),
                 _ => unreachable!()
