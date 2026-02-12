@@ -1,10 +1,15 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use crate::io::bus::IoDevice;
 
+/// Each entry is (scancode, ascii). Break codes use (scancode|0x80, 0).
+pub type KeyBuffer = VecDeque<(u8, u8)>;
+
 pub struct Keyboard {
-    scancode_buffer: Arc<Mutex<VecDeque<u8>>>,
+    scancode_buffer: Arc<Mutex<KeyBuffer>>,
     pub irq_pending: Arc<Mutex<bool>>,
+    monitor_flag: Arc<AtomicBool>,
 }
 
 impl Keyboard {
@@ -12,10 +17,11 @@ impl Keyboard {
         Self {
             scancode_buffer: Arc::new(Mutex::new(VecDeque::new())),
             irq_pending: Arc::new(Mutex::new(false)),
+            monitor_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn shared_buffer(&self) -> Arc<Mutex<VecDeque<u8>>> {
+    pub fn shared_buffer(&self) -> Arc<Mutex<KeyBuffer>> {
         self.scancode_buffer.clone()
     }
 
@@ -23,52 +29,68 @@ impl Keyboard {
         self.irq_pending.clone()
     }
 
+    pub fn shared_monitor_flag(&self) -> Arc<AtomicBool> {
+        self.monitor_flag.clone()
+    }
+
     pub fn start_input_thread(&self) {
         let buffer = self.scancode_buffer.clone();
         let irq_pending = self.irq_pending.clone();
+        let monitor_flag = self.monitor_flag.clone();
 
         std::thread::spawn(move || {
-            use std::io::Read;
-            let stdin = std::io::stdin();
-            let mut buf = [0u8; 1];
+            use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, KeyEventKind};
+
             loop {
-                if stdin.lock().read_exact(&mut buf).is_ok() {
-                    let scancode = ascii_to_scancode(buf[0]);
-                    if let Some((make, brk)) = scancode {
-                        let mut q = buffer.lock().unwrap();
-                        q.push_back(make);
-                        q.push_back(brk);
-                        *irq_pending.lock().unwrap() = true;
+                let ev = match event::read() {
+                    Ok(ev) => ev,
+                    Err(_) => continue,
+                };
+
+                let Event::Key(KeyEvent { code, modifiers, kind, .. }) = ev else {
+                    continue;
+                };
+
+                // Only handle key press events (ignore release/repeat)
+                if kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                // Ctrl+C exits the emulator
+                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    use std::io::Write;
+                    let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
+                    let _ = std::io::stdout().flush();
+                    std::process::exit(0);
+                }
+
+                // F12 opens the monitor — set flag and sleep until main loop clears it
+                if code == KeyCode::F(12) {
+                    monitor_flag.store(true, Ordering::SeqCst);
+                    while monitor_flag.load(Ordering::SeqCst) {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
+                    continue;
+                }
+
+                if let Some((scancode, ascii)) = keycode_to_scancode(code, modifiers) {
+                    let mut q = buffer.lock().unwrap();
+                    q.push_back((scancode, ascii));          // make code + correct ASCII
+                    q.push_back((scancode | 0x80, 0));       // break code
+                    *irq_pending.lock().unwrap() = true;
                 }
             }
         });
-    }
-
-    pub fn has_scancode(&self) -> bool {
-        !self.scancode_buffer.lock().unwrap().is_empty()
-    }
-
-    pub fn peek_scancode(&self) -> Option<u8> {
-        self.scancode_buffer.lock().unwrap().front().copied()
-    }
-
-    pub fn dequeue_scancode(&self) -> Option<u8> {
-        self.scancode_buffer.lock().unwrap().pop_front()
-    }
-
-    pub fn check_and_clear_irq(&self) -> bool {
-        let mut pending = self.irq_pending.lock().unwrap();
-        let was_pending = *pending;
-        *pending = false;
-        was_pending
     }
 }
 
 impl IoDevice for Keyboard {
     fn port_in_byte(&mut self, _port: u16) -> u8 {
+        // Port 0x60 returns raw scancodes only
         self.scancode_buffer.lock().unwrap()
             .pop_front()
+            .map(|(sc, _)| sc)
             .unwrap_or(0)
     }
 
@@ -84,11 +106,11 @@ impl IoDevice for Keyboard {
 /// Separate IoDevice for port 0x64 (keyboard status register).
 /// Shares the scancode buffer with the Keyboard device.
 pub struct KeyboardStatus {
-    scancode_buffer: Arc<Mutex<VecDeque<u8>>>,
+    scancode_buffer: Arc<Mutex<KeyBuffer>>,
 }
 
 impl KeyboardStatus {
-    pub fn new(buffer: Arc<Mutex<VecDeque<u8>>>) -> Self {
+    pub fn new(buffer: Arc<Mutex<KeyBuffer>>) -> Self {
         Self { scancode_buffer: buffer }
     }
 }
@@ -106,119 +128,108 @@ impl IoDevice for KeyboardStatus {
     }
 }
 
-fn ascii_to_scancode(ascii: u8) -> Option<(u8, u8)> {
-    let make = match ascii {
-        b'1' | b'!' => 0x02,
-        b'2' | b'@' => 0x03,
-        b'3' | b'#' => 0x04,
-        b'4' | b'$' => 0x05,
-        b'5' | b'%' => 0x06,
-        b'6' | b'^' => 0x07,
-        b'7' | b'&' => 0x08,
-        b'8' | b'*' => 0x09,
-        b'9' | b'(' => 0x0A,
-        b'0' | b')' => 0x0B,
-        b'-' | b'_' => 0x0C,
-        b'=' | b'+' => 0x0D,
-        0x08 => 0x0E, // Backspace
-        0x09 => 0x0F, // Tab
-        b'q' | b'Q' => 0x10,
-        b'w' | b'W' => 0x11,
-        b'e' | b'E' => 0x12,
-        b'r' | b'R' => 0x13,
-        b't' | b'T' => 0x14,
-        b'y' | b'Y' => 0x15,
-        b'u' | b'U' => 0x16,
-        b'i' | b'I' => 0x17,
-        b'o' | b'O' => 0x18,
-        b'p' | b'P' => 0x19,
-        b'[' | b'{' => 0x1A,
-        b']' | b'}' => 0x1B,
-        0x0D | 0x0A => 0x1C, // Enter
-        b'a' | b'A' => 0x1E,
-        b's' | b'S' => 0x1F,
-        b'd' | b'D' => 0x20,
-        b'f' | b'F' => 0x21,
-        b'g' | b'G' => 0x22,
-        b'h' | b'H' => 0x23,
-        b'j' | b'J' => 0x24,
-        b'k' | b'K' => 0x25,
-        b'l' | b'L' => 0x26,
-        b';' | b':' => 0x27,
-        b'\'' | b'"' => 0x28,
-        b'`' | b'~' => 0x29,
-        b'\\' | b'|' => 0x2B,
-        b'z' | b'Z' => 0x2C,
-        b'x' | b'X' => 0x2D,
-        b'c' | b'C' => 0x2E,
-        b'v' | b'V' => 0x2F,
-        b'b' | b'B' => 0x30,
-        b'n' | b'N' => 0x31,
-        b'm' | b'M' => 0x32,
-        b',' | b'<' => 0x33,
-        b'.' | b'>' => 0x34,
-        b'/' | b'?' => 0x35,
-        b' ' => 0x39,
-        0x1B => 0x01, // Escape
-        _ => return None,
-    };
-    Some((make, make | 0x80)) // make code, break code
+/// Map a crossterm KeyCode + modifiers to (PC AT scancode, ASCII byte).
+fn keycode_to_scancode(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<(u8, u8)> {
+    use crossterm::event::KeyCode;
+
+    match code {
+        // Regular characters — crossterm already gives us the right char
+        // (uppercase if Shift is held, symbols like ! @ # etc.)
+        KeyCode::Char(ch) => {
+            let scancode = char_to_scancode(ch)?;
+            let ascii = if ch.is_ascii() { ch as u8 } else { 0 };
+            Some((scancode, ascii))
+        }
+        KeyCode::Enter => Some((0x1C, 0x0D)),
+        KeyCode::Backspace => Some((0x0E, 0x08)),
+        KeyCode::Tab => Some((0x0F, 0x09)),
+        KeyCode::Esc => Some((0x01, 0x1B)),
+
+        // Arrow keys (extended: ascii = 0)
+        KeyCode::Up => Some((0x48, 0x00)),
+        KeyCode::Down => Some((0x50, 0x00)),
+        KeyCode::Left => Some((0x4B, 0x00)),
+        KeyCode::Right => Some((0x4D, 0x00)),
+
+        // Navigation keys (extended: ascii = 0)
+        KeyCode::Home => Some((0x47, 0x00)),
+        KeyCode::End => Some((0x4F, 0x00)),
+        KeyCode::PageUp => Some((0x49, 0x00)),
+        KeyCode::PageDown => Some((0x51, 0x00)),
+        KeyCode::Insert => Some((0x52, 0x00)),
+        KeyCode::Delete => Some((0x53, 0x00)),
+
+        // Function keys (extended: ascii = 0)
+        KeyCode::F(1) => Some((0x3B, 0x00)),
+        KeyCode::F(2) => Some((0x3C, 0x00)),
+        KeyCode::F(3) => Some((0x3D, 0x00)),
+        KeyCode::F(4) => Some((0x3E, 0x00)),
+        KeyCode::F(5) => Some((0x3F, 0x00)),
+        KeyCode::F(6) => Some((0x40, 0x00)),
+        KeyCode::F(7) => Some((0x41, 0x00)),
+        KeyCode::F(8) => Some((0x42, 0x00)),
+        KeyCode::F(9) => Some((0x43, 0x00)),
+        KeyCode::F(10) => Some((0x44, 0x00)),
+        KeyCode::F(11) => Some((0x57, 0x00)),
+        KeyCode::F(12) => Some((0x58, 0x00)),
+
+        _ => None,
+    }
 }
 
-pub fn scancode_to_ascii(scancode: u8) -> u8 {
-    match scancode {
-        0x02 => b'1',
-        0x03 => b'2',
-        0x04 => b'3',
-        0x05 => b'4',
-        0x06 => b'5',
-        0x07 => b'6',
-        0x08 => b'7',
-        0x09 => b'8',
-        0x0A => b'9',
-        0x0B => b'0',
-        0x0C => b'-',
-        0x0D => b'=',
-        0x0E => 0x08, // Backspace
-        0x0F => 0x09, // Tab
-        0x10 => b'q',
-        0x11 => b'w',
-        0x12 => b'e',
-        0x13 => b'r',
-        0x14 => b't',
-        0x15 => b'y',
-        0x16 => b'u',
-        0x17 => b'i',
-        0x18 => b'o',
-        0x19 => b'p',
-        0x1A => b'[',
-        0x1B => b']',
-        0x1C => 0x0D, // Enter
-        0x1E => b'a',
-        0x1F => b's',
-        0x20 => b'd',
-        0x21 => b'f',
-        0x22 => b'g',
-        0x23 => b'h',
-        0x24 => b'j',
-        0x25 => b'k',
-        0x26 => b'l',
-        0x27 => b';',
-        0x28 => b'\'',
-        0x29 => b'`',
-        0x2B => b'\\',
-        0x2C => b'z',
-        0x2D => b'x',
-        0x2E => b'c',
-        0x2F => b'v',
-        0x30 => b'b',
-        0x31 => b'n',
-        0x32 => b'm',
-        0x33 => b',',
-        0x34 => b'.',
-        0x35 => b'/',
-        0x39 => b' ',
-        0x01 => 0x1B, // Escape
-        _ => 0,
-    }
+/// Map an ASCII/Unicode character to its PC AT scancode.
+fn char_to_scancode(ch: char) -> Option<u8> {
+    // Convert to lowercase for lookup, scancodes are the same regardless of shift
+    let scancode = match ch.to_ascii_lowercase() {
+        '1' | '!' => 0x02,
+        '2' | '@' => 0x03,
+        '3' | '#' => 0x04,
+        '4' | '$' => 0x05,
+        '5' | '%' => 0x06,
+        '6' | '^' => 0x07,
+        '7' | '&' => 0x08,
+        '8' | '*' => 0x09,
+        '9' | '(' => 0x0A,
+        '0' | ')' => 0x0B,
+        '-' | '_' => 0x0C,
+        '=' | '+' => 0x0D,
+        'q' => 0x10,
+        'w' => 0x11,
+        'e' => 0x12,
+        'r' => 0x13,
+        't' => 0x14,
+        'y' => 0x15,
+        'u' => 0x16,
+        'i' => 0x17,
+        'o' => 0x18,
+        'p' => 0x19,
+        '[' | '{' => 0x1A,
+        ']' | '}' => 0x1B,
+        'a' => 0x1E,
+        's' => 0x1F,
+        'd' => 0x20,
+        'f' => 0x21,
+        'g' => 0x22,
+        'h' => 0x23,
+        'j' => 0x24,
+        'k' => 0x25,
+        'l' => 0x26,
+        ';' | ':' => 0x27,
+        '\'' | '"' => 0x28,
+        '`' | '~' => 0x29,
+        '\\' | '|' => 0x2B,
+        'z' => 0x2C,
+        'x' => 0x2D,
+        'c' => 0x2E,
+        'v' => 0x2F,
+        'b' => 0x30,
+        'n' => 0x31,
+        'm' => 0x32,
+        ',' | '<' => 0x33,
+        '.' | '>' => 0x34,
+        '/' | '?' => 0x35,
+        ' ' => 0x39,
+        _ => return None,
+    };
+    Some(scancode)
 }

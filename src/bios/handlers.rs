@@ -1,5 +1,4 @@
 use log::debug;
-use crate::io::keyboard::scancode_to_ascii;
 use crate::vm::memory::{BDA_BASE, VGA_TEXT_BASE};
 use crate::vm::runtime::{CpuFlag, Runtime};
 
@@ -65,6 +64,18 @@ pub fn int10h(vm: &mut Runtime) {
             let right_col = vm.registers.dx.low() as usize;
             scroll_down(vm, lines, attr, top_row, left_col, bottom_row, right_col);
         }
+        // Read char+attr at cursor
+        0x08 => {
+            let page = vm.registers.bx.high();
+            let cursor_offset = BDA_BASE + 0x50 + (page as usize) * 2;
+            let col = vm.memory.read_byte(cursor_offset) as usize;
+            let row = vm.memory.read_byte(cursor_offset + 1) as usize;
+            let pos = (row * 80 + col) * 2;
+            let ch = vm.memory.read_byte(VGA_TEXT_BASE + pos);
+            let attr = vm.memory.read_byte(VGA_TEXT_BASE + pos + 1);
+            vm.registers.ax.set_low(ch);
+            vm.registers.ax.set_high(attr);
+        }
         // Write char+attr at cursor
         0x09 => {
             let ch = vm.registers.ax.low();
@@ -79,6 +90,21 @@ pub fn int10h(vm: &mut Runtime) {
                 if pos + 1 < 4000 * 2 {
                     vm.memory.write_byte(VGA_TEXT_BASE + pos, ch);
                     vm.memory.write_byte(VGA_TEXT_BASE + pos + 1, attr);
+                }
+            }
+        }
+        // Write character only (no attribute change)
+        0x0A => {
+            let ch = vm.registers.ax.low();
+            let page = vm.registers.bx.high();
+            let count = vm.registers.cx.word();
+            let cursor_offset = BDA_BASE + 0x50 + (page as usize) * 2;
+            let col = vm.memory.read_byte(cursor_offset) as usize;
+            let row = vm.memory.read_byte(cursor_offset + 1) as usize;
+            for i in 0..count as usize {
+                let pos = (row * 80 + col + i) * 2;
+                if pos < 4000 * 2 {
+                    vm.memory.write_byte(VGA_TEXT_BASE + pos, ch);
                 }
             }
         }
@@ -98,9 +124,10 @@ pub fn int10h(vm: &mut Runtime) {
     }
 }
 
-// INT 11h - Equipment list
+// INT 11h - Equipment list (read from BDA)
 pub fn int11h(vm: &mut Runtime) {
-    vm.registers.ax.set(0x0021); // 1 floppy, 80x25 color
+    let equip = vm.memory.read_word(BDA_BASE + 0x10);
+    vm.registers.ax.set(equip);
 }
 
 // INT 12h - Memory size
@@ -111,9 +138,17 @@ pub fn int12h(vm: &mut Runtime) {
 // INT 13h - Disk Services
 pub fn int13h(vm: &mut Runtime) {
     let ah = vm.registers.ax.high();
+    let dl = vm.registers.dx.low();
+
     match ah {
         // Reset disk
         0x00 => {
+            vm.registers.ax.set_high(0);
+            vm.unset_flag(CpuFlag::Carry);
+        }
+        // Get status of last operation
+        0x01 => {
+            // Return success (last operation was OK)
             vm.registers.ax.set_high(0);
             vm.unset_flag(CpuFlag::Carry);
         }
@@ -125,17 +160,15 @@ pub fn int13h(vm: &mut Runtime) {
             let cylinder = ((cl as u16 & 0xC0) << 2) | ch as u16;
             let sector = cl & 0x3F;
             let head = vm.registers.dx.high();
-            let dl = vm.registers.dx.low();
             let es = vm.registers.es.reg().word();
             let bx = vm.registers.bx.word();
 
             debug!("INT 13h READ: drive={:02X} C={} H={} S={} count={} -> {:04X}:{:04X}",
                    dl, cylinder, head, sector, count, es, bx);
 
-            if let Some(ref mut disk) = vm.disk {
+            if let Some(disk) = vm.get_disk_mut(dl) {
                 match disk.read_sectors(cylinder, head, sector, count) {
                     Ok(data) => {
-                        // Write data to ES:BX
                         let base = ((es as usize) << 4) + bx as usize;
                         for (i, &byte) in data.iter().enumerate() {
                             let addr = (base + i) & 0xFFFFF;
@@ -148,21 +181,135 @@ pub fn int13h(vm: &mut Runtime) {
                     }
                     Err(e) => {
                         debug!("INT 13h READ: FAILED: {}", e);
-                        vm.registers.ax.set_high(0x04); // Sector not found
+                        vm.registers.ax.set_high(0x04);
                         vm.set_flag(CpuFlag::Carry);
                     }
                 }
             } else {
-                debug!("INT 13h READ: No disk!");
-                vm.registers.ax.set_high(0x80); // Timeout
+                debug!("INT 13h READ: No disk for drive {:02X}!", dl);
+                vm.registers.ax.set_high(0x80);
+                vm.set_flag(CpuFlag::Carry);
+            }
+        }
+        // Write sectors
+        0x03 => {
+            let count = vm.registers.ax.low();
+            let ch = vm.registers.cx.high();
+            let cl = vm.registers.cx.low();
+            let cylinder = ((cl as u16 & 0xC0) << 2) | ch as u16;
+            let sector = cl & 0x3F;
+            let head = vm.registers.dx.high();
+            let es = vm.registers.es.reg().word();
+            let bx = vm.registers.bx.word();
+
+            debug!("INT 13h WRITE: drive={:02X} C={} H={} S={} count={} <- {:04X}:{:04X}",
+                   dl, cylinder, head, sector, count, es, bx);
+
+            // Collect guest memory into local buffer to avoid borrow conflict
+            let total_bytes = count as usize * 512;
+            let base = ((es as usize) << 4) + bx as usize;
+            let mut buf = vec![0u8; total_bytes];
+            for (i, byte) in buf.iter_mut().enumerate() {
+                *byte = vm.memory.read_byte((base + i) & 0xFFFFF);
+            }
+
+            if let Some(disk) = vm.get_disk_mut(dl) {
+                match disk.write_sectors(cylinder, head, sector, count, &buf) {
+                    Ok(()) => {
+                        vm.registers.ax.set_high(0);
+                        vm.registers.ax.set_low(count);
+                        vm.unset_flag(CpuFlag::Carry);
+                        debug!("INT 13h WRITE: OK, {} bytes", total_bytes);
+                    }
+                    Err(e) => {
+                        debug!("INT 13h WRITE: FAILED: {}", e);
+                        vm.registers.ax.set_high(0x04);
+                        vm.set_flag(CpuFlag::Carry);
+                    }
+                }
+            } else {
+                debug!("INT 13h WRITE: No disk for drive {:02X}!", dl);
+                vm.registers.ax.set_high(0x80);
+                vm.set_flag(CpuFlag::Carry);
+            }
+        }
+        // Verify sectors
+        0x04 => {
+            let count = vm.registers.ax.low();
+            let ch = vm.registers.cx.high();
+            let cl = vm.registers.cx.low();
+            let cylinder = ((cl as u16 & 0xC0) << 2) | ch as u16;
+            let sector = cl & 0x3F;
+            let head = vm.registers.dx.high();
+
+            if let Some(disk) = vm.get_disk(dl) {
+                if disk.verify_sectors(cylinder, head, sector, count) {
+                    vm.registers.ax.set_high(0);
+                    vm.registers.ax.set_low(count);
+                    vm.unset_flag(CpuFlag::Carry);
+                } else {
+                    vm.registers.ax.set_high(0x04);
+                    vm.set_flag(CpuFlag::Carry);
+                }
+            } else {
+                vm.registers.ax.set_high(0x80);
+                vm.set_flag(CpuFlag::Carry);
+            }
+        }
+        // Format track
+        0x05 => {
+            let ch = vm.registers.cx.high();
+            let cl = vm.registers.cx.low();
+            let cylinder = ((cl as u16 & 0xC0) << 2) | ch as u16;
+            let head = vm.registers.dx.high();
+
+            debug!("INT 13h FORMAT: drive={:02X} C={} H={}", dl, cylinder, head);
+
+            if let Some(disk) = vm.get_disk_mut(dl) {
+                match disk.format_track(cylinder, head) {
+                    Ok(()) => {
+                        vm.registers.ax.set_high(0);
+                        vm.unset_flag(CpuFlag::Carry);
+                    }
+                    Err(e) => {
+                        debug!("INT 13h FORMAT: FAILED: {}", e);
+                        vm.registers.ax.set_high(0x04);
+                        vm.set_flag(CpuFlag::Carry);
+                    }
+                }
+            } else {
+                vm.registers.ax.set_high(0x80);
                 vm.set_flag(CpuFlag::Carry);
             }
         }
         // Get drive parameters
         0x08 => {
-            let dl = vm.registers.dx.low();
-            if dl == 0x00 {
-                if let Some(ref disk) = vm.disk {
+            if dl >= 0x80 {
+                // Hard disk
+                let hd_idx = (dl - 0x80) as usize;
+                if let Some(disk) = vm.hard_disks.get(hd_idx).and_then(|d| d.as_ref()) {
+                    let max_cyl = disk.cylinders - 1;
+                    let max_head = disk.heads - 1;
+                    let spt = disk.sectors_per_track;
+
+                    vm.registers.ax.set_high(0);
+                    vm.registers.bx.set_low(0); // Not used for HD
+                    vm.registers.cx.set_high(max_cyl as u8); // low 8 bits of cylinder
+                    vm.registers.cx.set_low((((max_cyl >> 8) as u8 & 0x03) << 6) | spt); // high 2 bits of cyl in bits 6-7
+                    vm.registers.dx.set_high(max_head);
+                    let hd_count = vm.hard_disks.iter().filter(|d| d.is_some()).count() as u8;
+                    vm.registers.dx.set_low(hd_count);
+
+                    debug!("INT 13h GET PARAMS HD{}: C={} H={} S={} count={}",
+                           hd_idx, disk.cylinders, disk.heads, spt, hd_count);
+                    vm.unset_flag(CpuFlag::Carry);
+                } else {
+                    vm.registers.ax.set_high(0x07);
+                    vm.set_flag(CpuFlag::Carry);
+                }
+            } else {
+                // Floppy
+                if let Some(disk) = vm.disks.get(dl as usize).and_then(|d| d.as_ref()) {
                     let max_cyl = disk.cylinders - 1;
                     let max_head = disk.heads - 1;
                     let spt = disk.sectors_per_track;
@@ -172,9 +319,9 @@ pub fn int13h(vm: &mut Runtime) {
                     vm.registers.cx.set_high(max_cyl as u8);
                     vm.registers.cx.set_low(((max_cyl as u16 >> 2) as u8 & 0xC0) | spt);
                     vm.registers.dx.set_high(max_head);
-                    vm.registers.dx.set_low(1); // Number of drives
+                    let drive_count = vm.disks.iter().filter(|d| d.is_some()).count() as u8;
+                    vm.registers.dx.set_low(drive_count);
 
-                    // Set ES:DI to point to diskette parameter table (INT 1Eh vector)
                     let dpt_ip = vm.memory.read_word(0x1E * 4);
                     let dpt_cs = vm.memory.read_word(0x1E * 4 + 2);
                     vm.registers.es.reg_mut().set(dpt_cs);
@@ -185,26 +332,90 @@ pub fn int13h(vm: &mut Runtime) {
                     vm.registers.ax.set_high(0x07);
                     vm.set_flag(CpuFlag::Carry);
                 }
+            }
+        }
+        // Get disk type
+        0x15 => {
+            if dl >= 0x80 {
+                // Hard disk
+                let hd_idx = (dl - 0x80) as usize;
+                if let Some(disk) = vm.hard_disks.get(hd_idx).and_then(|d| d.as_ref()) {
+                    let total_sectors = disk.cylinders as u32
+                        * disk.heads as u32
+                        * disk.sectors_per_track as u32;
+                    vm.registers.ax.set_high(0x03); // Fixed disk
+                    vm.registers.cx.set((total_sectors >> 16) as u16);
+                    vm.registers.dx.set(total_sectors as u16);
+                    vm.unset_flag(CpuFlag::Carry);
+                } else {
+                    vm.registers.ax.set_high(0x00); // No such drive
+                    vm.set_flag(CpuFlag::Carry);
+                }
+            } else {
+                // Floppy
+                if vm.disks.get(dl as usize).and_then(|d| d.as_ref()).is_some() {
+                    vm.registers.ax.set_high(0x02); // Floppy with change-line
+                    vm.unset_flag(CpuFlag::Carry);
+                } else {
+                    vm.registers.ax.set_high(0x00); // No such drive
+                    vm.set_flag(CpuFlag::Carry);
+                }
+            }
+        }
+        // Initialize HD controller parameters
+        0x09 => {
+            if dl >= 0x80 {
+                vm.registers.ax.set_high(0);
+                vm.unset_flag(CpuFlag::Carry);
             } else {
                 vm.registers.ax.set_high(0x01);
                 vm.set_flag(CpuFlag::Carry);
             }
         }
-        // Get disk type
-        0x15 => {
-            let dl = vm.registers.dx.low();
-            if dl < 0x80 {
-                // Floppy: return type 02 (floppy with change-line support)
-                vm.registers.ax.set_high(0x02);
+        // Seek to cylinder (no-op - our virtual disk doesn't need seeking)
+        0x0C => {
+            if vm.get_disk(dl).is_some() {
+                vm.registers.ax.set_high(0);
                 vm.unset_flag(CpuFlag::Carry);
             } else {
-                // No hard drives
-                vm.registers.ax.set_high(0x00); // No drive
+                vm.registers.ax.set_high(0x80);
                 vm.set_flag(CpuFlag::Carry);
             }
         }
+        // Alternate disk reset
+        0x0D => {
+            vm.registers.ax.set_high(0);
+            vm.unset_flag(CpuFlag::Carry);
+        }
+        // Test drive ready
+        0x10 => {
+            if vm.get_disk(dl).is_some() {
+                vm.registers.ax.set_high(0);
+                vm.unset_flag(CpuFlag::Carry);
+            } else {
+                vm.registers.ax.set_high(0x80); // Not ready
+                vm.set_flag(CpuFlag::Carry);
+            }
+        }
+        // Recalibrate
+        0x11 => {
+            if vm.get_disk(dl).is_some() {
+                vm.registers.ax.set_high(0);
+                vm.unset_flag(CpuFlag::Carry);
+            } else {
+                vm.registers.ax.set_high(0x80);
+                vm.set_flag(CpuFlag::Carry);
+            }
+        }
+        // Check for INT 13h extensions (IBM/MS INT 13h Extensions)
+        0x41 => {
+            // Not supported - return error so caller falls back to CHS
+            vm.registers.ax.set_high(0x01);
+            vm.set_flag(CpuFlag::Carry);
+        }
         _ => {
-            vm.registers.ax.set_high(0x01); // Invalid function
+            debug!("INT 13h: unsupported function AH={:02X} DL={:02X}", ah, dl);
+            vm.registers.ax.set_high(0x01);
             vm.set_flag(CpuFlag::Carry);
         }
     }
@@ -242,16 +453,15 @@ pub fn int16h(vm: &mut Runtime) {
             if let Some(ref kb_buf) = vm.keyboard_buffer {
                 let mut buf = kb_buf.lock().unwrap();
                 // Scan through buffer looking for a make code
-                while let Some(&code) = buf.front() {
-                    if code & 0x80 != 0 {
+                while let Some(&(scancode, _)) = buf.front() {
+                    if scancode & 0x80 != 0 {
                         // Break code - consume and skip
                         buf.pop_front();
                         continue;
                     }
-                    // Found a make code - consume it
-                    buf.pop_front();
-                    let ascii = scancode_to_ascii(code);
-                    vm.registers.ax.set_high(code);
+                    // Found a make code - consume it and use stored ASCII
+                    let (scancode, ascii) = buf.pop_front().unwrap();
+                    vm.registers.ax.set_high(scancode);
                     vm.registers.ax.set_low(ascii);
                     return;
                 }
@@ -266,12 +476,11 @@ pub fn int16h(vm: &mut Runtime) {
             let found = if let Some(ref kb_buf) = vm.keyboard_buffer {
                 let buf = kb_buf.lock().unwrap();
                 // Find first make code in buffer (peek without consuming)
-                buf.iter().find(|&&code| code & 0x80 == 0).copied()
+                buf.iter().find(|&&(sc, _)| sc & 0x80 == 0).copied()
             } else {
                 None
             };
-            if let Some(scancode) = found {
-                let ascii = scancode_to_ascii(scancode);
+            if let Some((scancode, ascii)) = found {
                 vm.registers.ax.set_high(scancode);
                 vm.registers.ax.set_low(ascii);
                 vm.unset_flag(CpuFlag::Zero); // ZF=0 means key available
@@ -289,32 +498,43 @@ pub fn int16h(vm: &mut Runtime) {
 
 // INT 19h - Bootstrap loader
 pub fn int19h(vm: &mut Runtime) {
-    if let Some(ref mut disk) = vm.disk {
-        match disk.read_sectors(0, 0, 1, 1) {
-            Ok(data) => {
-                use crate::vm::memory::BOOT_ADDR;
-                for (i, &byte) in data.iter().enumerate() {
-                    vm.memory.write_byte(BOOT_ADDR + i, byte);
+    // Try floppy A: first, then hard disk 0
+    let boot_sources: [(u8, &str); 2] = [
+        (0x00, "floppy A:"),
+        (0x80, "hard disk 0"),
+    ];
+
+    for &(drive, name) in &boot_sources {
+        let disk = if drive >= 0x80 {
+            vm.hard_disks.get_mut((drive - 0x80) as usize).and_then(|d| d.as_mut())
+        } else {
+            vm.disks.get_mut(drive as usize).and_then(|d| d.as_mut())
+        };
+
+        if let Some(disk) = disk {
+            match disk.read_sectors(0, 0, 1, 1) {
+                Ok(data) => {
+                    if data.len() >= 512 && data[510] == 0x55 && data[511] == 0xAA {
+                        use crate::vm::memory::BOOT_ADDR;
+                        for (i, &byte) in data.iter().enumerate() {
+                            vm.memory.write_byte(BOOT_ADDR + i, byte);
+                        }
+                        debug!("BIOS: Booting from {} (DL={:02X})", name, drive);
+                        vm.registers.dx.set_low(drive);
+                        vm.registers.cs.reg_mut().set(0x0000);
+                        vm.registers.pc.set(0x7C00);
+                        return;
+                    }
                 }
-                // Check boot signature
-                if data.len() >= 512 && data[510] == 0x55 && data[511] == 0xAA {
-                    vm.registers.dx.set_low(0x00); // DL = boot drive (floppy)
-                    vm.registers.cs.reg_mut().set(0x0000);
-                    vm.registers.pc.set(0x7C00);
-                } else {
-                    eprintln!("BIOS: No bootable disk (missing 0x55AA signature)");
-                    vm.exit(1);
+                Err(e) => {
+                    debug!("BIOS: Failed to read boot sector from {}: {}", name, e);
                 }
-            }
-            Err(e) => {
-                eprintln!("BIOS: Failed to read boot sector: {}", e);
-                vm.exit(1);
             }
         }
-    } else {
-        eprintln!("BIOS: No disk image loaded");
-        vm.exit(1);
     }
+
+    eprintln!("BIOS: No bootable disk found");
+    vm.exit(1);
 }
 
 // INT 1Ah - Time Services

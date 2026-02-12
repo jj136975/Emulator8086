@@ -6,11 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = "4.5.11"
-clap_derive = "4.5.11"
+clap = "4.5.58"
+clap_derive = "4.5.55"
 byteorder = "1.5.0"
-log = "0.4.22"
-env_logger = "0.11.5"
-enum_primitive = "0.1.1"
+log = "0.4.29"
+env_logger = "0.11.9"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
+crossterm = "0.29.0"

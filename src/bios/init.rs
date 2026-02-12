@@ -32,7 +32,21 @@ pub fn init_bios(vm: &mut Runtime) {
     vm.memory.write_word(BDA_BASE + 0x4A, 80);        // Columns per row
     vm.memory.write_word(BDA_BASE + 0x4C, 4000);      // Video buffer size
     vm.memory.write_word(BDA_BASE + 0x13, 640);       // Memory size in KB
-    vm.memory.write_word(BDA_BASE + 0x10, 0x0021);    // Equipment word (1 floppy, 80x25 color)
+
+    // Equipment word: bit 0 = has floppies, bits 6-7 = (floppy_count - 1)
+    // bits 4-5 = initial video mode (01 = 80x25 color)
+    let floppy_count = vm.disks.iter().filter(|d| d.is_some()).count() as u16;
+    let equip = if floppy_count > 0 {
+        0x0001 | ((floppy_count - 1) << 6) | 0x0020 // has floppies + count + 80x25 color
+    } else {
+        0x0020 // just 80x25 color, no floppies
+    };
+    vm.memory.write_word(BDA_BASE + 0x10, equip);
+
+    // Hard disk count at BDA 0x75
+    let hd_count = vm.hard_disks.iter().filter(|d| d.is_some()).count() as u8;
+    vm.memory.write_byte(BDA_BASE + 0x75, hd_count);
+
     vm.memory.write_byte(BDA_BASE + 0x50, 0);         // Cursor col page 0
     vm.memory.write_byte(BDA_BASE + 0x51, 0);         // Cursor row page 0
 
@@ -60,6 +74,52 @@ pub fn init_bios(vm: &mut Runtime) {
     let ivt_1e = 0x1E * 4;
     vm.memory.write_word(ivt_1e, (dpt_addr & 0xFFFF) as u16);
     vm.memory.write_word(ivt_1e + 2, (BIOS_ROM >> 4) as u16);
+
+    // Set up Fixed Disk Parameter Table (FDPT) for hard disk 0 at INT 41h
+    if let Some(Some(hd)) = vm.hard_disks.get(0) {
+        let fdpt_addr = BIOS_ROM + 0x300;
+        // 16-byte FDPT
+        vm.memory.write_word(fdpt_addr, hd.cylinders);           // 00h: cylinders
+        vm.memory.write_byte(fdpt_addr + 2, hd.heads);           // 02h: heads
+        vm.memory.write_word(fdpt_addr + 3, 0);                  // 03h: reduced write current (unused)
+        vm.memory.write_word(fdpt_addr + 5, hd.cylinders + 1);   // 05h: write precomp cylinder
+        vm.memory.write_byte(fdpt_addr + 7, 0);                  // 07h: max ECC burst
+        let control = if hd.heads > 8 { 0x08 } else { 0x00 };    // 08h: control byte
+        vm.memory.write_byte(fdpt_addr + 8, control);
+        vm.memory.write_byte(fdpt_addr + 9, 0);                  // 09h: standard timeout
+        vm.memory.write_byte(fdpt_addr + 10, 0);                 // 0Ah: formatting timeout
+        vm.memory.write_byte(fdpt_addr + 11, 0);                 // 0Bh: check timeout
+        vm.memory.write_word(fdpt_addr + 12, hd.cylinders + 1);  // 0Ch: landing zone
+        vm.memory.write_byte(fdpt_addr + 14, hd.sectors_per_track); // 0Eh: sectors per track
+        vm.memory.write_byte(fdpt_addr + 15, 0);                 // 0Fh: reserved
+
+        // Point INT 41h vector to FDPT
+        let ivt_41 = 0x41 * 4;
+        vm.memory.write_word(ivt_41, (fdpt_addr & 0xFFFF) as u16);
+        vm.memory.write_word(ivt_41 + 2, (BIOS_ROM >> 4) as u16);
+    }
+
+    // Set up FDPT for hard disk 1 at INT 46h
+    if let Some(Some(hd)) = vm.hard_disks.get(1) {
+        let fdpt_addr = BIOS_ROM + 0x310;
+        vm.memory.write_word(fdpt_addr, hd.cylinders);
+        vm.memory.write_byte(fdpt_addr + 2, hd.heads);
+        vm.memory.write_word(fdpt_addr + 3, 0);
+        vm.memory.write_word(fdpt_addr + 5, hd.cylinders + 1);
+        vm.memory.write_byte(fdpt_addr + 7, 0);
+        let control = if hd.heads > 8 { 0x08 } else { 0x00 };
+        vm.memory.write_byte(fdpt_addr + 8, control);
+        vm.memory.write_byte(fdpt_addr + 9, 0);
+        vm.memory.write_byte(fdpt_addr + 10, 0);
+        vm.memory.write_byte(fdpt_addr + 11, 0);
+        vm.memory.write_word(fdpt_addr + 12, hd.cylinders + 1);
+        vm.memory.write_byte(fdpt_addr + 14, hd.sectors_per_track);
+        vm.memory.write_byte(fdpt_addr + 15, 0);
+
+        let ivt_46 = 0x46 * 4;
+        vm.memory.write_word(ivt_46, (fdpt_addr & 0xFFFF) as u16);
+        vm.memory.write_word(ivt_46 + 2, (BIOS_ROM >> 4) as u16);
+    }
 
     // BIOS ROM identification at FFFF:000E (physical 0xFFFFE)
     // IBM PC AT compatible model byte

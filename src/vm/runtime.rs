@@ -2,12 +2,13 @@ use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Add, DerefMut};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::a_out::executable::Executable;
 use crate::io::bus::IoBus;
-use crate::io::disk::DiskImage;
+use crate::io::disk::{DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
 use crate::io::pic::Pic;
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
@@ -73,15 +74,17 @@ pub struct Runtime {
     pub mode: ExecutionMode,
     pub io_bus: Option<IoBus>,
     pub bios_handlers: [Option<fn(&mut Runtime)>; 256],
-    pub disk: Option<DiskImage>,
+    pub disks: Vec<Option<DiskImage>>,
+    pub hard_disks: Vec<Option<DiskImage>>,
     pub pic: Option<Arc<Mutex<Pic>>>,
-    pub keyboard_buffer: Option<Arc<Mutex<VecDeque<u8>>>>,
+    pub keyboard_buffer: Option<Arc<Mutex<crate::io::keyboard::KeyBuffer>>>,
     pub keyboard_irq: Option<Arc<Mutex<bool>>>,
     pub instruction_count: u64,
     pub trace: bool,
     last_tick: Option<Instant>,
     last_refresh: Option<Instant>,
     vga_shadow: Vec<u8>,
+    monitor_flag: Option<Arc<AtomicBool>>,
 }
 
 impl Runtime {
@@ -102,7 +105,8 @@ impl Runtime {
             mode: ExecutionMode::MinixAout,
             io_bus: None,
             bios_handlers: [None; 256],
-            disk: None,
+            disks: vec![None, None],
+            hard_disks: Vec::new(),
             pic: None,
             keyboard_buffer: None,
             keyboard_irq: None,
@@ -111,17 +115,48 @@ impl Runtime {
             last_tick: None,
             last_refresh: None,
             vga_shadow: Vec::new(),
+            monitor_flag: None,
         };
         vm.set_flag(Interrupt);
         vm.init_args(args);
         vm
     }
 
-    pub fn new_bios(disk_path: &Path) -> Self {
+    pub fn new_bios(disk_specs: &[DiskSpec], hd_specs: &[String]) -> Self {
         let mut memory = Box::new(Memory::new());
         let registers = Registers::new_bios(memory.deref_mut());
 
-        let disk = DiskImage::open(disk_path).expect("Failed to open disk image");
+        // Build disks vec — size to fit the highest requested drive index
+        let max_drive = disk_specs.iter().map(|s| s.drive).max().unwrap_or(0) as usize;
+        let mut disks: Vec<Option<DiskImage>> = (0..=max_drive).map(|_| None).collect();
+        for spec in disk_specs {
+            let image = match &spec.source {
+                DiskSource::FilePath(path) => {
+                    if spec.drive == 0 {
+                        // Boot drive: must exist
+                        DiskImage::open(path).expect("Failed to open disk image")
+                    } else {
+                        // Non-boot drive: create if doesn't exist
+                        DiskImage::open_or_create(path).expect("Failed to open/create disk image")
+                    }
+                }
+                DiskSource::Memory => DiskImage::new_in_memory(),
+            };
+            disks[spec.drive as usize] = Some(image);
+        }
+
+        // Build hard disks vec
+        let mut hard_disks: Vec<Option<DiskImage>> = Vec::new();
+        for spec in hd_specs {
+            let image = if spec.eq_ignore_ascii_case("memory") {
+                DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB)
+            } else {
+                let path = std::path::PathBuf::from(spec);
+                DiskImage::open_or_create_hard_disk(&path, HD_DEFAULT_SIZE_MB)
+                    .expect("Failed to open/create hard disk image")
+            };
+            hard_disks.push(Some(image));
+        }
 
         // Create shared PIC
         let pic = Arc::new(Mutex::new(Pic::new()));
@@ -130,6 +165,7 @@ impl Runtime {
         let keyboard = crate::io::keyboard::Keyboard::new();
         let kb_buffer = keyboard.shared_buffer();
         let kb_irq = keyboard.shared_irq();
+        let monitor_flag = keyboard.shared_monitor_flag();
         keyboard.start_input_thread();
 
         // Create I/O bus and register devices
@@ -151,7 +187,8 @@ impl Runtime {
             mode: ExecutionMode::BiosBoot,
             io_bus: Some(io_bus),
             bios_handlers: [None; 256],
-            disk: Some(disk),
+            disks,
+            hard_disks,
             pic: Some(pic),
             keyboard_buffer: Some(kb_buffer),
             keyboard_irq: Some(kb_irq),
@@ -160,6 +197,7 @@ impl Runtime {
             last_tick: Some(Instant::now()),
             last_refresh: Some(Instant::now()),
             vga_shadow: vec![0u8; 4000],
+            monitor_flag: Some(monitor_flag),
         };
 
         vm.set_flag(Interrupt);
@@ -287,8 +325,9 @@ impl Runtime {
     }
 
     pub fn run(&mut self) {
-        // In BIOS mode: clear terminal for VGA rendering
+        // In BIOS mode: enable raw terminal and clear screen for VGA rendering
         if self.mode == ExecutionMode::BiosBoot {
+            let _ = crossterm::terminal::enable_raw_mode();
             use std::io::Write;
             let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
             let _ = std::io::stdout().flush();
@@ -307,15 +346,19 @@ impl Runtime {
             process(self);
             self.instruction_count += 1;
 
-            // In BIOS mode: periodic timer tick and VGA refresh
+            // In BIOS mode: periodic timer tick, VGA refresh, and monitor check
             if self.mode == ExecutionMode::BiosBoot && self.instruction_count % 1000 == 0 {
                 self.check_timer_tick();
                 self.check_vga_refresh();
+                if self.monitor_flag.as_ref().map_or(false, |f| f.load(Ordering::SeqCst)) {
+                    self.enter_monitor();
+                }
             }
         }
 
-        // In BIOS mode: reset terminal on exit
+        // In BIOS mode: restore terminal on exit
         if self.mode == ExecutionMode::BiosBoot {
+            let _ = crossterm::terminal::disable_raw_mode();
             use std::io::Write;
             let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
             let _ = std::io::stdout().flush();
@@ -411,8 +454,8 @@ impl Runtime {
             // Set color if attribute changed
             if attr as u16 != last_attr {
                 let fg = attr & 0x0F;
-                let bg = (attr >> 4) & 0x07;
-                let _ = write!(out, "\x1B[{};{}m",
+                let bg = (attr >> 4) & 0x0F; // 4 bits: treat bit 7 as intensity, not blink
+                let _ = write!(out, "\x1B[0;{};{}m",
                     VGA_TO_ANSI_FG[fg as usize],
                     VGA_TO_ANSI_BG[bg as usize]);
                 last_attr = attr as u16;
@@ -435,6 +478,213 @@ impl Runtime {
             let mut lock = stdout.lock();
             let _ = std::io::Write::write_all(&mut lock, out.as_bytes());
             let _ = std::io::Write::flush(&mut lock);
+        }
+    }
+
+    fn enter_monitor(&mut self) {
+        use std::io::Write;
+
+        // Disable raw mode for normal terminal I/O
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = write!(std::io::stdout(), "\x1B[0m\x1B[2J\x1B[H");
+        let _ = std::io::stdout().flush();
+
+        println!("=== Emulator Monitor (F12) ===");
+        println!();
+        println!("Floppy Drives:");
+        for (i, disk) in self.disks.iter().enumerate() {
+            let letter = (b'A' + i as u8) as char;
+            match disk {
+                Some(d) => {
+                    let size_kb = d.total_bytes() / 1024;
+                    println!("  {}: [loaded] ({}KB)", letter, size_kb);
+                }
+                None => println!("  {}: [empty]", letter),
+            }
+        }
+        if !self.hard_disks.is_empty() {
+            println!("Hard Disks:");
+            for (i, disk) in self.hard_disks.iter().enumerate() {
+                match disk {
+                    Some(d) => {
+                        let size_mb = d.total_bytes() / (1024 * 1024);
+                        println!("  HD{}: [loaded] ({}MB, C/H/S={}/{}/{})",
+                                 i, size_mb, d.cylinders, d.heads, d.sectors_per_track);
+                    }
+                    None => println!("  HD{}: [empty]", i),
+                }
+            }
+        } else {
+            println!("Hard Disks: (none)");
+        }
+        println!();
+        println!("Commands:");
+        println!("  swap <drive> <path>   Swap floppy image (e.g. swap a disk2.img)");
+        println!("  swap <drive> memory   Insert blank in-memory floppy");
+        println!("  swap hd<n> <path>     Swap hard disk image (e.g. swap hd0 disk.img)");
+        println!("  swap hd<n> memory     Insert blank in-memory hard disk");
+        println!("  move <from> <to>      Move disk between drives (e.g. move b a)");
+        println!("  save <drive> <path>   Save disk contents to file (drive or hd<n>)");
+        println!("  eject <drive>         Eject disk from drive (drive or hd<n>)");
+        println!("  resume                Resume emulation (or just press Enter)");
+        println!();
+
+        let stdin = std::io::stdin();
+        loop {
+            print!("> ");
+            let _ = std::io::stdout().flush();
+            let mut input = String::new();
+            if stdin.read_line(&mut input).is_err() {
+                break;
+            }
+            let input = input.trim();
+
+            if input.is_empty() || input.eq_ignore_ascii_case("resume") {
+                break;
+            }
+
+            let parts: Vec<&str> = input.splitn(3, ' ').collect();
+            match parts[0].to_lowercase().as_str() {
+                "swap" => {
+                    if parts.len() < 3 {
+                        println!("Usage: swap <drive> <path|memory>");
+                        continue;
+                    }
+                    if let Some(hd_idx) = parse_hd(parts[1]) {
+                        // Hard disk swap
+                        while self.hard_disks.len() <= hd_idx {
+                            self.hard_disks.push(None);
+                        }
+                        if parts[2].eq_ignore_ascii_case("memory") {
+                            self.hard_disks[hd_idx] = Some(DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB));
+                            println!("HD{}: blank in-memory hard disk inserted ({}MB)", hd_idx, HD_DEFAULT_SIZE_MB);
+                        } else {
+                            match DiskImage::open_or_create_hard_disk(Path::new(parts[2]), HD_DEFAULT_SIZE_MB) {
+                                Ok(disk) => {
+                                    self.hard_disks[hd_idx] = Some(disk);
+                                    println!("HD{}: {}", hd_idx, parts[2]);
+                                }
+                                Err(e) => println!("Error: {}", e),
+                            }
+                        }
+                    } else if let Some(drive_idx) = parse_drive(parts[1]) {
+                        // Floppy swap
+                        while self.disks.len() <= drive_idx {
+                            self.disks.push(None);
+                        }
+                        if parts[2].eq_ignore_ascii_case("memory") {
+                            self.disks[drive_idx] = Some(DiskImage::new_in_memory());
+                            println!("Drive {}: blank in-memory floppy inserted",
+                                     parts[1].to_uppercase());
+                        } else {
+                            match DiskImage::open_or_create(Path::new(parts[2])) {
+                                Ok(disk) => {
+                                    self.disks[drive_idx] = Some(disk);
+                                    println!("Drive {}: {}", parts[1].to_uppercase(), parts[2]);
+                                }
+                                Err(e) => println!("Error: {}", e),
+                            }
+                        }
+                    }
+                }
+                "move" => {
+                    if parts.len() < 3 {
+                        println!("Usage: move <from> <to>");
+                        continue;
+                    }
+                    let from = match parse_drive(parts[1]) {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let to = match parse_drive(parts[2]) {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let max = from.max(to);
+                    while self.disks.len() <= max {
+                        self.disks.push(None);
+                    }
+                    let disk = self.disks[from].take();
+                    if disk.is_some() {
+                        self.disks[to] = disk;
+                        println!("Moved drive {} -> {}",
+                                 parts[1].to_uppercase(), parts[2].to_uppercase());
+                    } else {
+                        println!("Drive {} is empty", parts[1].to_uppercase());
+                    }
+                }
+                "save" => {
+                    if parts.len() < 3 {
+                        println!("Usage: save <drive> <path>");
+                        continue;
+                    }
+                    if let Some(hd_idx) = parse_hd(parts[1]) {
+                        if let Some(ref mut disk) = self.hard_disks.get_mut(hd_idx).and_then(|d| d.as_mut()) {
+                            match disk.save_to_file(Path::new(parts[2])) {
+                                Ok(()) => println!("HD{} saved to {}", hd_idx, parts[2]),
+                                Err(e) => println!("Error: {}", e),
+                            }
+                        } else {
+                            println!("HD{} is empty", hd_idx);
+                        }
+                    } else if let Some(drive_idx) = parse_drive(parts[1]) {
+                        if let Some(ref mut disk) = self.disks.get_mut(drive_idx).and_then(|d| d.as_mut()) {
+                            match disk.save_to_file(Path::new(parts[2])) {
+                                Ok(()) => println!("Drive {} saved to {}", parts[1].to_uppercase(), parts[2]),
+                                Err(e) => println!("Error: {}", e),
+                            }
+                        } else {
+                            println!("Drive {} is empty", parts[1].to_uppercase());
+                        }
+                    }
+                }
+                "eject" => {
+                    if parts.len() < 2 {
+                        println!("Usage: eject <drive>");
+                        continue;
+                    }
+                    if let Some(hd_idx) = parse_hd(parts[1]) {
+                        if hd_idx < self.hard_disks.len() {
+                            self.hard_disks[hd_idx] = None;
+                            println!("HD{}: ejected", hd_idx);
+                        }
+                    } else if let Some(drive_idx) = parse_drive(parts[1]) {
+                        if drive_idx < self.disks.len() {
+                            self.disks[drive_idx] = None;
+                            println!("Drive {}: ejected", parts[1].to_uppercase());
+                        }
+                    }
+                }
+                _ => println!("Unknown command. Type 'resume' or press Enter to continue."),
+            }
+        }
+
+        // Re-enable raw mode and force full VGA redraw
+        let _ = crossterm::terminal::enable_raw_mode();
+        self.vga_shadow.fill(0);
+        let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
+        let _ = std::io::stdout().flush();
+
+        // Clear monitor flag to unblock input thread
+        if let Some(ref flag) = self.monitor_flag {
+            flag.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Look up a disk by BIOS drive number (DL < 0x80 = floppy, DL >= 0x80 = hard disk).
+    pub fn get_disk(&self, dl: u8) -> Option<&DiskImage> {
+        if dl >= 0x80 {
+            self.hard_disks.get((dl - 0x80) as usize).and_then(|d| d.as_ref())
+        } else {
+            self.disks.get(dl as usize).and_then(|d| d.as_ref())
+        }
+    }
+
+    pub fn get_disk_mut(&mut self, dl: u8) -> Option<&mut DiskImage> {
+        if dl >= 0x80 {
+            self.hard_disks.get_mut((dl - 0x80) as usize).and_then(|d| d.as_mut())
+        } else {
+            self.disks.get_mut(dl as usize).and_then(|d| d.as_mut())
         }
     }
 
@@ -470,9 +720,37 @@ impl Runtime {
     }
 }
 
+fn parse_drive(s: &str) -> Option<usize> {
+    match s.to_lowercase().as_str() {
+        "a" => Some(0),
+        "b" => Some(1),
+        "c" => Some(2),
+        "d" => Some(3),
+        _ => {
+            if parse_hd(s).is_none() {
+                println!("Invalid drive '{}' (use a-d or hd0, hd1, ...)", s);
+            }
+            None
+        }
+    }
+}
+
+/// Parse "hd0", "hd1", etc. Returns the HD index.
+fn parse_hd(s: &str) -> Option<usize> {
+    let lower = s.to_lowercase();
+    if lower.starts_with("hd") {
+        lower[2..].parse::<usize>().ok()
+    } else {
+        None
+    }
+}
+
 // VGA attribute to ANSI color mapping (VGA color order differs from ANSI)
 const VGA_TO_ANSI_FG: [u8; 16] = [30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97];
-const VGA_TO_ANSI_BG: [u8; 8] = [40, 44, 42, 46, 41, 45, 43, 47];
+const VGA_TO_ANSI_BG: [u8; 16] = [
+    40, 44, 42, 46, 41, 45, 43, 47,       // dark backgrounds (VGA 0-7)
+    100, 104, 102, 106, 101, 105, 103, 107 // bright backgrounds (VGA 8-F)
+];
 
 // CP437 to Unicode mapping for proper box-drawing and extended characters
 const CP437: [char; 256] = [
