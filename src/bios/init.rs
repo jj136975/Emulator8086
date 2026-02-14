@@ -13,6 +13,11 @@ pub fn init_bios(vm: &mut Runtime) {
     vm.bios_handlers[0x19] = Some(int19h);
     vm.bios_handlers[0x1A] = Some(int1ah);
 
+    // INT F0h is the trap vector used by the ROM INT 09h stub.
+    // When the x86 stub executes "INT F0h", dispatch_int finds this
+    // handler and calls it directly — no IVT push/pop cycle needed.
+    vm.bios_handlers[0xF0] = Some(int09h_bios);
+
     // Write 256 IRET stubs in ROM area — one per interrupt vector.
     // This ensures ANY unhandled INT (e.g. INT 2Fh, INT 33h) safely
     // executes IRET instead of jumping to 0000:0000 and crashing.
@@ -25,6 +30,53 @@ pub fn init_bios(vm: &mut Runtime) {
         let ivt_offset = (i * 4) as usize;
         vm.memory.write_word(ivt_offset, (stub_addr & 0xFFFF) as u16);
         vm.memory.write_word(ivt_offset + 2, stub_seg);
+    }
+
+    // Write INT 09h handler stub in ROM:  INT F0h ; IRET
+    // This is the BIOS keyboard handler that programs can chain to.
+    // The INT F0h instruction traps into our Rust int09h_bios() handler,
+    // then IRET returns from the interrupt.
+    let int09_stub = BIOS_ROM + 0x400;
+    let stub_seg = (BIOS_ROM >> 4) as u16;
+    vm.memory.write_byte(int09_stub, 0xCD);       // INT
+    vm.memory.write_byte(int09_stub + 1, 0xF0);   //   F0h
+    vm.memory.write_byte(int09_stub + 2, 0xCF);   // IRET
+
+    // Point IVT[9] to the INT 09h stub (overrides the IRET-only stub)
+    vm.memory.write_word(9 * 4, (int09_stub & 0xFFFF) as u16);
+    vm.memory.write_word(9 * 4 + 2, stub_seg);
+
+    // Write a generic "EOI + IRET" stub for hardware interrupts (IRQ 0-7).
+    // Without EOI, the PIC's ISR bit stays set and blocks lower-priority IRQs.
+    //   PUSH AX      ; 50
+    //   MOV AL, 20h  ; B0 20
+    //   OUT 20h, AL  ; E6 20
+    //   POP AX       ; 58
+    //   IRET         ; CF
+    let eoi_stub = BIOS_ROM + 0x410;
+    vm.memory.write_byte(eoi_stub, 0x50);         // PUSH AX
+    vm.memory.write_byte(eoi_stub + 1, 0xB0);     // MOV AL, imm8
+    vm.memory.write_byte(eoi_stub + 2, 0x20);     //   0x20
+    vm.memory.write_byte(eoi_stub + 3, 0xE6);     // OUT imm8, AL
+    vm.memory.write_byte(eoi_stub + 4, 0x20);     //   0x20
+    vm.memory.write_byte(eoi_stub + 5, 0x58);     // POP AX
+    vm.memory.write_byte(eoi_stub + 6, 0xCF);     // IRET
+
+    // Point hardware interrupt vectors (INT 08h-0Fh) to the EOI+IRET stub,
+    // EXCEPT INT 09h which keeps its keyboard-specific handler.
+    for vec in 0x08u16..=0x0F {
+        if vec == 0x09 { continue; } // keyboard uses its own stub
+        vm.memory.write_word((vec * 4) as usize, (eoi_stub & 0xFFFF) as u16);
+        vm.memory.write_word((vec * 4 + 2) as usize, stub_seg);
+    }
+
+    // Program the PIC (like real BIOS POST) — unmask all IRQs
+    if let Some(ref mut io_bus) = vm.io_bus {
+        io_bus.port_out_byte(0x20, 0x11);  // ICW1: edge-triggered, cascade, ICW4 needed
+        io_bus.port_out_byte(0x21, 0x08);  // ICW2: vector offset 8 (IRQ0 → INT 08h)
+        io_bus.port_out_byte(0x21, 0x04);  // ICW3: slave on IRQ 2
+        io_bus.port_out_byte(0x21, 0x01);  // ICW4: 8086 mode
+        io_bus.port_out_byte(0x21, 0x00);  // OCW1: unmask all IRQs
     }
 
     // Initialize BDA
@@ -49,6 +101,14 @@ pub fn init_bios(vm: &mut Runtime) {
 
     vm.memory.write_byte(BDA_BASE + 0x50, 0);         // Cursor col page 0
     vm.memory.write_byte(BDA_BASE + 0x51, 0);         // Cursor row page 0
+
+    // Initialize BDA keyboard buffer
+    // Head and tail both point to buffer start (empty)
+    vm.memory.write_word(BDA_BASE + 0x1A, 0x1E);     // Keyboard buffer head offset
+    vm.memory.write_word(BDA_BASE + 0x1C, 0x1E);     // Keyboard buffer tail offset
+    // Enhanced keyboard buffer start/end pointers (used by some programs)
+    vm.memory.write_word(BDA_BASE + 0x80, 0x1E);     // Buffer start offset
+    vm.memory.write_word(BDA_BASE + 0x82, 0x3E);     // Buffer end offset
 
     // Set up diskette parameter table at a fixed location in ROM
     // INT 1Eh vector (0x78-0x7B) should point to this table

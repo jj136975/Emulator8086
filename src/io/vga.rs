@@ -10,6 +10,8 @@ pub struct Vga {
     crt_index: u8,
     crt_regs: [u8; 256],
     shadow: [u8; VGA_SIZE],
+    /// Input Status Register 1 (port 0x3DA) — toggles retrace bits
+    retrace_toggle: u8,
 }
 
 impl Vga {
@@ -18,6 +20,7 @@ impl Vga {
             crt_index: 0,
             crt_regs: [0; 256],
             shadow: [0; VGA_SIZE],
+            retrace_toggle: 0,
         }
     }
 
@@ -32,6 +35,13 @@ impl Vga {
         let pos = row as u16 * COLS as u16 + col as u16;
         self.crt_regs[0x0E] = (pos >> 8) as u8;
         self.crt_regs[0x0F] = pos as u8;
+    }
+
+    /// Return the display start offset from CRT registers 0x0C/0x0D (in character cells).
+    /// This is the byte offset into VGA memory where the display begins.
+    pub fn start_address(&self) -> usize {
+        let addr = ((self.crt_regs[0x0C] as u16) << 8) | self.crt_regs[0x0D] as u16;
+        addr as usize * 2 // CRT stores character offset, multiply by 2 for byte offset
     }
 
     pub fn refresh(&mut self, memory: &[u8]) {
@@ -88,6 +98,16 @@ impl IoDevice for Vga {
         match port {
             0x3D4 => self.crt_index,
             0x3D5 => self.crt_regs[self.crt_index as usize],
+            // Input Status Register 1 — bits toggle on each read:
+            //   Bit 0: Display enable (toggles = horizontal retrace)
+            //   Bit 3: Vertical retrace (toggles)
+            // Games poll this to wait for retrace; must toggle or they hang.
+            0x3DA => {
+                self.retrace_toggle = self.retrace_toggle.wrapping_add(1);
+                let display_enable = self.retrace_toggle & 1;        // bit 0 toggles
+                let vretrace = (self.retrace_toggle >> 2) & 1;       // bit 3 toggles at 1/4 rate
+                display_enable | (vretrace << 3)
+            }
             _ => 0xFF,
         }
     }

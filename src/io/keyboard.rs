@@ -8,6 +8,7 @@ pub type KeyBuffer = VecDeque<(u8, u8)>;
 
 pub struct Keyboard {
     scancode_buffer: Arc<Mutex<KeyBuffer>>,
+    scancode_latch: Arc<Mutex<u8>>,
     pub irq_pending: Arc<Mutex<bool>>,
     monitor_flag: Arc<AtomicBool>,
 }
@@ -16,6 +17,7 @@ impl Keyboard {
     pub fn new() -> Self {
         Self {
             scancode_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            scancode_latch: Arc::new(Mutex::new(0)),
             irq_pending: Arc::new(Mutex::new(false)),
             monitor_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -29,69 +31,27 @@ impl Keyboard {
         self.irq_pending.clone()
     }
 
+    pub fn shared_latch(&self) -> Arc<Mutex<u8>> {
+        self.scancode_latch.clone()
+    }
+
     pub fn shared_monitor_flag(&self) -> Arc<AtomicBool> {
         self.monitor_flag.clone()
     }
 
     pub fn start_input_thread(&self) {
-        let buffer = self.scancode_buffer.clone();
-        let irq_pending = self.irq_pending.clone();
-        let monitor_flag = self.monitor_flag.clone();
-
-        std::thread::spawn(move || {
-            use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, KeyEventKind};
-
-            loop {
-                let ev = match event::read() {
-                    Ok(ev) => ev,
-                    Err(_) => continue,
-                };
-
-                let Event::Key(KeyEvent { code, modifiers, kind, .. }) = ev else {
-                    continue;
-                };
-
-                // Only handle key press events (ignore release/repeat)
-                if kind != KeyEventKind::Press {
-                    continue;
-                }
-
-                // Ctrl+C exits the emulator
-                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
-                    let _ = crossterm::terminal::disable_raw_mode();
-                    use std::io::Write;
-                    let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
-                    let _ = std::io::stdout().flush();
-                    std::process::exit(0);
-                }
-
-                // F12 opens the monitor — set flag and sleep until main loop clears it
-                if code == KeyCode::F(12) {
-                    monitor_flag.store(true, Ordering::SeqCst);
-                    while monitor_flag.load(Ordering::SeqCst) {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    continue;
-                }
-
-                if let Some((scancode, ascii)) = keycode_to_scancode(code, modifiers) {
-                    let mut q = buffer.lock().unwrap();
-                    q.push_back((scancode, ascii));          // make code + correct ASCII
-                    q.push_back((scancode | 0x80, 0));       // break code
-                    *irq_pending.lock().unwrap() = true;
-                }
-            }
-        });
+        start_keyboard_thread(
+            self.scancode_buffer.clone(),
+            self.irq_pending.clone(),
+            self.monitor_flag.clone(),
+        );
     }
 }
 
 impl IoDevice for Keyboard {
     fn port_in_byte(&mut self, _port: u16) -> u8 {
-        // Port 0x60 returns raw scancodes only
-        self.scancode_buffer.lock().unwrap()
-            .pop_front()
-            .map(|(sc, _)| sc)
-            .unwrap_or(0)
+        // Port 0x60: return latched scancode (set by deliver_keyboard_irq)
+        *self.scancode_latch.lock().unwrap()
     }
 
     fn port_out_byte(&mut self, _port: u16, _value: u8) {
@@ -128,8 +88,91 @@ impl IoDevice for KeyboardStatus {
     }
 }
 
-/// Map a crossterm KeyCode + modifiers to (PC AT scancode, ASCII byte).
-fn keycode_to_scancode(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<(u8, u8)> {
+/// Start the keyboard input thread using shared state.
+/// Can be called after the Keyboard has been moved into the IoBus.
+pub fn start_keyboard_thread(
+    buffer: Arc<Mutex<KeyBuffer>>,
+    irq_pending: Arc<Mutex<bool>>,
+    monitor_flag: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, KeyEventKind};
+        use std::time::Duration;
+
+        log::debug!("[KB-THREAD] keyboard input thread started");
+
+        loop {
+            // Use poll() with timeout instead of blocking read() to prevent
+            // the thread from getting stuck indefinitely if the console state
+            // changes (e.g. on Windows when VGA output reconfigures the terminal).
+            match event::poll(Duration::from_millis(100)) {
+                Ok(true) => {} // event available, fall through to read()
+                Ok(false) => continue, // timeout, loop again
+                Err(e) => {
+                    log::debug!("[KB-THREAD] poll error: {:?}", e);
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+            }
+
+            let ev = match event::read() {
+                Ok(ev) => ev,
+                Err(e) => {
+                    log::debug!("[KB-THREAD] read error: {:?}", e);
+                    continue;
+                }
+            };
+
+            let Event::Key(KeyEvent { code, modifiers, kind, .. }) = ev else {
+                continue;
+            };
+
+            // Only handle key press events (ignore release/repeat)
+            if kind != KeyEventKind::Press {
+                continue;
+            }
+
+            // Ctrl+C exits the emulator
+            if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                let _ = crossterm::terminal::disable_raw_mode();
+                use std::io::Write;
+                let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
+                let _ = std::io::stdout().flush();
+                std::process::exit(0);
+            }
+
+            // F12 opens the monitor — set flag and sleep until main loop clears it
+            if code == KeyCode::F(12) {
+                monitor_flag.store(true, Ordering::SeqCst);
+                while monitor_flag.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                continue;
+            }
+
+            if let Some((scancode, ascii, enhanced)) = keycode_to_scancode(code, modifiers) {
+                let mut q = buffer.lock().unwrap();
+                if enhanced {
+                    q.push_back((0xE0, 0x00));               // E0 prefix (make)
+                }
+                q.push_back((scancode, ascii));              // make code + correct ASCII
+                if enhanced {
+                    q.push_back((0xE0, 0x00));               // E0 prefix (break)
+                }
+                q.push_back((scancode | 0x80, 0));           // break code
+                log::debug!("[KB-THREAD] enqueued sc={:02X} ascii={:02X} enhanced={} buf_len={}",
+                           scancode, ascii, enhanced, q.len());
+                *irq_pending.lock().unwrap() = true;
+            } else {
+                log::debug!("[KB-THREAD] unmapped key: {:?}", code);
+            }
+        }
+    });
+}
+
+/// Map a crossterm KeyCode + modifiers to (PC AT scancode, ASCII byte, enhanced).
+/// `enhanced` = true means the key needs an 0xE0 prefix byte (arrow/nav keys).
+fn keycode_to_scancode(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<(u8, u8, bool)> {
     use crossterm::event::KeyCode;
 
     match code {
@@ -138,40 +181,40 @@ fn keycode_to_scancode(code: crossterm::event::KeyCode, modifiers: crossterm::ev
         KeyCode::Char(ch) => {
             let scancode = char_to_scancode(ch)?;
             let ascii = if ch.is_ascii() { ch as u8 } else { 0 };
-            Some((scancode, ascii))
+            Some((scancode, ascii, false))
         }
-        KeyCode::Enter => Some((0x1C, 0x0D)),
-        KeyCode::Backspace => Some((0x0E, 0x08)),
-        KeyCode::Tab => Some((0x0F, 0x09)),
-        KeyCode::Esc => Some((0x01, 0x1B)),
+        KeyCode::Enter => Some((0x1C, 0x0D, false)),
+        KeyCode::Backspace => Some((0x0E, 0x08, false)),
+        KeyCode::Tab => Some((0x0F, 0x09, false)),
+        KeyCode::Esc => Some((0x01, 0x1B, false)),
 
-        // Arrow keys (extended: ascii = 0)
-        KeyCode::Up => Some((0x48, 0x00)),
-        KeyCode::Down => Some((0x50, 0x00)),
-        KeyCode::Left => Some((0x4B, 0x00)),
-        KeyCode::Right => Some((0x4D, 0x00)),
+        // Arrow keys — enhanced keyboard: ascii = 0xE0, needs E0 prefix
+        KeyCode::Up => Some((0x48, 0xE0, true)),
+        KeyCode::Down => Some((0x50, 0xE0, true)),
+        KeyCode::Left => Some((0x4B, 0xE0, true)),
+        KeyCode::Right => Some((0x4D, 0xE0, true)),
 
-        // Navigation keys (extended: ascii = 0)
-        KeyCode::Home => Some((0x47, 0x00)),
-        KeyCode::End => Some((0x4F, 0x00)),
-        KeyCode::PageUp => Some((0x49, 0x00)),
-        KeyCode::PageDown => Some((0x51, 0x00)),
-        KeyCode::Insert => Some((0x52, 0x00)),
-        KeyCode::Delete => Some((0x53, 0x00)),
+        // Navigation keys — enhanced keyboard: ascii = 0xE0, needs E0 prefix
+        KeyCode::Home => Some((0x47, 0xE0, true)),
+        KeyCode::End => Some((0x4F, 0xE0, true)),
+        KeyCode::PageUp => Some((0x49, 0xE0, true)),
+        KeyCode::PageDown => Some((0x51, 0xE0, true)),
+        KeyCode::Insert => Some((0x52, 0xE0, true)),
+        KeyCode::Delete => Some((0x53, 0xE0, true)),
 
-        // Function keys (extended: ascii = 0)
-        KeyCode::F(1) => Some((0x3B, 0x00)),
-        KeyCode::F(2) => Some((0x3C, 0x00)),
-        KeyCode::F(3) => Some((0x3D, 0x00)),
-        KeyCode::F(4) => Some((0x3E, 0x00)),
-        KeyCode::F(5) => Some((0x3F, 0x00)),
-        KeyCode::F(6) => Some((0x40, 0x00)),
-        KeyCode::F(7) => Some((0x41, 0x00)),
-        KeyCode::F(8) => Some((0x42, 0x00)),
-        KeyCode::F(9) => Some((0x43, 0x00)),
-        KeyCode::F(10) => Some((0x44, 0x00)),
-        KeyCode::F(11) => Some((0x57, 0x00)),
-        KeyCode::F(12) => Some((0x58, 0x00)),
+        // Function keys (extended: ascii = 0, no E0 prefix)
+        KeyCode::F(1) => Some((0x3B, 0x00, false)),
+        KeyCode::F(2) => Some((0x3C, 0x00, false)),
+        KeyCode::F(3) => Some((0x3D, 0x00, false)),
+        KeyCode::F(4) => Some((0x3E, 0x00, false)),
+        KeyCode::F(5) => Some((0x3F, 0x00, false)),
+        KeyCode::F(6) => Some((0x40, 0x00, false)),
+        KeyCode::F(7) => Some((0x41, 0x00, false)),
+        KeyCode::F(8) => Some((0x42, 0x00, false)),
+        KeyCode::F(9) => Some((0x43, 0x00, false)),
+        KeyCode::F(10) => Some((0x44, 0x00, false)),
+        KeyCode::F(11) => Some((0x57, 0x00, false)),
+        KeyCode::F(12) => Some((0x58, 0x00, false)),
 
         _ => None,
     }

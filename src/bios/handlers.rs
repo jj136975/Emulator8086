@@ -443,44 +443,139 @@ pub fn int15h(vm: &mut Runtime) {
     }
 }
 
+// BIOS INT 09h handler — called via INT F0h trap from ROM stub.
+// Reads the latched scancode from port 0x60, populates the BDA keyboard
+// buffer, and sends EOI.  This is the end of the IRQ 1 chain: real programs
+// can hook IVT[9] and chain to this stub.
+pub fn int09h_bios(vm: &mut Runtime) {
+    // Read scancode from port 0x60 (latch set by deliver_keyboard_irq)
+    let scancode = if let Some(ref mut io_bus) = vm.io_bus {
+        io_bus.port_in_byte(0x60)
+    } else {
+        return;
+    };
+
+    debug!("[INT09-BIOS] scancode={:02X} pending_ascii={:02X}", scancode, vm.keyboard_pending_ascii);
+
+    // BDA 0x496 bit 1 = "last scancode was E0 prefix"
+    let kb_status3_addr = BDA_BASE + 0x96;
+    let kb_status3 = vm.memory.read_byte(kb_status3_addr);
+
+    // 0xE0 prefix byte: set the E0 flag and return (no BDA buffer entry).
+    // The next IRQ will deliver the actual scancode.
+    if scancode == 0xE0 {
+        debug!("[INT09-BIOS] E0 prefix, setting flag");
+        vm.memory.write_byte(kb_status3_addr, kb_status3 | 0x02);
+        // Send EOI
+        if let Some(ref mut io_bus) = vm.io_bus {
+            io_bus.port_out_byte(0x20, 0x61);
+        }
+        return;
+    }
+
+    let e0_prefix = kb_status3 & 0x02 != 0;
+
+    // Clear the E0 flag now that we've consumed it
+    if e0_prefix {
+        vm.memory.write_byte(kb_status3_addr, kb_status3 & !0x02);
+    }
+
+    // Break codes (bit 7 set): just send EOI and return.
+    // TODO: track shift/ctrl/alt state for break codes in BDA 0x417
+    if scancode & 0x80 != 0 {
+        debug!("[INT09-BIOS] break code {:02X}, EOI", scancode);
+        if let Some(ref mut io_bus) = vm.io_bus {
+            io_bus.port_out_byte(0x20, 0x61);
+        }
+        return;
+    }
+
+    // Determine ASCII value for this scancode
+    let ascii = if e0_prefix {
+        // Enhanced key (arrow/nav): ASCII = 0xE0 for enhanced keyboard,
+        // INT 16h AH=00 will convert to 0x00 for backward compat
+        0xE0u8
+    } else {
+        // Regular key: use the pre-computed ASCII from deliver_keyboard_irq
+        vm.keyboard_pending_ascii
+    };
+
+    // Make code: write (ascii, scancode) to BDA keyboard circular buffer
+    let bda = BDA_BASE;
+    let head = vm.memory.read_word(bda + 0x1A) as usize;
+    let tail = vm.memory.read_word(bda + 0x1C) as usize;
+    let mut next_tail = tail + 2;
+    if next_tail >= 0x3E { next_tail = 0x1E; }
+
+    if next_tail != head {
+        vm.memory.write_byte(0x400 + tail, ascii);
+        vm.memory.write_byte(0x400 + tail + 1, scancode);
+        vm.memory.write_word(bda + 0x1C, next_tail as u16);
+        debug!("[INT09-BIOS] BDA write ascii={:02X} sc={:02X} e0={} head={:02X} tail={:02X}->next={:02X}",
+               ascii, scancode, e0_prefix, head, tail, next_tail);
+    } else {
+        debug!("[INT09-BIOS] BDA FULL! head={:02X} tail={:02X}", head, tail);
+    }
+
+    // Send specific EOI for IRQ 1
+    if let Some(ref mut io_bus) = vm.io_bus {
+        io_bus.port_out_byte(0x20, 0x61);
+    }
+}
+
 // INT 16h - Keyboard Services
 pub fn int16h(vm: &mut Runtime) {
     let ah = vm.registers.ax.high();
+    let bda = BDA_BASE;
+
     match ah {
-        // Wait for key / Extended wait for key
+        // Wait for key (AH=00) / Extended wait for key (AH=10)
         0x00 | 0x10 => {
-            // Try to find a make code (skip break codes) from the shared buffer
-            if let Some(ref kb_buf) = vm.keyboard_buffer {
-                let mut buf = kb_buf.lock().unwrap();
-                // Scan through buffer looking for a make code
-                while let Some(&(scancode, _)) = buf.front() {
-                    if scancode & 0x80 != 0 {
-                        // Break code - consume and skip
-                        buf.pop_front();
-                        continue;
-                    }
-                    // Found a make code - consume it and use stored ASCII
-                    let (scancode, ascii) = buf.pop_front().unwrap();
-                    vm.registers.ax.set_high(scancode);
-                    vm.registers.ax.set_low(ascii);
-                    return;
+            let head = vm.memory.read_word(bda + 0x1A) as usize;
+            let tail = vm.memory.read_word(bda + 0x1C) as usize;
+
+            if head != tail {
+                // Read key from BDA buffer at 0x400 + head
+                let mut ascii = vm.memory.read_byte(0x400 + head);
+                let scancode = vm.memory.read_byte(0x400 + head + 1);
+
+                // AH=00: convert enhanced prefix 0xE0 to 0x00 for backward compat
+                if ah == 0x00 && ascii == 0xE0 {
+                    ascii = 0x00;
                 }
+
+                vm.registers.ax.set_high(scancode);
+                vm.registers.ax.set_low(ascii);
+
+                // Advance head
+                let mut new_head = head + 2;
+                if new_head >= 0x3E {
+                    new_head = 0x1E;
+                }
+                vm.memory.write_word(bda + 0x1A, new_head as u16);
+                return;
             }
-            // No key available: rewind PC to re-execute this INT 16h instruction
-            // The run loop will process timer ticks/interrupts before retrying
+
+            // No key available: run periodic tasks (VGA refresh, timer) then retry.
+            // Without this, the 1ms sleep × 1000 instruction threshold = ~1s VGA lag.
+            vm.idle_tick();
             vm.registers.pc.set(vm.registers.op_pc);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // Check key (non-blocking) / Extended check
+        // Check key (AH=01, non-blocking) / Extended check (AH=11)
         0x01 | 0x11 => {
-            let found = if let Some(ref kb_buf) = vm.keyboard_buffer {
-                let buf = kb_buf.lock().unwrap();
-                // Find first make code in buffer (peek without consuming)
-                buf.iter().find(|&&(sc, _)| sc & 0x80 == 0).copied()
-            } else {
-                None
-            };
-            if let Some((scancode, ascii)) = found {
+            let head = vm.memory.read_word(bda + 0x1A) as usize;
+            let tail = vm.memory.read_word(bda + 0x1C) as usize;
+
+            if head != tail {
+                let mut ascii = vm.memory.read_byte(0x400 + head);
+                let scancode = vm.memory.read_byte(0x400 + head + 1);
+
+                // AH=01: convert enhanced prefix 0xE0 to 0x00 for backward compat
+                if ah == 0x01 && ascii == 0xE0 {
+                    ascii = 0x00;
+                }
+
                 vm.registers.ax.set_high(scancode);
                 vm.registers.ax.set_low(ascii);
                 vm.unset_flag(CpuFlag::Zero); // ZF=0 means key available
@@ -492,19 +587,41 @@ pub fn int16h(vm: &mut Runtime) {
         0x02 | 0x12 => {
             vm.registers.ax.set_low(0);
         }
+        // Set typematic rate and delay — ignore, return success
+        0x03 => {}
+        // Write to keyboard buffer
+        0x05 => {
+            let scancode = vm.registers.cx.high();
+            let ascii = vm.registers.cx.low();
+            let head = vm.memory.read_word(bda + 0x1A) as usize;
+            let tail = vm.memory.read_word(bda + 0x1C) as usize;
+            let mut next_tail = tail + 2;
+            if next_tail >= 0x3E {
+                next_tail = 0x1E;
+            }
+            if next_tail == head {
+                vm.registers.ax.set_low(1); // Buffer full
+            } else {
+                vm.memory.write_byte(0x400 + tail, ascii);
+                vm.memory.write_byte(0x400 + tail + 1, scancode);
+                vm.memory.write_word(bda + 0x1C, next_tail as u16);
+                vm.registers.ax.set_low(0); // Success
+            }
+        }
         _ => {}
     }
 }
 
 // INT 19h - Bootstrap loader
 pub fn int19h(vm: &mut Runtime) {
-    // Try floppy A: first, then hard disk 0
-    let boot_sources: [(u8, &str); 2] = [
-        (0x00, "floppy A:"),
-        (0x80, "hard disk 0"),
-    ];
+    let boot_order = vm.boot_order.clone();
 
-    for &(drive, name) in &boot_sources {
+    for &drive in &boot_order {
+        let name = if drive >= 0x80 {
+            format!("hard disk {}", drive - 0x80)
+        } else {
+            format!("floppy {}:", (b'A' + drive) as char)
+        };
         let disk = if drive >= 0x80 {
             vm.hard_disks.get_mut((drive - 0x80) as usize).and_then(|d| d.as_mut())
         } else {

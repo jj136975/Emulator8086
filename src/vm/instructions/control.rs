@@ -1,11 +1,9 @@
-use log::debug;
-use crate::minix2::interruption::Message;
-use crate::minix2::syscall::handle_interrupt;
+use super::{update_arithmetic_flags_byte, update_arithmetic_flags_word};
 use crate::utils::number::SpecialOps;
 use crate::vm::modrm::ModRM;
-use crate::vm::runtime::{ExecutionMode, Runtime};
 use crate::vm::runtime::CpuFlag::*;
-use super::{update_arithmetic_flags_word, update_arithmetic_flags_byte};
+use crate::vm::runtime::Runtime;
+use log::debug;
 
 pub(super) fn group_fe_ff(vm: &mut Runtime, is_word: bool) {
     // For 0xFE (byte): only INC/DEC (reg 0-1) are byte operations.
@@ -64,7 +62,7 @@ pub(super) fn group_fe_ff(vm: &mut Runtime, is_word: bool) {
         0b_010 => {
             vm.push_word(vm.registers.pc.word());
             vm.registers.pc.set(modrm.word());
-        },
+        }
         // CALL far indirect
         0b_011 => {
             let new_ip = modrm.word();
@@ -73,53 +71,56 @@ pub(super) fn group_fe_ff(vm: &mut Runtime, is_word: bool) {
             vm.push_word(vm.registers.pc.word());
             vm.registers.pc.set(new_ip);
             vm.registers.cs.reg_mut().set(new_cs);
-        },
+        }
         // JMP mem/reg
         0b_100 => vm.registers.pc.set(modrm.word()),
         // JMP mem
         0b_101 => {
             vm.registers.pc.set(modrm.word());
-            unsafe { vm.registers.cs.reg_mut().set(modrm.next()); }
-        },
+            unsafe {
+                vm.registers.cs.reg_mut().set(modrm.next());
+            }
+        }
         // PUSH
         0b_110 => vm.push_word(modrm.word()),
         // reg=7 is undefined on 8086
         _ => {
-            log::debug!("Undefined group FF reg={} at {:04X}:{:04X}",
-                reg, vm.registers.cs.reg().word(), vm.registers.op_pc);
-        },
+            log::debug!(
+                "Undefined group FF reg={} at {:04X}:{:04X}",
+                reg,
+                vm.registers.cs.reg().word(),
+                vm.registers.op_pc
+            );
+        }
     };
 }
 
 pub(super) fn dispatch_int(vm: &mut Runtime, vector: u8) {
-    if vm.mode == ExecutionMode::MinixAout {
-        let message = Message::new(vm);
-        unsafe {
-            handle_interrupt(vm, &mut *message);
-        }
-        vm.registers.ax.set(0);
+    if let Some(handler) = vm.bios_handlers[vector as usize] {
+        handler(vm);
     } else {
-        if let Some(handler) = vm.bios_handlers[vector as usize] {
-            handler(vm);
-        } else {
-            let ivt_offset = vector as usize * 4;
-            let new_ip = vm.memory.read_word(ivt_offset);
-            let new_cs = vm.memory.read_word(ivt_offset + 2);
+        let ivt_offset = vector as usize * 4;
+        let new_ip = vm.memory.read_word(ivt_offset);
+        let new_cs = vm.memory.read_word(ivt_offset + 2);
 
-            debug!("[IVT] INT {:02X}h -> {:04X}:{:04X} at {:04X}:{:04X} AH={:02X}",
-                vector, new_cs, new_ip,
-                vm.registers.cs.reg().word(), vm.registers.op_pc,
-                vm.registers.ax.high());
+        debug!(
+            "[IVT] INT {:02X}h -> {:04X}:{:04X} at {:04X}:{:04X} AH={:02X}",
+            vector,
+            new_cs,
+            new_ip,
+            vm.registers.cs.reg().word(),
+            vm.registers.op_pc,
+            vm.registers.ax.high()
+        );
 
-            vm.push_word(vm.flags);
-            vm.unset_flag(Interrupt);
-            vm.unset_flag(Trap);
-            vm.push_word(vm.registers.cs.reg().word());
-            vm.push_word(vm.registers.pc.word());
+        vm.push_word(vm.flags);
+        vm.unset_flag(Interrupt);
+        vm.unset_flag(Trap);
+        vm.push_word(vm.registers.cs.reg().word());
+        vm.push_word(vm.registers.pc.word());
 
-            vm.registers.cs.reg_mut().set(new_cs);
-            vm.registers.pc.set(new_ip);
-        }
+        vm.registers.cs.reg_mut().set(new_cs);
+        vm.registers.pc.set(new_ip);
     }
 }
 

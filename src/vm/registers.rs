@@ -1,5 +1,4 @@
-use std::ops::Add;
-use crate::vm::memory::{Memory, Segment, SEGMENT_SIZE};
+use crate::vm::memory::{Memory, Segment};
 
 #[repr(C)]
 pub union Register {
@@ -288,25 +287,6 @@ pub struct Registers {
 
 impl  Registers {
     pub fn new(memory: &mut Memory) -> Self {
-        Self {
-            ax: Register::default(),
-            bx: Register::default(),
-            cx: Register::default(),
-            dx: Register::default(),
-            si: Register::default(),
-            di: Register::default(),
-            sp: Register::new(0xFFFF),
-            bp: Register::default(),
-            cs: Segment::new((SEGMENT_SIZE >> 4) as u16, memory),
-            ds: Segment::new(((SEGMENT_SIZE * 2) >> 4) as u16, memory),
-            es: Segment::new(((SEGMENT_SIZE * 3) >> 4) as u16, memory),
-            ss: Segment::new(((SEGMENT_SIZE * 2) >> 4) as u16, memory),  // SS == DS in MINIX separate I&D
-            pc: Register::default(),
-            op_pc: 0,
-        }
-    }
-
-    pub fn new_bios(memory: &mut Memory) -> Self {
         Self {
             ax: Register::default(),
             bx: Register::default(),
