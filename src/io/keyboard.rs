@@ -11,6 +11,9 @@ pub struct Keyboard {
     scancode_latch: Arc<Mutex<u8>>,
     pub irq_pending: Arc<Mutex<bool>>,
     monitor_flag: Arc<AtomicBool>,
+    /// Set by deliver_keyboard_irq when a scancode is latched, cleared when
+    /// port 0x60 is read.  Port 0x64 bit 0 (OBF) reflects this flag.
+    data_available: Arc<AtomicBool>,
 }
 
 impl Keyboard {
@@ -20,6 +23,7 @@ impl Keyboard {
             scancode_latch: Arc::new(Mutex::new(0)),
             irq_pending: Arc::new(Mutex::new(false)),
             monitor_flag: Arc::new(AtomicBool::new(false)),
+            data_available: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -39,18 +43,16 @@ impl Keyboard {
         self.monitor_flag.clone()
     }
 
-    pub fn start_input_thread(&self) {
-        start_keyboard_thread(
-            self.scancode_buffer.clone(),
-            self.irq_pending.clone(),
-            self.monitor_flag.clone(),
-        );
+    pub fn shared_data_available(&self) -> Arc<AtomicBool> {
+        self.data_available.clone()
     }
 }
 
 impl IoDevice for Keyboard {
     fn port_in_byte(&mut self, _port: u16) -> u8 {
         // Port 0x60: return latched scancode (set by deliver_keyboard_irq)
+        // Clear data_available so port 0x64 stops reporting OBF until next delivery.
+        self.data_available.store(false, Ordering::SeqCst);
         *self.scancode_latch.lock().unwrap()
     }
 
@@ -64,21 +66,21 @@ impl IoDevice for Keyboard {
 }
 
 /// Separate IoDevice for port 0x64 (keyboard status register).
-/// Shares the scancode buffer with the Keyboard device.
+/// Uses a shared `data_available` flag that is set by `deliver_keyboard_irq`
+/// when a scancode is latched to port 0x60, and cleared when port 0x60 is read.
 pub struct KeyboardStatus {
-    scancode_buffer: Arc<Mutex<KeyBuffer>>,
+    data_available: Arc<AtomicBool>,
 }
 
 impl KeyboardStatus {
-    pub fn new(buffer: Arc<Mutex<KeyBuffer>>) -> Self {
-        Self { scancode_buffer: buffer }
+    pub fn new(data_available: Arc<AtomicBool>) -> Self {
+        Self { data_available }
     }
 }
 
 impl IoDevice for KeyboardStatus {
     fn port_in_byte(&mut self, _port: u16) -> u8 {
-        let has_data = !self.scancode_buffer.lock().unwrap().is_empty();
-        if has_data { 0x01 } else { 0x00 }
+        if self.data_available.load(Ordering::SeqCst) { 0x01 } else { 0x00 }
     }
 
     fn port_out_byte(&mut self, _port: u16, _value: u8) {}
@@ -180,7 +182,18 @@ fn keycode_to_scancode(code: crossterm::event::KeyCode, modifiers: crossterm::ev
         // (uppercase if Shift is held, symbols like ! @ # etc.)
         KeyCode::Char(ch) => {
             let scancode = char_to_scancode(ch)?;
-            let ascii = if ch.is_ascii() { ch as u8 } else { 0 };
+            let ascii = if modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                // Ctrl+letter → control code (A=0x01 .. Z=0x1A)
+                if ch.is_ascii_alphabetic() {
+                    (ch.to_ascii_uppercase() as u8) & 0x1F
+                } else {
+                    0
+                }
+            } else if ch.is_ascii() {
+                ch as u8
+            } else {
+                0
+            };
             Some((scancode, ascii, false))
         }
         KeyCode::Enter => Some((0x1C, 0x0D, false)),

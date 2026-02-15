@@ -66,11 +66,6 @@ impl DiskImage {
         }
     }
 
-    /// Create a blank 1.44MB in-memory floppy.
-    pub fn new_in_memory() -> Self {
-        Self::new_in_memory_sized(FLOPPY_144_SIZE)
-    }
-
     /// Create a blank in-memory floppy of the given size in bytes.
     /// Uses standard floppy geometry for known sizes (720K, 1.2M, 1.44M, 2.88M).
     pub fn new_in_memory_sized(size: u64) -> Self {

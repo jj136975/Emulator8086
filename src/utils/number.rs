@@ -1,4 +1,3 @@
-use std::mem::size_of;
 use num_traits::PrimInt;
 
 #[inline]
@@ -34,9 +33,9 @@ macro_rules! special_uint_impl {
             fn oc_carry_add(self, y: Self, carry: bool) -> (Self, bool, bool) {
                 let (a, c1) = self.overflowing_add(y);
                 let (c, c2) = a.overflowing_add(carry as $SelfT);
-                let (a, o1) = (self as $SignedT).overflowing_add(y as $SignedT);
-                let (_, o2) = a.overflowing_add(carry as $SignedT);
-                (c, o1 || o2, c1 || c2)
+                let wide = (self as $SignedT as i32) + (y as $SignedT as i32) + (carry as i32);
+                let overflow = wide < ($SignedT::MIN as i32) || wide > ($SignedT::MAX as i32);
+                (c, overflow, c1 || c2)
             }
 
             #[inline]
@@ -49,9 +48,9 @@ macro_rules! special_uint_impl {
             fn oc_carry_sub(self, y: Self, carry: bool) -> (Self, bool, bool) {
                 let (a, c1) = self.overflowing_sub(y);
                 let (c, c2) = a.overflowing_sub(carry as $SelfT);
-                let (a, o1) = (self as $SignedT).overflowing_sub(y as $SignedT);
-                let (_, o2) = a.overflowing_sub(carry as $SignedT);
-                (c, o1 || o2, c1 || c2)
+                let wide = (self as $SignedT as i32) - (y as $SignedT as i32) - (carry as i32);
+                let overflow = wide < ($SignedT::MIN as i32) || wide > ($SignedT::MAX as i32);
+                (c, overflow, c1 || c2)
             }
 
             #[inline]
@@ -62,25 +61,26 @@ macro_rules! special_uint_impl {
             }
 
             fn rotate_carry_left(self, count: u32, carry: bool) -> (Self, bool) {
-                let count = count % (Self::BITS + 1);
+                let bits = Self::BITS + 1; // 9 for u8, 17 for u16
+                let count = count % bits;
                 if count == 0 {
                     return (self, carry);
                 }
-                if (count == 1) {
-                    return ((self << 1) | ((carry as $SelfT)), (self as $SignedT) < 0);
-                }
-                ((self << count) | ((carry as $SelfT) << (count - 1)) | (self >> ((Self::BITS + 1) - count)), self & (1 << (Self::BITS - count)) != 0)
+                // Use u32 to avoid shift-overflow panics (max 17 bits needed)
+                let wide = ((carry as u32) << Self::BITS) | (self as u32);
+                let rotated = ((wide << count) | (wide >> (bits - count))) & ((1u32 << bits) - 1);
+                ((rotated as $SelfT), (rotated >> Self::BITS) & 1 != 0)
             }
-            
+
             fn rotate_carry_right(self, count: u32, carry: bool) -> (Self, bool) {
-                let count = count % (Self::BITS + 1);
+                let bits = Self::BITS + 1;
+                let count = count % bits;
                 if count == 0 {
                     return (self, carry);
                 }
-                if (count == 1) {
-                    return ((self >> 1) | ((carry as $SelfT) << (Self::BITS - 1)), self & 1 == 1);
-                }
-                ((self >> count) | ((carry as $SelfT) << (Self::BITS - count)) | (self << ((Self::BITS + 1) - count)), self & (1 << (count - 1)) != 0)
+                let wide = ((carry as u32) << Self::BITS) | (self as u32);
+                let rotated = ((wide >> count) | (wide << (bits - count))) & ((1u32 << bits) - 1);
+                ((rotated as $SelfT), (rotated >> Self::BITS) & 1 != 0)
             }
         }
     }

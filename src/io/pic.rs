@@ -139,13 +139,6 @@ impl Pic {
         (self.irr & mask) != 0 || (self.isr & mask) != 0
     }
 
-    /// Check if an IRQ is already pending in IRR (not yet acknowledged).
-    /// Unlike irq_busy(), this does NOT check ISR — allowing new deliveries
-    /// to be queued while the previous handler is still running.
-    pub fn irq_pending(&self, irq: u8) -> bool {
-        self.irr & (1 << irq) != 0
-    }
-
     pub fn debug_irr(&self) -> u8 { self.irr }
     pub fn debug_isr(&self) -> u8 { self.isr }
     pub fn debug_imr(&self) -> u8 { self.imr }

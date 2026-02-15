@@ -10,10 +10,9 @@ use crate::io::bus::IoBus;
 use crate::io::disk::{DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
 use crate::io::pic::Pic;
 use crate::vm::instructions::process;
-use crate::vm::memory::{Memory, Segment};
+use crate::vm::memory::{Memory, Segment, BIOS_ROM};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Zero};
-use crate::vm::runtime::Prefix::Queued;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -64,6 +63,7 @@ pub struct Runtime {
     running: bool,
     status: u16,
     pub prefix: Option<Prefix>,
+    pub segment_override: Option<SegmentType>,
     pub io_bus: Option<IoBus>,
     pub bios_handlers: [Option<fn(&mut Runtime)>; 256],
     pub disks: Vec<Option<DiskImage>>,
@@ -73,6 +73,7 @@ pub struct Runtime {
     pub keyboard_irq: Option<Arc<Mutex<bool>>>,
     pub keyboard_latch: Option<Arc<Mutex<u8>>>,
     pub keyboard_pending_ascii: u8,
+    pub keyboard_data_available: Option<Arc<AtomicBool>>,
     pub boot_order: Vec<u8>,
     pub instruction_count: u64,
     pub trace: bool,
@@ -96,6 +97,7 @@ impl Runtime {
             running: true,
             status: 0,
             prefix: None,
+            segment_override: None,
             io_bus: None,
             bios_handlers: [None; 256],
             disks: Vec::new(),
@@ -105,6 +107,7 @@ impl Runtime {
             keyboard_irq: None,
             keyboard_latch: None,
             keyboard_pending_ascii: 0,
+            keyboard_data_available: None,
             boot_order: Vec::new(),
             instruction_count: 0,
             trace: false,
@@ -130,6 +133,7 @@ impl Runtime {
         let kb_buffer = keyboard.shared_buffer();
         let kb_irq = keyboard.shared_irq();
         let kb_latch = keyboard.shared_latch();
+        let kb_data_avail = keyboard.shared_data_available();
 
         let mut io_bus = crate::io::bus::IoBus::new();
         io_bus.register(
@@ -141,6 +145,10 @@ impl Runtime {
             0x61, 0x61,
             Box::new(crate::io::port61::SystemControl::new()),
         );
+        io_bus.register(
+            0x64, 0x64,
+            Box::new(crate::io::keyboard::KeyboardStatus::new(kb_data_avail.clone())),
+        );
 
         Self {
             registers,
@@ -149,6 +157,7 @@ impl Runtime {
             running: true,
             status: 0,
             prefix: None,
+            segment_override: None,
             io_bus: Some(io_bus),
             bios_handlers: [None; 256],
             disks: Vec::new(),
@@ -158,6 +167,7 @@ impl Runtime {
             keyboard_irq: Some(kb_irq),
             keyboard_latch: Some(kb_latch),
             keyboard_pending_ascii: 0,
+            keyboard_data_available: Some(kb_data_avail),
             boot_order: Vec::new(),
             instruction_count: 0,
             trace: false,
@@ -219,6 +229,7 @@ impl Runtime {
         let kb_buffer = keyboard.shared_buffer();
         let kb_irq = keyboard.shared_irq();
         let kb_latch = keyboard.shared_latch();
+        let kb_data_avail = keyboard.shared_data_available();
         let monitor_flag = keyboard.shared_monitor_flag();
 
         // Create I/O bus and register devices
@@ -238,7 +249,7 @@ impl Runtime {
         io_bus.register(
             0x64,
             0x64,
-            Box::new(crate::io::keyboard::KeyboardStatus::new(kb_buffer.clone())),
+            Box::new(crate::io::keyboard::KeyboardStatus::new(kb_data_avail.clone())),
         );
         io_bus.register(0x3D4, 0x3DA, Box::new(crate::io::vga::Vga::new()));
 
@@ -249,6 +260,7 @@ impl Runtime {
             running: true,
             status: 0,
             prefix: None,
+            segment_override: None,
             io_bus: Some(io_bus),
             bios_handlers: [None; 256],
             disks,
@@ -258,6 +270,7 @@ impl Runtime {
             keyboard_irq: Some(kb_irq),
             keyboard_latch: Some(kb_latch),
             keyboard_pending_ascii: 0,
+            keyboard_data_available: Some(kb_data_avail),
             boot_order: boot_order.unwrap_or_else(|| vec![0x00, 0x80]),
             instruction_count: 0,
             trace: false,
@@ -271,41 +284,6 @@ impl Runtime {
         vm.set_flag(Interrupt);
         crate::bios::init::init_bios(&mut vm);
         vm
-    }
-
-    fn init_args(&mut self, args: Vec<String>) {
-        let mut argv: Vec<u16> = Vec::with_capacity(args.len());
-        let env = "PATH=/usr:/usr/bin";
-
-        self.push_byte(0);
-        for c in env.bytes().rev() {
-            self.push_byte(c);
-        }
-        let env_addr = self.registers.sp.word();
-        // Push strings (in reverse order so argv[0] ends up at lowest address)
-        for arg in args.iter().rev() {
-            self.push_byte(0);
-            for c in arg.bytes().rev() {
-                self.push_byte(c);
-            }
-            argv.push(self.registers.sp.word());
-        }
-
-        // Word-align the stack before pushing pointers
-        if self.registers.sp.word() & 1 != 0 {
-            self.push_byte(0);
-        }
-        // Push envp = [env_addr, NULL]
-        self.push_word(0);
-        self.push_word(env_addr);
-        // Push NULL ptr of argv
-        self.push_word(0);
-        // Push argv addresses (argv is in reverse order from string push)
-        for address in argv.iter() {
-            self.push_word(*address);
-        }
-        // Push argc
-        self.push_word(argv.len() as u16);
     }
 
     pub fn exit(&mut self, status: u16) {
@@ -328,6 +306,9 @@ impl Runtime {
     }
 
     pub fn data_segment(&mut self) -> &mut Segment {
+        if let Some(segment) = self.segment_override {
+            return self.get_segment(segment);
+        }
         if let Some(Prefix::Seg(segment)) = &self.prefix {
             return self.get_segment(*segment);
         }
@@ -338,6 +319,9 @@ impl Runtime {
     /// BP-based addressing (rm=010, 011, or rm=110 with mod!=00) defaults to SS.
     /// All other modes default to DS. An explicit segment override prefix wins.
     pub fn effective_segment(&mut self, mod_val: u8, rm: u8) -> &mut Segment {
+        if let Some(segment) = self.segment_override {
+            return self.get_segment(segment);
+        }
         if let Some(Prefix::Seg(segment)) = &self.prefix {
             return self.get_segment(*segment);
         }
@@ -353,20 +337,7 @@ impl Runtime {
         }
     }
 
-    #[inline]
-    pub fn set_prefix(&mut self, prefix: Prefix) {
-        self.prefix = Some(Queued(Box::new(prefix)));
-    }
 
-    #[inline]
-    pub fn peek_byte(&self) -> u8 {
-        self.registers.cs.read_byte(self.registers.pc.word())
-    }
-
-    #[inline]
-    pub fn peek_word(&self) -> u16 {
-        self.registers.cs.read_word(self.registers.pc.word())
-    }
 
     #[inline(always)]
     pub fn set_flag(&mut self, flag: CpuFlag) {
@@ -473,10 +444,33 @@ impl Runtime {
             let ivt_offset = vector as usize * 4;
             let new_ip = self.memory.read_word(ivt_offset);
             let new_cs = self.memory.read_word(ivt_offset + 2);
+            let phys = (((new_cs as usize) << 4) + new_ip as usize) & 0xFFFFF;
 
-            if vector >= 0x09 && vector <= 0x09 {
-                log::debug!("[HW-INT] vec={:02X} -> {:04X}:{:04X} IRR={:02X} ISR={:02X} ic={}",
-                           vector, new_cs, new_ip, irr, isr, self.instruction_count);
+            // ROM stub fast path (e.g. keyboard IRQ → INT 09h → CD F0 CF)
+            if phys >= BIOS_ROM {
+                let b0 = self.memory.read_byte(phys);
+                if b0 == 0xCD {
+                    let trap_vec = self.memory.read_byte((phys + 1) & 0xFFFFF);
+                    if self.memory.read_byte((phys + 2) & 0xFFFFF) == 0xCF {
+                        if let Some(handler) = self.bios_handlers[trap_vec as usize] {
+                            let saved_if_tf = self.flags & 0x0300;
+                            handler(self);
+                            self.flags = (self.flags & !0x0300) | saved_if_tf;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Standard IVT dispatch (EOI+IRET stub, hooked IRQ handlers, etc.)
+            {
+                let bda_head = self.memory.read_word(crate::vm::memory::BDA_BASE + 0x1A);
+                let bda_tail = self.memory.read_word(crate::vm::memory::BDA_BASE + 0x1C);
+                log::debug!("[HW-INT] vec={:02X} -> {:04X}:{:04X} IRR={:02X} ISR={:02X} ic={} SP={:04X} IF={} BDA={:02X}/{:02X}",
+                           vector, new_cs, new_ip, irr, isr, self.instruction_count,
+                           self.registers.sp.word(),
+                           if self.check_flag(Interrupt) { 1 } else { 0 },
+                           bda_head, bda_tail);
             }
 
             self.push_word(self.flags);
@@ -570,6 +564,11 @@ impl Runtime {
         // Latch scancode to port 0x60
         if let Some(ref latch) = self.keyboard_latch {
             *latch.lock().unwrap() = scancode;
+        }
+
+        // Mark data available so port 0x64 reports OBF=1
+        if let Some(ref flag) = self.keyboard_data_available {
+            flag.store(true, Ordering::SeqCst);
         }
 
         // Store ASCII for the BIOS INT 09h handler to use
@@ -978,21 +977,10 @@ impl Runtime {
         self.registers.ss.write_word(address, word);
     }
 
-    pub fn push_byte(&mut self, byte: u8) {
-        let address = self.registers.sp.operation(1, u16::wrapping_sub);
-        self.registers.ss.write_byte(address, byte);
-    }
-
     pub fn pop_word(&mut self) -> u16 {
         let address = self.registers.sp.word();
         self.registers.sp.operation(2, u16::wrapping_add);
         self.registers.ss.read_word(address)
-    }
-
-    pub fn pop_byte(&mut self) -> u8 {
-        let address = self.registers.sp.word();
-        self.registers.sp.operation(1, u16::wrapping_add);
-        self.registers.ss.read_byte(address)
     }
 
     pub fn get_segment(&mut self, segment: SegmentType) -> &mut Segment {

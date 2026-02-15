@@ -425,6 +425,14 @@ pub fn int13h(vm: &mut Runtime) {
 pub fn int15h(vm: &mut Runtime) {
     let ah = vm.registers.ax.high();
     match ah {
+        // Keyboard Intercept (called by INT 09h before processing a scancode)
+        // Entry: AL = scancode, CF = 1
+        // Exit:  CF = 1 → process normally; CF = 0 → discard scancode
+        // MUST NOT modify AH/AL — caller expects registers preserved.
+        0x4F => {
+            // Not intercepted: leave CF=1 (already set by caller) and return.
+            // Don't touch any registers so the scancode in AL is preserved.
+        }
         // Wait (microsecond delay) - return immediately
         0x86 => {
             vm.unset_flag(CpuFlag::Carry);
@@ -434,10 +442,20 @@ pub fn int15h(vm: &mut Runtime) {
             vm.registers.ax.set(0); // 0 KB extended memory
             vm.unset_flag(CpuFlag::Carry);
         }
+        // Device Post / Interrupt Complete (notification, no action needed)
+        // AL=01: keyboard, AL=02: floppy, AL=FD: hard disk
+        0x91 => {}
+        // Get System Configuration Parameters — not supported
+        0xC0 => {
+            vm.set_flag(CpuFlag::Carry);
+        }
+        // Get Extended BIOS Data Area Segment — not supported
+        0xC1 => {
+            vm.set_flag(CpuFlag::Carry);
+        }
         // Function not supported - set CF to indicate error
         _ => {
             debug!("INT 15h: unsupported function AH={:02X}", ah);
-            vm.registers.ax.set_high(0x86); // Unsupported function
             vm.set_flag(CpuFlag::Carry);
         }
     }
@@ -480,10 +498,44 @@ pub fn int09h_bios(vm: &mut Runtime) {
         vm.memory.write_byte(kb_status3_addr, kb_status3 & !0x02);
     }
 
-    // Break codes (bit 7 set): just send EOI and return.
-    // TODO: track shift/ctrl/alt state for break codes in BDA 0x417
+    // Update BDA 0x417 modifier flags for make/break codes
+    let shift_addr = BDA_BASE + 0x17;
+    let mut shift_flags = vm.memory.read_byte(shift_addr);
+
+    // Break codes (bit 7 set): update modifier state and return.
     if scancode & 0x80 != 0 {
-        debug!("[INT09-BIOS] break code {:02X}, EOI", scancode);
+        let make = scancode & 0x7F;
+        match make {
+            0x2A => shift_flags &= !0x02, // Left Shift release
+            0x36 => shift_flags &= !0x01, // Right Shift release
+            0x1D => shift_flags &= !0x04, // Ctrl release
+            0x38 => shift_flags &= !0x08, // Alt release
+            _ => {}
+        }
+        vm.memory.write_byte(shift_addr, shift_flags);
+        debug!("[INT09-BIOS] break code {:02X}, shift={:02X}, EOI", scancode, shift_flags);
+        if let Some(ref mut io_bus) = vm.io_bus {
+            io_bus.port_out_byte(0x20, 0x61);
+        }
+        return;
+    }
+
+    // Make codes: update modifier state
+    let is_modifier = match scancode {
+        0x2A => { shift_flags |= 0x02; true } // Left Shift
+        0x36 => { shift_flags |= 0x01; true } // Right Shift
+        0x1D => { shift_flags |= 0x04; true } // Ctrl
+        0x38 => { shift_flags |= 0x08; true } // Alt
+        0x3A => { shift_flags ^= 0x40; true } // Caps Lock toggle
+        0x45 => { shift_flags ^= 0x20; true } // Num Lock toggle
+        0x46 => { shift_flags ^= 0x10; true } // Scroll Lock toggle
+        _ => false,
+    };
+    vm.memory.write_byte(shift_addr, shift_flags);
+
+    // Modifier keys don't go into the keyboard buffer
+    if is_modifier {
+        debug!("[INT09-BIOS] modifier sc={:02X}, shift={:02X}, EOI", scancode, shift_flags);
         if let Some(ref mut io_bus) = vm.io_bus {
             io_bus.port_out_byte(0x20, 0x61);
         }
@@ -539,6 +591,11 @@ pub fn int16h(vm: &mut Runtime) {
                 let mut ascii = vm.memory.read_byte(0x400 + head);
                 let scancode = vm.memory.read_byte(0x400 + head + 1);
 
+                log::debug!("[INT16h] AH={:02X} KEY FOUND head={:02X} tail={:02X} sc={:02X} ascii={:02X} ic={} SP={:04X} IF={}",
+                           ah, head, tail, scancode, ascii, vm.instruction_count,
+                           vm.registers.sp.word(),
+                           if vm.check_flag(CpuFlag::Interrupt) { 1 } else { 0 });
+
                 // AH=00: convert enhanced prefix 0xE0 to 0x00 for backward compat
                 if ah == 0x00 && ascii == 0xE0 {
                     ascii = 0x00;
@@ -556,10 +613,30 @@ pub fn int16h(vm: &mut Runtime) {
                 return;
             }
 
-            // No key available: run periodic tasks (VGA refresh, timer) then retry.
-            // Without this, the 1ms sleep × 1000 instruction threshold = ~1s VGA lag.
-            vm.idle_tick();
+            log::debug!("[INT16h] AH={:02X} WAIT head={:02X} tail={:02X} ic={} SP={:04X} IF={} CS:IP={:04X}:{:04X}",
+                       ah, head, tail, vm.instruction_count,
+                       vm.registers.sp.word(),
+                       if vm.check_flag(CpuFlag::Interrupt) { 1 } else { 0 },
+                       vm.registers.cs.reg().word(), vm.registers.pc.word());
+
+            // Enable interrupts during the wait, just like a real BIOS does
+            // with STI.  Without this, if INT 16h is called from inside an
+            // IVT-dispatched handler (e.g. DOS INT 21h clears IF), pending
+            // IRQs in the PIC can never be serviced and the keyboard deadlocks.
+            vm.set_flag(CpuFlag::Interrupt);
+
+            // Rewind PC first so the return address for any interrupt
+            // dispatch points back to the INT 16h instruction (retry).
             vm.registers.pc.set(vm.registers.op_pc);
+
+            // Service any pending hardware interrupts NOW so that keyboard
+            // IRQ 1 (raised by idle_tick → deliver_keyboard_irq) gets
+            // dispatched.  check_hw_interrupts() pushes flags/CS/IP and
+            // jumps to the handler — so PC must already be set to op_pc
+            // above, otherwise the handler's IRET would return to the
+            // wrong address.
+            vm.idle_tick();
+            vm.check_hw_interrupts();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         // Check key (AH=01, non-blocking) / Extended check (AH=11)
@@ -570,6 +647,9 @@ pub fn int16h(vm: &mut Runtime) {
             if head != tail {
                 let mut ascii = vm.memory.read_byte(0x400 + head);
                 let scancode = vm.memory.read_byte(0x400 + head + 1);
+
+                log::debug!("[INT16h] AH={:02X} PEEK key head={:02X} tail={:02X} sc={:02X} ascii={:02X} ic={}",
+                           ah, head, tail, scancode, ascii, vm.instruction_count);
 
                 // AH=01: convert enhanced prefix 0xE0 to 0x00 for backward compat
                 if ah == 0x01 && ascii == 0xE0 {
@@ -585,7 +665,8 @@ pub fn int16h(vm: &mut Runtime) {
         }
         // Get shift flags
         0x02 | 0x12 => {
-            vm.registers.ax.set_low(0);
+            let shift_flags = vm.memory.read_byte(BDA_BASE + 0x17);
+            vm.registers.ax.set_low(shift_flags);
         }
         // Set typematic rate and delay — ignore, return success
         0x03 => {}

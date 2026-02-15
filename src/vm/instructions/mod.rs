@@ -11,7 +11,7 @@ use crate::vm::modrm::{direct_address, rm_address, ModRM};
 use crate::vm::runtime::CpuFlag::*;
 use crate::vm::runtime::Prefix::{Queued, Seg};
 use crate::vm::runtime::{Prefix, Runtime, SegmentType};
-use std::ops::{BitAnd, BitOr, BitXor, Mul};
+use std::ops::{BitAnd, BitOr, BitXor};
 
 const WORD_MASK: u8 = 0b_00_00_00_01;
 const DIRECTION_MASK: u8 = 0b_00_00_00_10;
@@ -68,6 +68,9 @@ pub fn process(vm: &mut Runtime) {
     let directional: bool = opcode & DIRECTION_MASK != 0;
     if let Some(Queued(prefix)) = vm.prefix.take() {
         vm.prefix = Some(*prefix);
+    } else {
+        // Previous instruction's segment override has been consumed — clear it.
+        vm.segment_override = None;
     }
 
     match opcode {
@@ -148,7 +151,10 @@ pub fn process(vm: &mut Runtime) {
             let al = vm.registers.ax.low();
 
             if (al & 0x0F) >= 0xA || vm.check_flag(AuxCarry) {
-                vm.registers.ax.operation(0x106, u16::wrapping_add);
+                vm.registers.ax.set_low(al.wrapping_add(6));
+                vm.registers
+                    .ax
+                    .set_high(vm.registers.ax.high().wrapping_add(1));
                 vm.set_flag(AuxCarry);
                 vm.set_flag(Carry);
             } else {
@@ -173,19 +179,31 @@ pub fn process(vm: &mut Runtime) {
         // AAM
         0xD4 => {
             let factor = vm.fetch_byte();
-            let (ah, al) = vm.registers.ax.apply_low(factor, div_rem);
-            vm.registers.ax.set_high(ah);
-            vm.registers.ax.set_low(al);
-            vm.update_flag(Zero, al == 0);
-            vm.update_flag(Sign, al & BYTE_SIGN_FLAG != 0);
-            vm.update_flag(Parity, al.count_ones() & 1 == 0);
+            if factor == 0 {
+                // Real 8086 updates PF/ZF/SF as if result were 0 before
+                // the divide exception, so the stacked FLAGS reflect this.
+                vm.update_flag(Zero, true);
+                vm.update_flag(Sign, false);
+                vm.update_flag(Parity, true);
+                control::div_zero(vm);
+            } else {
+                let (ah, al) = vm.registers.ax.apply_low(factor, div_rem);
+                vm.registers.ax.set_high(ah);
+                vm.registers.ax.set_low(al);
+                vm.update_flag(Zero, al == 0);
+                vm.update_flag(Sign, al & BYTE_SIGN_FLAG != 0);
+                vm.update_flag(Parity, al.count_ones() & 1 == 0);
+            }
         }
         // AAS
         0x3F => {
             let al = vm.registers.ax.low();
 
             if (al & 0x0F) >= 0xA || vm.check_flag(AuxCarry) {
-                vm.registers.ax.operation(0x106, u16::wrapping_sub);
+                vm.registers.ax.set_low(al.wrapping_sub(6));
+                vm.registers
+                    .ax
+                    .set_high(vm.registers.ax.high().wrapping_sub(1));
                 vm.set_flag(AuxCarry);
                 vm.set_flag(Carry);
             } else {
@@ -401,9 +419,10 @@ pub fn process(vm: &mut Runtime) {
         0x27 => {
             let old_al = vm.registers.ax.low();
             let old_cf = vm.check_flag(Carry);
+            let old_af = vm.check_flag(AuxCarry);
             let mut cf = false;
 
-            if vm.check_flag(AuxCarry) || (old_al & 0x0F) >= 0x0A {
+            if old_af || (old_al & 0x0F) >= 0x0A {
                 let (new_al, carry) = vm.registers.ax.low().overflowing_add(0x06);
                 vm.registers.ax.set_low(new_al);
                 cf = old_cf || carry;
@@ -411,7 +430,10 @@ pub fn process(vm: &mut Runtime) {
             } else {
                 vm.unset_flag(AuxCarry);
             }
-            if old_cf || old_al > 0x99 {
+            // 8086 undocumented: when initial AF is set, the upper nibble
+            // threshold is 0x9F instead of 0x99 (righto.com silicon analysis).
+            let upper_threshold = if old_af { 0x9F } else { 0x99 };
+            if old_cf || old_al > upper_threshold {
                 let new_al = vm.registers.ax.low().wrapping_add(0x60);
                 vm.registers.ax.set_low(new_al);
                 cf = true;
@@ -426,17 +448,23 @@ pub fn process(vm: &mut Runtime) {
         0x2F => {
             let old_al = vm.registers.ax.low();
             let old_cf = vm.check_flag(Carry);
-            let mut cf = false;
+            let old_af = vm.check_flag(AuxCarry);
+            // On real 8086, CF is determined solely by the upper nibble
+            // correction (step 2). The borrow from the lower nibble
+            // correction (step 1) does NOT propagate to CF.
+            let mut cf = old_cf;
 
-            if vm.check_flag(AuxCarry) || (old_al & 0x0F) >= 0x0A {
-                let (new_al, borrow) = vm.registers.ax.low().overflowing_sub(0x06);
+            if old_af || (old_al & 0x0F) >= 0x0A {
+                let new_al = vm.registers.ax.low().wrapping_sub(0x06);
                 vm.registers.ax.set_low(new_al);
-                cf = old_cf || borrow;
                 vm.set_flag(AuxCarry);
             } else {
                 vm.unset_flag(AuxCarry);
             }
-            if old_cf || old_al > 0x99 {
+            // 8086 undocumented: when initial AF is set, the upper nibble
+            // threshold is 0x9F instead of 0x99 (righto.com silicon analysis).
+            let upper_threshold = if old_af { 0x9F } else { 0x99 };
+            if old_cf || old_al > upper_threshold {
                 let new_al = vm.registers.ax.low().wrapping_sub(0x60);
                 vm.registers.ax.set_low(new_al);
                 cf = true;
@@ -560,7 +588,8 @@ pub fn process(vm: &mut Runtime) {
             let flags = vm.pop_word();
             vm.registers.pc.set(pc);
             vm.registers.cs.reg_mut().set(cs);
-            vm.flags = flags;
+            // 8086: bits 12-15 always 1, bit 1 always 1, bits 3,5 always 0
+            vm.flags = (flags & 0x0FD5) | 0xF002;
         }
         // JMP CONDITIONAL disp
         0x70..=0x7F => {
@@ -829,28 +858,108 @@ pub fn process(vm: &mut Runtime) {
             modrm.set(word);
         }
         // MOV mem/reg,data
+        // Only reg=0 is documented, but on real 8086 all reg values behave as MOV.
         0b_1100_0110 | 0b_1100_0111 => {
             if is_word {
-                let (modrm, reg) = u16::mod_rm_single(vm);
+                let (modrm, _reg) = u16::mod_rm_single(vm);
                 let word = vm.fetch_word();
-
-                match reg & 0b_111 {
-                    0b_000 => modrm.set(word),
-                    _ => unreachable!(),
-                }
+                modrm.set(word);
             } else {
-                let (modrm, reg) = u8::mod_rm_single(vm);
+                let (modrm, _reg) = u8::mod_rm_single(vm);
                 let byte = vm.fetch_byte();
-
-                match reg & 0b_111 {
-                    0b_000 => modrm.set(byte),
-                    _ => unreachable!(),
-                }
+                modrm.set(byte);
             }
         }
         // MOVS
         0b_1010_0100 | 0b_1010_0101 => {
             string::movs(vm, is_word);
+        }
+        // PUSHA (80186+)
+        0x60 => {
+            let ax = vm.registers.ax.word();
+            let cx = vm.registers.cx.word();
+            let dx = vm.registers.dx.word();
+            let bx = vm.registers.bx.word();
+            let sp = vm.registers.sp.word();
+            let bp = vm.registers.bp.word();
+            let si = vm.registers.si.word();
+            let di = vm.registers.di.word();
+            vm.push_word(ax);
+            vm.push_word(cx);
+            vm.push_word(dx);
+            vm.push_word(bx);
+            vm.push_word(sp); // original SP before PUSHA
+            vm.push_word(bp);
+            vm.push_word(si);
+            vm.push_word(di);
+        }
+        // POPA (80186+)
+        0x61 => {
+            let di = vm.pop_word();
+            let si = vm.pop_word();
+            let bp = vm.pop_word();
+            let _sp = vm.pop_word(); // discard saved SP
+            let bx = vm.pop_word();
+            let dx = vm.pop_word();
+            let cx = vm.pop_word();
+            let ax = vm.pop_word();
+            vm.registers.di.set(di);
+            vm.registers.si.set(si);
+            vm.registers.bp.set(bp);
+            vm.registers.bx.set(bx);
+            vm.registers.dx.set(dx);
+            vm.registers.cx.set(cx);
+            vm.registers.ax.set(ax);
+        }
+        // BOUND (80186+) — check array index; just consume operands
+        0x62 => {
+            let _ = u16::mod_rm_single(vm);
+        }
+        // FS/GS segment prefix (386+) — ignore in real mode (treat as DS)
+        0x64 | 0x65 => {
+            vm.prefix = Some(Queued(Box::new(Seg(SegmentType::DS))));
+        }
+        // Operand/Address size override (386+) — ignore in real mode (NOP prefix)
+        0x66 | 0x67 => {}
+        // PUSH imm16 (80186+)
+        0x68 => {
+            let imm = vm.fetch_word();
+            vm.push_word(imm);
+        }
+        // IMUL reg, r/m16, imm16 (80186+)
+        0x69 => {
+            let (modrm, reg) = u16::mod_rm_single(vm);
+            let src = modrm.word();
+            let imm = vm.fetch_word();
+            let result = (src as i16 as i32) * (imm as i16 as i32);
+            vm.registers.ref_reg_word(reg).set(result as u16);
+            let overflow = result < -32768 || result > 32767;
+            vm.update_flag(Overflow, overflow);
+            vm.update_flag(Carry, overflow);
+        }
+        // PUSH sign-extended imm8 (80186+)
+        0x6A => {
+            let imm = vm.fetch_byte() as i8 as u16;
+            vm.push_word(imm);
+        }
+        // IMUL reg, r/m16, imm8 (80186+)
+        0x6B => {
+            let (modrm, reg) = u16::mod_rm_single(vm);
+            let src = modrm.word();
+            let imm = vm.fetch_byte() as i8 as i16;
+            let result = (src as i16 as i32) * (imm as i32);
+            vm.registers.ref_reg_word(reg).set(result as u16);
+            let overflow = result < -32768 || result > 32767;
+            vm.update_flag(Overflow, overflow);
+            vm.update_flag(Carry, overflow);
+        }
+        // INSB/INSW (80186+) — port [DX] -> ES:[DI]
+        0x6C | 0x6D => {
+            string::ins(vm, is_word);
+        }
+        // OUTSB/OUTSW (80186+) — DS:[SI] -> port [DX]
+        0x6E | 0x6F => {
+            string::outs(vm, is_word);
         }
         // NOP
         0x90 => {}
@@ -955,12 +1064,13 @@ pub fn process(vm: &mut Runtime) {
             let word = vm.pop_word();
             vm.registers.ref_reg_word(opcode & 0b111).set(word);
         }
-        // POP sreg
-        0b_0000_0111 | 0b_0001_0111 | 0b_0001_1111 => {
+        // POP sreg (ES=0x07, CS=0x0F, SS=0x17, DS=0x1F)
+        0b_0000_0111 | 0b_0000_1111 | 0b_0001_0111 | 0b_0001_1111 => {
             let word = vm.pop_word();
             let seg_field = (opcode >> 3) & 0b11;
             match seg_field {
                 0b00 => vm.registers.es.reg_mut(),
+                0b01 => vm.registers.cs.reg_mut(),
                 0b10 => vm.registers.ss.reg_mut(),
                 0b11 => vm.registers.ds.reg_mut(),
                 _ => unreachable!(),
@@ -973,12 +1083,20 @@ pub fn process(vm: &mut Runtime) {
         }
         // POPF
         0x9D => {
-            vm.flags = vm.pop_word();
+            // 8086: bits 12-15 always 1, bit 1 always 1, bits 3,5 always 0
+            vm.flags = (vm.pop_word() & 0x0FD5) | 0xF002;
         }
         // PUSH reg
         0b_0101_0000..=0b_0101_0111 => {
             let reg = opcode & 0b111;
-            vm.push_word(vm.registers.read_reg_word(reg));
+            if reg == 4 {
+                // 8086 quirk: PUSH SP pushes the already-decremented value
+                vm.registers.sp.operation(2, u16::wrapping_sub);
+                let sp = vm.registers.sp.word();
+                vm.registers.ss.write_word(sp, sp);
+            } else {
+                vm.push_word(vm.registers.read_reg_word(reg));
+            }
         }
         // PUSH sreg
         0b_0000_0110 | 0b_0000_1110 | 0b_0001_0110 | 0b_0001_1110 => {
@@ -994,7 +1112,8 @@ pub fn process(vm: &mut Runtime) {
         }
         // PUSHF
         0x9C => {
-            vm.push_word(vm.flags);
+            // 8086: bits 12-15 always 1, bit 1 always 1
+            vm.push_word(vm.flags | 0xF002);
         }
         // ROL / ROR / RCL / RCR / SHL / SHR / SAL / SAR  r/m, imm8  (186+, needed by MS-DOS)
         0xC0 | 0xC1 => {
@@ -1041,7 +1160,8 @@ pub fn process(vm: &mut Runtime) {
         }
         // SAHF
         0x9E => {
-            vm.flags = (vm.flags & 0xFF00) | (vm.registers.ax.high() as u16);
+            // Load AH into low byte of flags; 8086: bit 1=1, bits 3,5=0
+            vm.flags = (vm.flags & 0xFF00) | ((vm.registers.ax.high() as u16) & 0x00D5) | 0x0002;
         }
         // SBB ac,imm
         0b_0001_1100 | 0b_0001_1101 => {
@@ -1107,9 +1227,9 @@ pub fn process(vm: &mut Runtime) {
         }
         // SEG
         0b_0010_0110 | 0b_0010_1110 | 0b_0011_0110 | 0b_0011_1110 => {
-            vm.prefix = Some(Queued(Box::new(Seg(SegmentType::from(
-                (opcode >> 3) & 0b_11,
-            )))));
+            let seg = SegmentType::from((opcode >> 3) & 0b_11);
+            vm.segment_override = Some(seg);
+            vm.prefix = Some(Queued(Box::new(Seg(seg))));
         }
         // STOS
         0b_1010_1010 | 0b_1010_1011 => {
@@ -1210,6 +1330,12 @@ pub fn process(vm: &mut Runtime) {
                 let (mut modrm, reg) = u8::mod_rm_single(vm);
                 modrm.swap(&mut vm.registers.ref_reg_byte(reg));
             }
+        }
+        // SALC (undocumented) — set AL to 0xFF if CF, else 0x00
+        0xD6 => {
+            vm.registers
+                .ax
+                .set_low(if vm.check_flag(Carry) { 0xFF } else { 0x00 });
         }
         // XLAT
         0xD7 => {

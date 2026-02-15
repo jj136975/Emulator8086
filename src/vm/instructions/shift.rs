@@ -44,10 +44,15 @@ fn shift_word(vm: &mut Runtime, modrm: <u16 as ModRM>::Target, reg: u8, count: u
         // RCR
         0b_011 => word.rotate_carry_right(count, vm.check_flag(Carry)),
         // SHL | SAL
-        0b_100 | 0b_110 => {
+        0b_100 => {
             let result = if count >= 16 { 0u16 } else { word.wrapping_shl(count) };
             let cf = if count <= 16 { word & (1u16 << (16u32 - count)) != 0 } else { false };
             (result, cf)
+        },
+        // SETMO (undocumented: result is always all-1s on real 8086)
+        0b_110 => {
+            let cf = if count <= 16 { word & (1u16 << (16u32 - count)) != 0 } else { false };
+            (0xFFFFu16, cf)
         },
         // SHR
         0b_101 => {
@@ -106,10 +111,15 @@ fn shift_byte(vm: &mut Runtime, modrm: <u8 as ModRM>::Target, reg: u8, count: u3
         // RCR
         0b_011 => byte.rotate_carry_right(count, vm.check_flag(Carry)),
         // SHL | SAL
-        0b_100 | 0b_110 => {
+        0b_100 => {
             let result = if count >= 8 { 0u8 } else { byte.wrapping_shl(count) };
             let cf = if count <= 8 { byte & (1u8 << (8u32 - count)) != 0 } else { false };
             (result, cf)
+        },
+        // SETMO (undocumented: result is always all-1s on real 8086)
+        0b_110 => {
+            let cf = if count <= 8 { byte & (1u8 << (8u32 - count)) != 0 } else { false };
+            (0xFFu8, cf)
         },
         // SHR
         0b_101 => {

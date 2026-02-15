@@ -245,7 +245,8 @@ fn pushf_popf() {
     exec(&mut vm); // PUSHF
     vm.flags = 0;
     exec(&mut vm); // POPF
-    assert_eq!(vm.flags, 0x0246);
+    // 8086 reserved bits: bits 12-15 always 1, bit 1 always 1
+    assert_eq!(vm.flags, 0xF246);
 }
 
 #[test]

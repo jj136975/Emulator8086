@@ -1,7 +1,7 @@
 use std::ops::{BitAnd, BitOr, BitXor, Not};
 use crate::utils::number::{extend_sign, SpecialOps};
 use crate::vm::modrm::ModRM;
-use crate::vm::runtime::Runtime;
+use crate::vm::runtime::{Prefix, Runtime};
 use crate::vm::runtime::CpuFlag::*;
 use super::{
     update_arithmetic_flags_word, update_arithmetic_flags_byte,
@@ -144,8 +144,8 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
         let (modrm, reg) = u16::mod_rm_single(vm);
 
         match reg & 0b_111 {
-            // TEST
-            0b_000 => {
+            // TEST (reg=1 is undocumented alias on 8086)
+            0b_000 | 0b_001 => {
                 let word = vm.fetch_word();
                 let res = modrm.word().bitand(word);
                 update_logical_flags_word(vm, res);
@@ -165,7 +165,9 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             },
             // MUL - only CF/OF defined
             0b_100 => {
-                let res: u32 = (vm.registers.ax.word() as u32) * (modrm.word() as u32);
+                let mut res: u32 = (vm.registers.ax.word() as u32) * (modrm.word() as u32);
+                // 8086 undocumented: REPZ prefix negates result (F1 flag)
+                if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = (res as i32).wrapping_neg() as u32; }
                 let dx: u16 = (res >> 16) as u16;
                 vm.registers.dx.set(dx);
                 vm.registers.ax.set(res as u16);
@@ -174,7 +176,9 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             },
             // IMUL - sign-extend operands, only CF/OF defined
             0b_101 => {
-                let res: i32 = (vm.registers.ax.word() as i16 as i32) * (modrm.word() as i16 as i32);
+                let mut res: i32 = (vm.registers.ax.word() as i16 as i32) * (modrm.word() as i16 as i32);
+                // 8086 undocumented: REPZ prefix negates result (F1 flag)
+                if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = res.wrapping_neg(); }
                 let dx: u16 = ((res as u32) >> 16) as u16;
                 vm.registers.dx.set(dx);
                 vm.registers.ax.set(res as u16);
@@ -191,8 +195,10 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 if denum == 0 {
                     div_zero(vm);
                 } else {
-                    let quot = numerator / denum;
+                    let mut quot = numerator / denum;
                     let rem = numerator % denum;
+                    // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
+                    if matches!(vm.prefix, Some(Prefix::Rep(_))) { quot = (quot as i32).wrapping_neg() as u32; }
                     if quot > u16::MAX as u32 {
                         div_zero(vm);
                     } else {
@@ -209,8 +215,12 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 if denum == 0 {
                     div_zero(vm);
                 } else {
-                    let quot = numerator / denum;
+                    let mut quot = numerator / denum;
                     let rem = numerator % denum;
+                    // 8086 undocumented: REPZ prefix sets internal F1 flag,
+                    // which the multiply/divide microcode uses for sign tracking.
+                    // This causes an extra negation of the quotient.
+                    if matches!(vm.prefix, Some(Prefix::Rep(_))) { quot = -quot; }
                     if quot < -32768 || quot > 32767 {
                         div_zero(vm);
                     } else {
@@ -225,8 +235,8 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
         let (modrm, reg) = u8::mod_rm_single(vm);
 
         match reg & 0b_111 {
-            // TEST
-            0b_000 => {
+            // TEST (reg=1 is undocumented alias on 8086)
+            0b_000 | 0b_001 => {
                 let byte = vm.fetch_byte();
                 let res = modrm.apply(byte, u8::bitand);
                 update_logical_flags_byte(vm, res);
@@ -244,9 +254,11 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 update_arithmetic_flags_byte(vm, res, overflow, carry);
                 vm.update_flag(AuxCarry, (operand & 0xF) != 0);
             },
-            // MUL - only CF/OF defined, fix mask check
+            // MUL - only CF/OF defined
             0b_100 => {
-                let res: u16 = (vm.registers.ax.low() as u16) * (modrm.byte() as u16);
+                let mut res: u16 = (vm.registers.ax.low() as u16) * (modrm.byte() as u16);
+                // 8086 undocumented: REPZ prefix negates result (F1 flag)
+                if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = (res as i16).wrapping_neg() as u16; }
                 vm.registers.ax.set(res);
                 let high_nonzero = res >> 8 != 0;
                 vm.update_flag(Carry, high_nonzero);
@@ -254,7 +266,9 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             },
             // IMUL - only CF/OF defined
             0b_101 => {
-                let res: i16 = (vm.registers.ax.low() as i8 as i16) * (modrm.byte() as i8 as i16);
+                let mut res: i16 = (vm.registers.ax.low() as i8 as i16) * (modrm.byte() as i8 as i16);
+                // 8086 undocumented: REPZ prefix negates result (F1 flag)
+                if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = res.wrapping_neg(); }
                 vm.registers.ax.set(res as u16);
                 // CF/OF set if sign extension of AL != AX
                 let sign_ext_check = (res as i8 as i16) != res;
@@ -269,8 +283,10 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 if denum == 0 {
                     div_zero(vm);
                 } else {
-                    let quot = numerator / denum;
+                    let mut quot = numerator / denum;
                     let rem = numerator % denum;
+                    // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
+                    if matches!(vm.prefix, Some(Prefix::Rep(_))) { quot = (quot as i16).wrapping_neg() as u16; }
                     if quot > u8::MAX as u16 {
                         div_zero(vm);
                     } else {
@@ -287,8 +303,10 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 if denum == 0 {
                     div_zero(vm);
                 } else {
-                    let quot = numerator / denum;
+                    let mut quot = numerator / denum;
                     let rem = numerator % denum;
+                    // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
+                    if matches!(vm.prefix, Some(Prefix::Rep(_))) { quot = -quot; }
                     if quot < -128 || quot > 127 {
                         div_zero(vm);
                     } else {

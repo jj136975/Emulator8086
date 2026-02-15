@@ -3,20 +3,25 @@ use crate::vm::memory::{BDA_BASE, BIOS_ROM};
 use crate::vm::runtime::Runtime;
 
 pub fn init_bios(vm: &mut Runtime) {
-    // Register BIOS interrupt handlers
-    vm.bios_handlers[0x10] = Some(int10h);
-    vm.bios_handlers[0x11] = Some(int11h);
-    vm.bios_handlers[0x12] = Some(int12h);
-    vm.bios_handlers[0x13] = Some(int13h);
-    vm.bios_handlers[0x15] = Some(int15h);
-    vm.bios_handlers[0x16] = Some(int16h);
-    vm.bios_handlers[0x19] = Some(int19h);
-    vm.bios_handlers[0x1A] = Some(int1ah);
-
-    // INT F0h is the trap vector used by the ROM INT 09h stub.
-    // When the x86 stub executes "INT F0h", dispatch_int finds this
-    // handler and calls it directly — no IVT push/pop cycle needed.
+    // Register BIOS handlers on private trap vectors (0xF0-0xF8).
+    // Each BIOS interrupt (INT 09h, 10h, …) gets a ROM stub that does
+    //     INT Fxh ; IRET
+    // The IVT entry for the interrupt points to this stub.  dispatch_int
+    // finds bios_handlers[0xFx] for the trap vector and calls the Rust
+    // handler directly.
+    //
+    // This design lets guest software (DOS, TSRs) hook any BIOS vector by
+    // changing the IVT — dispatch_int will follow the IVT to the guest
+    // hook, which can chain to the original ROM stub if desired.
     vm.bios_handlers[0xF0] = Some(int09h_bios);
+    vm.bios_handlers[0xF1] = Some(int10h);
+    vm.bios_handlers[0xF2] = Some(int11h);
+    vm.bios_handlers[0xF3] = Some(int12h);
+    vm.bios_handlers[0xF4] = Some(int13h);
+    vm.bios_handlers[0xF5] = Some(int15h);
+    vm.bios_handlers[0xF6] = Some(int16h);
+    vm.bios_handlers[0xF7] = Some(int19h);
+    vm.bios_handlers[0xF8] = Some(int1ah);
 
     // Write 256 IRET stubs in ROM area — one per interrupt vector.
     // This ensures ANY unhandled INT (e.g. INT 2Fh, INT 33h) safely
@@ -32,19 +37,36 @@ pub fn init_bios(vm: &mut Runtime) {
         vm.memory.write_word(ivt_offset + 2, stub_seg);
     }
 
-    // Write INT 09h handler stub in ROM:  INT F0h ; IRET
-    // This is the BIOS keyboard handler that programs can chain to.
-    // The INT F0h instruction traps into our Rust int09h_bios() handler,
-    // then IRET returns from the interrupt.
-    let int09_stub = BIOS_ROM + 0x400;
+    // Write ROM stubs for all BIOS interrupt handlers.
+    // Each stub is 3 bytes:  INT Fxh ; IRET
+    // The IVT entry for the corresponding vector points here.
+    // Guest software can hook a vector by changing the IVT; dispatch_int
+    // will follow the IVT chain.  The original handler is reachable by
+    // calling or jumping to the ROM stub address.
     let stub_seg = (BIOS_ROM >> 4) as u16;
-    vm.memory.write_byte(int09_stub, 0xCD);       // INT
-    vm.memory.write_byte(int09_stub + 1, 0xF0);   //   F0h
-    vm.memory.write_byte(int09_stub + 2, 0xCF);   // IRET
+    let bios_stubs: &[(u8, u8)] = &[
+        // (BIOS vector, trap vector)
+        (0x09, 0xF0),  // Keyboard IRQ
+        (0x10, 0xF1),  // Video services
+        (0x11, 0xF2),  // Equipment list
+        (0x12, 0xF3),  // Memory size
+        (0x13, 0xF4),  // Disk services
+        (0x15, 0xF5),  // System services
+        (0x16, 0xF6),  // Keyboard services
+        (0x19, 0xF7),  // Bootstrap loader
+        (0x1A, 0xF8),  // Time services
+    ];
+    for (i, &(bios_vec, trap_vec)) in bios_stubs.iter().enumerate() {
+        let stub_addr = BIOS_ROM + 0x400 + i * 3;
+        vm.memory.write_byte(stub_addr, 0xCD);         // INT
+        vm.memory.write_byte(stub_addr + 1, trap_vec);  //   Fxh
+        vm.memory.write_byte(stub_addr + 2, 0xCF);     // IRET
 
-    // Point IVT[9] to the INT 09h stub (overrides the IRET-only stub)
-    vm.memory.write_word(9 * 4, (int09_stub & 0xFFFF) as u16);
-    vm.memory.write_word(9 * 4 + 2, stub_seg);
+        // Point IVT[bios_vec] to this stub (overrides the IRET-only stub)
+        let ivt_offset = bios_vec as usize * 4;
+        vm.memory.write_word(ivt_offset, (stub_addr & 0xFFFF) as u16);
+        vm.memory.write_word(ivt_offset + 2, stub_seg);
+    }
 
     // Write a generic "EOI + IRET" stub for hardware interrupts (IRQ 0-7).
     // Without EOI, the PIC's ISR bit stays set and blocks lower-priority IRQs.
@@ -53,7 +75,7 @@ pub fn init_bios(vm: &mut Runtime) {
     //   OUT 20h, AL  ; E6 20
     //   POP AX       ; 58
     //   IRET         ; CF
-    let eoi_stub = BIOS_ROM + 0x410;
+    let eoi_stub = BIOS_ROM + 0x440;
     vm.memory.write_byte(eoi_stub, 0x50);         // PUSH AX
     vm.memory.write_byte(eoi_stub + 1, 0xB0);     // MOV AL, imm8
     vm.memory.write_byte(eoi_stub + 2, 0x20);     //   0x20

@@ -84,26 +84,6 @@ impl WordWrapper {
     }
 
     #[inline(always)]
-    pub fn low(&self) -> u8 {
-        unsafe { (*self.inner)[LOW_IDX] }
-    }
-
-    #[inline(always)]
-    pub fn high(&self) -> u8 {
-        unsafe { (*self.inner)[HIGH_IDX] }
-    }
-
-    #[inline(always)]
-    pub fn ref_mut_low(&mut self) -> &mut u8 {
-        unsafe { &mut (*self.inner)[LOW_IDX] }
-    }
-
-    #[inline(always)]
-    pub fn ref_mut_high(&mut self) -> &mut u8 {
-        unsafe { &mut (*self.inner)[HIGH_IDX] }
-    }
-
-    #[inline(always)]
     pub fn set(&self, word: u16) {
         let bytes = word.to_le_bytes();
         unsafe { (*self.inner)[0] = bytes[0] };
@@ -111,49 +91,10 @@ impl WordWrapper {
     }
 
     #[inline(always)]
-    pub fn set_low(&self, byte: u8) {
-        unsafe { (*self.inner)[LOW_IDX] = byte };
-    }
-
-    #[inline(always)]
-    pub fn set_high(&self, byte: u8) {
-        unsafe { (*self.inner)[HIGH_IDX] = byte };
-    }
-
-    #[inline(always)]
     pub fn operation<T>(&self, value: T, operation: fn (u16, T) -> u16) -> u16 {
         let res = operation(self.word(), value);
         self.set(res);
         res
-    }
-
-    #[inline(always)]
-    pub fn apply<T, U>(&self, value: U, operation: fn (u16, U) -> T) -> T {
-        operation(self.word(), value)
-    }
-
-    #[inline(always)]
-    pub fn operation_low<T>(&self, value: T, operation: fn (u8, T) -> u8) -> u8 {
-        let res = operation(self.low(), value);
-        self.set_low(res);
-        res
-    }
-
-    #[inline(always)]
-    pub fn apply_low<T, U>(&self, value: U, operation: fn (u8, U) -> T) -> T {
-        operation(self.low(), value)
-    }
-
-    #[inline(always)]
-    pub fn operation_high<T>(&self, value: T, operation: fn (u8, T) -> u8) -> u8 {
-        let res = operation(self.high(), value);
-        self.set_high(res);
-        res
-    }
-
-    #[inline(always)]
-    pub fn apply_high<T, U>(&self, value: U, operation: fn (u8, U) -> T) -> T {
-        operation(self.high(), value)
     }
 
     #[inline]
@@ -226,21 +167,11 @@ impl Register {
         unsafe { self.byte[HIGH_IDX] = byte };
     }
 
-    #[inline]
-    pub fn as_wrapper(&mut self) -> WordWrapper {
-        WordWrapper::from_register(self)
-    }
-
     #[inline(always)]
     pub fn operation<T>(&mut self, value: T, operation: fn (u16, T) -> u16) -> u16 {
         let res = operation(self.word(), value);
         self.set(res);
         res
-    }
-
-    #[inline(always)]
-    pub fn apply<T, U>(&self, value: U, operation: fn (u16, U) -> T) -> T {
-        operation(self.word(), value)
     }
 
     #[inline(always)]
@@ -260,11 +191,6 @@ impl Register {
         let res = operation(self.high(), value);
         self.set_high(res);
         res
-    }
-
-    #[inline(always)]
-    pub fn apply_high<T, U>(&self, value: U, operation: fn (u8, U) -> T) -> T {
-        operation(self.high(), value)
     }
 }
 
