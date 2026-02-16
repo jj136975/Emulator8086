@@ -168,28 +168,28 @@ fn setup_vm(initial: &InitialState) -> Runtime {
     let mut vm = Runtime::new_test();
 
     // General purpose registers
-    vm.registers.ax.set(initial.regs.ax);
-    vm.registers.bx.set(initial.regs.bx);
-    vm.registers.cx.set(initial.regs.cx);
-    vm.registers.dx.set(initial.regs.dx);
-    vm.registers.sp.set(initial.regs.sp);
-    vm.registers.bp.set(initial.regs.bp);
-    vm.registers.si.set(initial.regs.si);
-    vm.registers.di.set(initial.regs.di);
+    vm.cpu.registers.ax.set(initial.regs.ax);
+    vm.cpu.registers.bx.set(initial.regs.bx);
+    vm.cpu.registers.cx.set(initial.regs.cx);
+    vm.cpu.registers.dx.set(initial.regs.dx);
+    vm.cpu.registers.sp.set(initial.regs.sp);
+    vm.cpu.registers.bp.set(initial.regs.bp);
+    vm.cpu.registers.si.set(initial.regs.si);
+    vm.cpu.registers.di.set(initial.regs.di);
 
     // Segment registers
-    vm.registers.cs.reg_mut().set(initial.regs.cs);
-    vm.registers.ds.reg_mut().set(initial.regs.ds);
-    vm.registers.es.reg_mut().set(initial.regs.es);
-    vm.registers.ss.reg_mut().set(initial.regs.ss);
+    vm.cpu.registers.cs.reg_mut().set(initial.regs.cs);
+    vm.cpu.registers.ds.reg_mut().set(initial.regs.ds);
+    vm.cpu.registers.es.reg_mut().set(initial.regs.es);
+    vm.cpu.registers.ss.reg_mut().set(initial.regs.ss);
 
     // IP and flags
-    vm.registers.pc.set(initial.regs.ip);
-    vm.flags = initial.regs.flags;
+    vm.cpu.registers.pc.set(initial.regs.ip);
+    vm.cpu.flags = initial.regs.flags;
 
     // RAM (physical addresses)
     for &(addr, value) in &initial.ram {
-        vm.memory.write_byte(addr as usize, value);
+        vm.cpu.memory.write_byte(addr as usize, value);
     }
 
     vm
@@ -217,20 +217,20 @@ fn initial_reg(regs: &InitialRegs, name: &str) -> u16 {
 
 fn actual_reg(vm: &Runtime, name: &str) -> u16 {
     match name {
-        "ax" => vm.registers.ax.word(),
-        "bx" => vm.registers.bx.word(),
-        "cx" => vm.registers.cx.word(),
-        "dx" => vm.registers.dx.word(),
-        "sp" => vm.registers.sp.word(),
-        "bp" => vm.registers.bp.word(),
-        "si" => vm.registers.si.word(),
-        "di" => vm.registers.di.word(),
-        "cs" => vm.registers.cs.reg().word(),
-        "ds" => vm.registers.ds.reg().word(),
-        "es" => vm.registers.es.reg().word(),
-        "ss" => vm.registers.ss.reg().word(),
-        "ip" => vm.registers.pc.word(),
-        "flags" => vm.flags,
+        "ax" => vm.cpu.registers.ax.word(),
+        "bx" => vm.cpu.registers.bx.word(),
+        "cx" => vm.cpu.registers.cx.word(),
+        "dx" => vm.cpu.registers.dx.word(),
+        "sp" => vm.cpu.registers.sp.word(),
+        "bp" => vm.cpu.registers.bp.word(),
+        "si" => vm.cpu.registers.si.word(),
+        "di" => vm.cpu.registers.di.word(),
+        "cs" => vm.cpu.registers.cs.reg().word(),
+        "ds" => vm.cpu.registers.ds.reg().word(),
+        "es" => vm.cpu.registers.es.reg().word(),
+        "ss" => vm.cpu.registers.ss.reg().word(),
+        "ip" => vm.cpu.registers.pc.word(),
+        "flags" => vm.cpu.flags,
         _ => unreachable!(),
     }
 }
@@ -276,14 +276,14 @@ fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
         .get("flags")
         .copied()
         .unwrap_or(test.initial.regs.flags);
-    if (vm.flags & flags_mask) != (expected_flags & flags_mask) {
+    if (vm.cpu.flags & flags_mask) != (expected_flags & flags_mask) {
         mismatches.push(format!(
             "flags: expected={:#06X} actual={:#06X} (mask={:#06X}, raw_exp={:#06X}, raw_act={:#06X})",
             expected_flags & flags_mask,
-            vm.flags & flags_mask,
+            vm.cpu.flags & flags_mask,
             flags_mask,
             expected_flags,
-            vm.flags
+            vm.cpu.flags
         ));
     }
 
@@ -303,7 +303,7 @@ fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
         };
 
     for &(addr, expected_val) in &test.final_state.ram {
-        let actual_val = vm.memory.read_byte(addr as usize);
+        let actual_val = vm.cpu.memory.read_byte(addr as usize);
         let (ev, av) = if let Some((lo, hi)) = stacked_flags_addrs {
             if addr == lo {
                 let m = (flags_mask & 0xFF) as u8;

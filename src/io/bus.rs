@@ -1,18 +1,19 @@
 use log::debug;
+use crate::vm::cpu::Cpu;
 
 pub trait IoDevice {
-    fn port_in_byte(&mut self, port: u16) -> u8;
-    fn port_out_byte(&mut self, port: u16, value: u8);
+    fn port_in_byte(&mut self, port: u16, cpu: &mut Cpu) -> u8;
+    fn port_out_byte(&mut self, port: u16, value: u8, cpu: &mut Cpu);
 
-    fn port_in_word(&mut self, port: u16) -> u16 {
-        let lo = self.port_in_byte(port) as u16;
-        let hi = self.port_in_byte(port.wrapping_add(1)) as u16;
+    fn port_in_word(&mut self, port: u16, cpu: &mut Cpu) -> u16 {
+        let lo = self.port_in_byte(port, cpu) as u16;
+        let hi = self.port_in_byte(port.wrapping_add(1), cpu) as u16;
         lo | (hi << 8)
     }
 
-    fn port_out_word(&mut self, port: u16, value: u16) {
-        self.port_out_byte(port, value as u8);
-        self.port_out_byte(port.wrapping_add(1), (value >> 8) as u8);
+    fn port_out_word(&mut self, port: u16, value: u16, cpu: &mut Cpu) {
+        self.port_out_byte(port, value as u8, cpu);
+        self.port_out_byte(port.wrapping_add(1), (value >> 8) as u8, cpu);
     }
 
     fn name(&self) -> &'static str;
@@ -60,52 +61,52 @@ impl IoBus {
         self.last_port = end;
     }
 
-    pub fn port_in_byte(&mut self, port: u16) -> u8 {
+    pub fn port_in_byte(&mut self, port: u16, cpu: &mut Cpu) -> u8 {
         if port < self.first_port || port > self.last_port {
             return 0xFF; // Unmapped ports read as 0xFF
         }
         for mapping in &self.mappings {
             if port >= mapping.start && port <= mapping.end {
-                return self.devices[mapping.device_idx].port_in_byte(port);
+                return self.devices[mapping.device_idx].port_in_byte(port, cpu);
             }
         }
         debug!("Read from unmapped port {:04X}", port);
         0xFF
     }
 
-    pub fn port_in_word(&mut self, port: u16) -> u16 {
+    pub fn port_in_word(&mut self, port: u16, cpu: &mut Cpu) -> u16 {
         if port < self.first_port || port > self.last_port {
             return 0xFF; // Unmapped ports read as 0xFF
         }
         for mapping in &self.mappings {
             if port >= mapping.start && port <= mapping.end {
-                return self.devices[mapping.device_idx].port_in_word(port);
+                return self.devices[mapping.device_idx].port_in_word(port, cpu);
             }
         }
         debug!("Read from unmapped port {:04X}", port);
         0xFFFF
     }
 
-    pub fn port_out_byte(&mut self, port: u16, value: u8) {
+    pub fn port_out_byte(&mut self, port: u16, value: u8, cpu: &mut Cpu) {
         if port < self.first_port || port > self.last_port {
             return; // Ignore writes to unmapped ports
         }
         for mapping in &self.mappings {
             if port >= mapping.start && port <= mapping.end {
-                self.devices[mapping.device_idx].port_out_byte(port, value);
+                self.devices[mapping.device_idx].port_out_byte(port, value, cpu);
                 return;
             }
         }
         debug!("Write to unmapped port {:04X}: {:02X}", port, value);
     }
 
-    pub fn port_out_word(&mut self, port: u16, value: u16) {
+    pub fn port_out_word(&mut self, port: u16, value: u16, cpu: &mut Cpu) {
         if port < self.first_port || port > self.last_port {
             return; // Ignore writes to unmapped ports
         }
         for mapping in &self.mappings {
             if port >= mapping.start && port <= mapping.end {
-                self.devices[mapping.device_idx].port_out_word(port, value);
+                self.devices[mapping.device_idx].port_out_word(port, value, cpu);
                 return;
             }
         }

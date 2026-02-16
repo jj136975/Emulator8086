@@ -1,7 +1,5 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use crate::io::bus::IoDevice;
-use crate::vm::runtime::Runtime;
+use crate::vm::cpu::Cpu;
 
 /// Intel 8259A Programmable Interrupt Controller
 ///
@@ -158,28 +156,20 @@ impl Pic {
     }
 }
 
-pub struct PicDevice {
-    inner: Rc<RefCell<Pic>>,
-}
-
-impl PicDevice {
-    pub fn new(pic: Rc<RefCell<Pic>>) -> Self {
-        Self { inner: pic }
-    }
-}
+pub struct PicDevice;
 
 impl IoDevice for PicDevice {
-    fn port_in_byte(&mut self, port: u16) -> u8 {
+    fn port_in_byte(&mut self, port: u16, cpu: &mut Cpu) -> u8 {
         match port & 0x01 {
-            0 => self.inner.borrow().read_command(),  // 0x20
-            _ => self.inner.borrow().read_data(),     // 0x21
+            0 => cpu.pic.read_command(),  // 0x20
+            _ => cpu.pic.read_data(),     // 0x21
         }
     }
 
-    fn port_out_byte(&mut self, port: u16, value: u8) {
+    fn port_out_byte(&mut self, port: u16, value: u8, cpu: &mut Cpu) {
         match port & 0x01 {
-            0 => self.inner.borrow_mut().write_command(value),  // 0x20
-            _ => self.inner.borrow_mut().write_data(value),     // 0x21
+            0 => cpu.pic.write_command(value),  // 0x20
+            _ => cpu.pic.write_data(value),     // 0x21
         }
     }
 

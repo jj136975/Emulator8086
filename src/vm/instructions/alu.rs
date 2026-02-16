@@ -16,9 +16,9 @@ pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, direction
     if is_word || (directional && opcode != 0x82) {
         let (modrm, reg) = u16::mod_rm_single(vm);
         let word = if directional {
-            extend_sign(vm.fetch_byte())
+            extend_sign(vm.cpu.fetch_byte())
         } else {
-            vm.fetch_word()
+            vm.cpu.fetch_word()
         };
 
         let prev = modrm.word();
@@ -28,9 +28,9 @@ pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, direction
             // OR
             0b_001 => (modrm.operation(word, u16::bitor), false, false),
             // ADC
-            0b_010 => prev.oc_carry_add(word, vm.check_flag(Carry)),
+            0b_010 => prev.oc_carry_add(word, vm.cpu.check_flag(Carry)),
             // SBB
-            0b_011 => prev.oc_carry_sub(word, vm.check_flag(Carry)),
+            0b_011 => prev.oc_carry_sub(word, vm.cpu.check_flag(Carry)),
             // AND
             0b_100 => (modrm.operation(word, u16::bitand), false, false),
             // SUB
@@ -50,29 +50,29 @@ pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, direction
             // ADD
             0b_000 => {
                 update_arithmetic_flags_word(vm, w, o, c);
-                vm.update_flag(AuxCarry, ((prev & WORD_AUX_CARRY_MASK) + (word & WORD_AUX_CARRY_MASK)) & WORD_AUX_CARRY_FLAG != 0);
+                vm.cpu.update_flag(AuxCarry, ((prev & WORD_AUX_CARRY_MASK) + (word & WORD_AUX_CARRY_MASK)) & WORD_AUX_CARRY_FLAG != 0);
                 modrm.set(w);
             }
             // ADC
             0b_010 => {
-                let cf = vm.check_flag(Carry);
+                let cf = vm.cpu.check_flag(Carry);
                 update_arithmetic_flags_word(vm, w, o, c);
-                vm.update_flag(AuxCarry, (prev & 0xF) + (word & 0xF) + (cf as u16) > 0xF);
+                vm.cpu.update_flag(AuxCarry, (prev & 0xF) + (word & 0xF) + (cf as u16) > 0xF);
                 modrm.set(w);
             }
             // SUB, CMP
             0b_101 | 0b_111 => {
                 update_arithmetic_flags_word(vm, w, o, c);
-                vm.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF));
+                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF));
                 if reg & 0b_111 != 0b_111 {
                     modrm.set(w);
                 }
             }
             // SBB
             0b_011 => {
-                let cf = vm.check_flag(Carry) as u16;
+                let cf = vm.cpu.check_flag(Carry) as u16;
                 update_arithmetic_flags_word(vm, w, o, c);
-                vm.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF) + cf);
+                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF) + cf);
                 modrm.set(w);
             }
             _ => {}
@@ -83,7 +83,7 @@ pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, direction
         return;
     } else {
         let (modrm, reg) = u8::mod_rm_single(vm);
-        let byte = vm.fetch_byte();
+        let byte = vm.cpu.fetch_byte();
 
         let prev = modrm.byte();
         let (b, o, c) = match reg & 0b_111 {
@@ -92,9 +92,9 @@ pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, direction
             // OR
             0b_001 => (modrm.operation(byte, u8::bitor), false, false),
             // ADC
-            0b_010 => prev.oc_carry_add(byte, vm.check_flag(Carry)),
+            0b_010 => prev.oc_carry_add(byte, vm.cpu.check_flag(Carry)),
             // SBB
-            0b_011 => prev.oc_carry_sub(byte, vm.check_flag(Carry)),
+            0b_011 => prev.oc_carry_sub(byte, vm.cpu.check_flag(Carry)),
             // AND
             0b_100 => (modrm.operation(byte, u8::bitand), false, false),
             // SUB
@@ -112,26 +112,26 @@ pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, direction
             }
             0b_000 => {
                 update_arithmetic_flags_byte(vm, b, o, c);
-                vm.update_flag(AuxCarry, ((prev & BYTE_AUX_CARRY_MASK) + (byte & BYTE_AUX_CARRY_MASK)) & BYTE_AUX_CARRY_FLAG != 0);
+                vm.cpu.update_flag(AuxCarry, ((prev & BYTE_AUX_CARRY_MASK) + (byte & BYTE_AUX_CARRY_MASK)) & BYTE_AUX_CARRY_FLAG != 0);
                 modrm.set(b);
             }
             0b_010 => {
-                let cf = vm.check_flag(Carry);
+                let cf = vm.cpu.check_flag(Carry);
                 update_arithmetic_flags_byte(vm, b, o, c);
-                vm.update_flag(AuxCarry, (prev & 0xF) + (byte & 0xF) + (cf as u8) > 0xF);
+                vm.cpu.update_flag(AuxCarry, (prev & 0xF) + (byte & 0xF) + (cf as u8) > 0xF);
                 modrm.set(b);
             }
             0b_101 | 0b_111 => {
                 update_arithmetic_flags_byte(vm, b, o, c);
-                vm.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF));
+                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF));
                 if reg & 0b_111 != 0b_111 {
                     modrm.set(b);
                 }
             }
             0b_011 => {
-                let cf = vm.check_flag(Carry) as u8;
+                let cf = vm.cpu.check_flag(Carry) as u8;
                 update_arithmetic_flags_byte(vm, b, o, c);
-                vm.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF) + cf);
+                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF) + cf);
                 modrm.set(b);
             }
             _ => {}
@@ -146,7 +146,7 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
         match reg & 0b_111 {
             // TEST (reg=1 is undocumented alias on 8086)
             0b_000 | 0b_001 => {
-                let word = vm.fetch_word();
+                let word = vm.cpu.fetch_word();
                 let res = modrm.word().bitand(word);
                 update_logical_flags_word(vm, res);
             },
@@ -161,35 +161,35 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 let (res, overflow, carry) = 0u16.oc_sub(operand);
                 modrm.set(res);
                 update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.update_flag(AuxCarry, (operand & 0xF) != 0);
+                vm.cpu.update_flag(AuxCarry, (operand & 0xF) != 0);
             },
             // MUL - only CF/OF defined
             0b_100 => {
-                let mut res: u32 = (vm.registers.ax.word() as u32) * (modrm.word() as u32);
+                let mut res: u32 = (vm.cpu.registers.ax.word() as u32) * (modrm.word() as u32);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
                 if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = (res as i32).wrapping_neg() as u32; }
                 let dx: u16 = (res >> 16) as u16;
-                vm.registers.dx.set(dx);
-                vm.registers.ax.set(res as u16);
-                vm.update_flag(Carry, dx != 0);
-                vm.update_flag(Overflow, dx != 0);
+                vm.cpu.registers.dx.set(dx);
+                vm.cpu.registers.ax.set(res as u16);
+                vm.cpu.update_flag(Carry, dx != 0);
+                vm.cpu.update_flag(Overflow, dx != 0);
             },
             // IMUL - sign-extend operands, only CF/OF defined
             0b_101 => {
-                let mut res: i32 = (vm.registers.ax.word() as i16 as i32) * (modrm.word() as i16 as i32);
+                let mut res: i32 = (vm.cpu.registers.ax.word() as i16 as i32) * (modrm.word() as i16 as i32);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
                 if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = res.wrapping_neg(); }
                 let dx: u16 = ((res as u32) >> 16) as u16;
-                vm.registers.dx.set(dx);
-                vm.registers.ax.set(res as u16);
+                vm.cpu.registers.dx.set(dx);
+                vm.cpu.registers.ax.set(res as u16);
                 // CF/OF set if sign extension of AX != DX:AX
                 let sign_ext_check = (res as i16 as i32) != res;
-                vm.update_flag(Carry, sign_ext_check);
-                vm.update_flag(Overflow, sign_ext_check);
+                vm.cpu.update_flag(Carry, sign_ext_check);
+                vm.cpu.update_flag(Overflow, sign_ext_check);
             },
             // DIV - no flags defined
             0b_110 => {
-                let numerator: u32 = (vm.registers.dx.word() as u32) << 16 | (vm.registers.ax.word() as u32);
+                let numerator: u32 = (vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32);
                 let denum = modrm.word() as u32;
 
                 if denum == 0 {
@@ -202,14 +202,14 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     if quot > u16::MAX as u32 {
                         div_zero(vm);
                     } else {
-                        vm.registers.ax.set(quot as u16);
-                        vm.registers.dx.set(rem as u16);
+                        vm.cpu.registers.ax.set(quot as u16);
+                        vm.cpu.registers.dx.set(rem as u16);
                     }
                 }
             },
             // IDIV - sign-extend divisor, truncated division, no flags defined
             0b_111 => {
-                let numerator: i32 = ((vm.registers.dx.word() as u32) << 16 | (vm.registers.ax.word() as u32)) as i32;
+                let numerator: i32 = ((vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32)) as i32;
                 let denum = modrm.word() as i16 as i32;
 
                 if denum == 0 {
@@ -224,8 +224,8 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     if quot < -32768 || quot > 32767 {
                         div_zero(vm);
                     } else {
-                        vm.registers.ax.set(quot as u16);
-                        vm.registers.dx.set(rem as u16);
+                        vm.cpu.registers.ax.set(quot as u16);
+                        vm.cpu.registers.dx.set(rem as u16);
                     }
                 }
             },
@@ -237,7 +237,7 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
         match reg & 0b_111 {
             // TEST (reg=1 is undocumented alias on 8086)
             0b_000 | 0b_001 => {
-                let byte = vm.fetch_byte();
+                let byte = vm.cpu.fetch_byte();
                 let res = modrm.apply(byte, u8::bitand);
                 update_logical_flags_byte(vm, res);
             },
@@ -252,32 +252,32 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 let (res, overflow, carry) = 0u8.oc_sub(operand);
                 modrm.set(res);
                 update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.update_flag(AuxCarry, (operand & 0xF) != 0);
+                vm.cpu.update_flag(AuxCarry, (operand & 0xF) != 0);
             },
             // MUL - only CF/OF defined
             0b_100 => {
-                let mut res: u16 = (vm.registers.ax.low() as u16) * (modrm.byte() as u16);
+                let mut res: u16 = (vm.cpu.registers.ax.low() as u16) * (modrm.byte() as u16);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
                 if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = (res as i16).wrapping_neg() as u16; }
-                vm.registers.ax.set(res);
+                vm.cpu.registers.ax.set(res);
                 let high_nonzero = res >> 8 != 0;
-                vm.update_flag(Carry, high_nonzero);
-                vm.update_flag(Overflow, high_nonzero);
+                vm.cpu.update_flag(Carry, high_nonzero);
+                vm.cpu.update_flag(Overflow, high_nonzero);
             },
             // IMUL - only CF/OF defined
             0b_101 => {
-                let mut res: i16 = (vm.registers.ax.low() as i8 as i16) * (modrm.byte() as i8 as i16);
+                let mut res: i16 = (vm.cpu.registers.ax.low() as i8 as i16) * (modrm.byte() as i8 as i16);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
                 if matches!(vm.prefix, Some(Prefix::Rep(_))) { res = res.wrapping_neg(); }
-                vm.registers.ax.set(res as u16);
+                vm.cpu.registers.ax.set(res as u16);
                 // CF/OF set if sign extension of AL != AX
                 let sign_ext_check = (res as i8 as i16) != res;
-                vm.update_flag(Carry, sign_ext_check);
-                vm.update_flag(Overflow, sign_ext_check);
+                vm.cpu.update_flag(Carry, sign_ext_check);
+                vm.cpu.update_flag(Overflow, sign_ext_check);
             },
             // DIV - no flags defined
             0b_110 => {
-                let numerator: u16 = vm.registers.ax.word();
+                let numerator: u16 = vm.cpu.registers.ax.word();
                 let denum = modrm.byte() as u16;
 
                 if denum == 0 {
@@ -290,14 +290,14 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     if quot > u8::MAX as u16 {
                         div_zero(vm);
                     } else {
-                        vm.registers.ax.set_low(quot as u8);
-                        vm.registers.ax.set_high(rem as u8);
+                        vm.cpu.registers.ax.set_low(quot as u8);
+                        vm.cpu.registers.ax.set_high(rem as u8);
                     }
                 }
             },
             // IDIV - truncated division, no flags defined
             0b_111 => {
-                let numerator: i16 = vm.registers.ax.word() as i16;
+                let numerator: i16 = vm.cpu.registers.ax.word() as i16;
                 let denum = modrm.byte() as i8 as i16;
 
                 if denum == 0 {
@@ -310,8 +310,8 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     if quot < -128 || quot > 127 {
                         div_zero(vm);
                     } else {
-                        vm.registers.ax.set_low(quot as u8);
-                        vm.registers.ax.set_high(rem as u8);
+                        vm.cpu.registers.ax.set_low(quot as u8);
+                        vm.cpu.registers.ax.set_high(rem as u8);
                     }
                 }
             },

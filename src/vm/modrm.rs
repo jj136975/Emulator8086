@@ -12,14 +12,14 @@ pub trait ModRM {
 #[inline(always)]
 pub fn rm_address(vm: &Runtime, rm: u8) -> u16 {
     match rm {
-        0b000 => vm.registers.bx.word().wrapping_add(vm.registers.si.word()),
-        0b001 => vm.registers.bx.word().wrapping_add(vm.registers.di.word()),
-        0b010 => vm.registers.bp.word().wrapping_add(vm.registers.si.word()),
-        0b011 => vm.registers.bp.word().wrapping_add(vm.registers.di.word()),
-        0b100 => vm.registers.si.word(),
-        0b101 => vm.registers.di.word(),
-        0b110 => vm.registers.bp.word(),
-        0b111 => vm.registers.bx.word(),
+        0b000 => vm.cpu.registers.bx.word().wrapping_add(vm.cpu.registers.si.word()),
+        0b001 => vm.cpu.registers.bx.word().wrapping_add(vm.cpu.registers.di.word()),
+        0b010 => vm.cpu.registers.bp.word().wrapping_add(vm.cpu.registers.si.word()),
+        0b011 => vm.cpu.registers.bp.word().wrapping_add(vm.cpu.registers.di.word()),
+        0b100 => vm.cpu.registers.si.word(),
+        0b101 => vm.cpu.registers.di.word(),
+        0b110 => vm.cpu.registers.bp.word(),
+        0b111 => vm.cpu.registers.bx.word(),
         _ => unreachable!()
     }
 }
@@ -27,14 +27,14 @@ pub fn rm_address(vm: &Runtime, rm: u8) -> u16 {
 #[inline(always)]
 pub fn direct_address(vm: &mut Runtime, rm: u8) -> u16 {
     match rm {
-        0b000 => vm.registers.bx.word().wrapping_add(vm.registers.si.word()),
-        0b001 => vm.registers.bx.word().wrapping_add(vm.registers.di.word()),
-        0b010 => vm.registers.bp.word().wrapping_add(vm.registers.si.word()),
-        0b011 => vm.registers.bp.word().wrapping_add(vm.registers.di.word()),
-        0b100 => vm.registers.si.word(),
-        0b101 => vm.registers.di.word(),
-        0b110 => vm.fetch_word(),
-        0b111 => vm.registers.bx.word(),
+        0b000 => vm.cpu.registers.bx.word().wrapping_add(vm.cpu.registers.si.word()),
+        0b001 => vm.cpu.registers.bx.word().wrapping_add(vm.cpu.registers.di.word()),
+        0b010 => vm.cpu.registers.bp.word().wrapping_add(vm.cpu.registers.si.word()),
+        0b011 => vm.cpu.registers.bp.word().wrapping_add(vm.cpu.registers.di.word()),
+        0b100 => vm.cpu.registers.si.word(),
+        0b101 => vm.cpu.registers.di.word(),
+        0b110 => vm.cpu.fetch_word(),
+        0b111 => vm.cpu.registers.bx.word(),
         _ => unreachable!()
     }
 }
@@ -42,7 +42,7 @@ pub fn direct_address(vm: &mut Runtime, rm: u8) -> u16 {
 impl ModRM for u8 {
     type Target = ByteWrapper;
     fn mod_rm_lhs(vm: &mut Runtime) -> (ByteWrapper, u8) {
-        let mod_rm = vm.fetch_byte();
+        let mod_rm = vm.cpu.fetch_byte();
         let rm = mod_rm & 0b111;
         let mod_val = (mod_rm >> 6) & 0b11;
 
@@ -52,23 +52,23 @@ impl ModRM for u8 {
                 vm.effective_segment(0b00, rm).read_byte(address)
             }
             0b01 => {
-                let displacement = vm.fetch_byte() as i8 as i16;
+                let displacement = vm.cpu.fetch_byte() as i8 as i16;
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b01, rm).read_byte(address.wrapping_add_signed(displacement))
             }
             0b10 => {
-                let displacement = vm.fetch_word();
+                let displacement = vm.cpu.fetch_word();
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b10, rm).read_byte(address.wrapping_add(displacement))
             }
-            0b11 => vm.registers.read_reg_byte(rm),
+            0b11 => vm.cpu.registers.read_reg_byte(rm),
             _ => unreachable!()
         };
-        (vm.registers.ref_reg_byte((mod_rm >> 3) & 0b111), r2)
+        (vm.cpu.registers.ref_reg_byte((mod_rm >> 3) & 0b111), r2)
     }
 
     fn mod_rm_rhs(vm: &mut Runtime) -> (ByteWrapper, u8) {
-        let mod_rm = vm.fetch_byte();
+        let mod_rm = vm.cpu.fetch_byte();
         let rm = mod_rm & 0b111;
         let mod_val = (mod_rm >> 6) & 0b11;
 
@@ -79,24 +79,24 @@ impl ModRM for u8 {
                     vm.effective_segment(0b00, rm).ref_byte(address)
                 }
                 0b01 => {
-                    let displacement = vm.fetch_byte() as i8 as i16;
+                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
                     vm.effective_segment(0b01, rm).ref_byte(address.wrapping_add_signed(displacement))
                 }
                 0b10 => {
-                    let displacement = vm.fetch_word();
+                    let displacement = vm.cpu.fetch_word();
                     let address = rm_address(vm, rm);
                     vm.effective_segment(0b10, rm).ref_byte(address.wrapping_add(displacement))
                 }
-                0b11 => vm.registers.ref_reg_byte(rm),
+                0b11 => vm.cpu.registers.ref_reg_byte(rm),
                 _ => unreachable!()
             },
-            vm.registers.read_reg_byte((mod_rm >> 3) & 0b111)
+            vm.cpu.registers.read_reg_byte((mod_rm >> 3) & 0b111)
         )
     }
 
     fn mod_rm_single(vm: &mut Runtime) -> (ByteWrapper, u8) {
-        let mod_rm = vm.fetch_byte();
+        let mod_rm = vm.cpu.fetch_byte();
         let rm = mod_rm & 0b111;
         let mod_val = (mod_rm >> 6) & 0b11;
 
@@ -106,16 +106,16 @@ impl ModRM for u8 {
                 vm.effective_segment(0b00, rm).ref_byte(address)
             }
             0b01 => {
-                let displacement = vm.fetch_byte() as i8 as i16;
+                let displacement = vm.cpu.fetch_byte() as i8 as i16;
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b01, rm).ref_byte(address.wrapping_add_signed(displacement))
             }
             0b10 => {
-                let displacement = vm.fetch_word();
+                let displacement = vm.cpu.fetch_word();
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b10, rm).ref_byte(address.wrapping_add(displacement))
             }
-            0b11 => vm.registers.ref_reg_byte(rm),
+            0b11 => vm.cpu.registers.ref_reg_byte(rm),
             _ => unreachable!()
         }, (mod_rm >> 3) & 0b111)
     }
@@ -125,7 +125,7 @@ impl ModRM for u16 {
     type Target = WordWrapper;
 
     fn mod_rm_lhs(vm: &mut Runtime) -> (WordWrapper, u16) {
-        let mod_rm = vm.fetch_byte();
+        let mod_rm = vm.cpu.fetch_byte();
         let rm = mod_rm & 0b111;
         let mod_val = (mod_rm >> 6) & 0b11;
 
@@ -135,23 +135,23 @@ impl ModRM for u16 {
                 vm.effective_segment(0b00, rm).read_word(address)
             }
             0b01 => {
-                let displacement = vm.fetch_byte() as i8 as i16;
+                let displacement = vm.cpu.fetch_byte() as i8 as i16;
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b01, rm).read_word(address.wrapping_add_signed(displacement))
             }
             0b10 => {
-                let displacement = vm.fetch_word();
+                let displacement = vm.cpu.fetch_word();
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b10, rm).read_word(address.wrapping_add(displacement))
             }
-            0b11 => vm.registers.read_reg_word(rm),
+            0b11 => vm.cpu.registers.read_reg_word(rm),
             _ => unreachable!()
         };
-        (vm.registers.ref_reg_word((mod_rm >> 3) & 0b111), r2)
+        (vm.cpu.registers.ref_reg_word((mod_rm >> 3) & 0b111), r2)
     }
 
     fn mod_rm_rhs(vm: &mut Runtime) -> (WordWrapper, u16) {
-        let mod_rm = vm.fetch_byte();
+        let mod_rm = vm.cpu.fetch_byte();
         let rm = mod_rm & 0b111;
         let mod_val = (mod_rm >> 6) & 0b11;
 
@@ -162,24 +162,24 @@ impl ModRM for u16 {
                     vm.effective_segment(0b00, rm).ref_word(address)
                 }
                 0b01 => {
-                    let displacement = vm.fetch_byte() as i8 as i16;
+                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
                     let address = rm_address(vm, rm);
                     vm.effective_segment(0b01, rm).ref_word(address.wrapping_add_signed(displacement))
                 }
                 0b10 => {
-                    let displacement = vm.fetch_word();
+                    let displacement = vm.cpu.fetch_word();
                     let address = rm_address(vm, rm);
                     vm.effective_segment(0b10, rm).ref_word(address.wrapping_add(displacement))
                 }
-                0b11 => vm.registers.ref_reg_word(rm),
+                0b11 => vm.cpu.registers.ref_reg_word(rm),
                 _ => unreachable!()
             },
-            vm.registers.read_reg_word((mod_rm >> 3) & 0b111)
+            vm.cpu.registers.read_reg_word((mod_rm >> 3) & 0b111)
         )
     }
 
     fn mod_rm_single(vm: &mut Runtime) -> (WordWrapper, u8) {
-        let mod_rm = vm.fetch_byte();
+        let mod_rm = vm.cpu.fetch_byte();
         let rm = mod_rm & 0b111;
         let mod_val = (mod_rm >> 6) & 0b11;
 
@@ -189,16 +189,16 @@ impl ModRM for u16 {
                 vm.effective_segment(0b00, rm).ref_word(address)
             }
             0b01 => {
-                let displacement = vm.fetch_byte() as i8 as i16;
+                let displacement = vm.cpu.fetch_byte() as i8 as i16;
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b01, rm).ref_word(address.wrapping_add_signed(displacement))
             }
             0b10 => {
-                let displacement = vm.fetch_word();
+                let displacement = vm.cpu.fetch_word();
                 let address = rm_address(vm, rm);
                 vm.effective_segment(0b10, rm).ref_word(address.wrapping_add(displacement))
             }
-            0b11 => vm.registers.ref_reg_word(rm),
+            0b11 => vm.cpu.registers.ref_reg_word(rm),
             _ => unreachable!()
         }, (mod_rm >> 3) & 0b111)
     }

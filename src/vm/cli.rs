@@ -1,9 +1,33 @@
-use std::path::Path;
-use std::sync::atomic::Ordering;
 use crate::io::disk::{DiskImage, HD_DEFAULT_SIZE_MB};
 use crate::vm::runtime::Runtime;
+use std::path::Path;
 
-pub fn enter_monitor(self: &mut Runtime) {
+fn parse_drive(s: &str) -> Option<usize> {
+    match s.to_lowercase().as_str() {
+        "a" => Some(0),
+        "b" => Some(1),
+        "c" => Some(2),
+        "d" => Some(3),
+        _ => {
+            if parse_hd(s).is_none() {
+                println!("Invalid drive '{}' (use a-d or hd0, hd1, ...)", s);
+            }
+            None
+        }
+    }
+}
+
+/// Parse "hd0", "hd1", etc. Returns the HD index.
+fn parse_hd(s: &str) -> Option<usize> {
+    let lower = s.to_lowercase();
+    if lower.starts_with("hd") {
+        lower[2..].parse::<usize>().ok()
+    } else {
+        None
+    }
+}
+
+pub fn enter_monitor(vm: &mut Runtime) {
     use std::io::Write;
 
     // Disable raw mode for normal terminal I/O
@@ -14,7 +38,7 @@ pub fn enter_monitor(self: &mut Runtime) {
     println!("=== Emulator Monitor (F12) ===");
     println!();
     println!("Floppy Drives:");
-    for (i, disk) in self.disks.iter().enumerate() {
+    for (i, disk) in vm.disks.iter().enumerate() {
         let letter = (b'A' + i as u8) as char;
         match disk {
             Some(d) => {
@@ -24,9 +48,9 @@ pub fn enter_monitor(self: &mut Runtime) {
             None => println!("  {}: [empty]", letter),
         }
     }
-    if !self.hard_disks.is_empty() {
+    if !vm.hard_disks.is_empty() {
         println!("Hard Disks:");
-        for (i, disk) in self.hard_disks.iter().enumerate() {
+        for (i, disk) in vm.hard_disks.iter().enumerate() {
             match disk {
                 Some(d) => {
                     let size_mb = d.total_bytes() / (1024 * 1024);
@@ -77,13 +101,13 @@ pub fn enter_monitor(self: &mut Runtime) {
                     println!("Usage: swap <drive> <path|memory>");
                     continue;
                 }
-                if let Some(hd_idx) = crate::vm::runtime::parse_hd(parts[1]) {
+                if let Some(hd_idx) = parse_hd(parts[1]) {
                     // Hard disk swap
-                    while self.hard_disks.len() <= hd_idx {
-                        self.hard_disks.push(None);
+                    while vm.hard_disks.len() <= hd_idx {
+                        vm.hard_disks.push(None);
                     }
                     if parts[2].eq_ignore_ascii_case("memory") {
-                        self.hard_disks[hd_idx] =
+                        vm.hard_disks[hd_idx] =
                             Some(DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB));
                         println!(
                             "HD{}: blank in-memory hard disk inserted ({}MB)",
@@ -95,16 +119,16 @@ pub fn enter_monitor(self: &mut Runtime) {
                             HD_DEFAULT_SIZE_MB,
                         ) {
                             Ok(disk) => {
-                                self.hard_disks[hd_idx] = Some(disk);
+                                vm.hard_disks[hd_idx] = Some(disk);
                                 println!("HD{}: {}", hd_idx, parts[2]);
                             }
                             Err(e) => println!("Error: {}", e),
                         }
                     }
-                } else if let Some(drive_idx) = crate::vm::runtime::parse_drive(parts[1]) {
+                } else if let Some(drive_idx) = parse_drive(parts[1]) {
                     // Floppy swap
-                    while self.disks.len() <= drive_idx {
-                        self.disks.push(None);
+                    while vm.disks.len() <= drive_idx {
+                        vm.disks.push(None);
                     }
                     if parts[2].to_ascii_lowercase().starts_with("memory") {
                         let size = if let Some(rest) = parts[2]
@@ -119,7 +143,7 @@ pub fn enter_monitor(self: &mut Runtime) {
                         if let Err(e) = img.format_fat() {
                             println!("Warning: could not format floppy: {}", e);
                         }
-                        self.disks[drive_idx] = Some(img);
+                        vm.disks[drive_idx] = Some(img);
                         println!(
                             "Drive {}: formatted {}KB in-memory floppy inserted",
                             parts[1].to_uppercase(),
@@ -128,7 +152,7 @@ pub fn enter_monitor(self: &mut Runtime) {
                     } else {
                         match DiskImage::open_or_create(Path::new(parts[2])) {
                             Ok(disk) => {
-                                self.disks[drive_idx] = Some(disk);
+                                vm.disks[drive_idx] = Some(disk);
                                 println!("Drive {}: {}", parts[1].to_uppercase(), parts[2]);
                             }
                             Err(e) => println!("Error: {}", e),
@@ -141,21 +165,21 @@ pub fn enter_monitor(self: &mut Runtime) {
                     println!("Usage: move <from> <to>");
                     continue;
                 }
-                let from = match crate::vm::runtime::parse_drive(parts[1]) {
+                let from = match parse_drive(parts[1]) {
                     Some(d) => d,
                     None => continue,
                 };
-                let to = match crate::vm::runtime::parse_drive(parts[2]) {
+                let to = match parse_drive(parts[2]) {
                     Some(d) => d,
                     None => continue,
                 };
                 let max = from.max(to);
-                while self.disks.len() <= max {
-                    self.disks.push(None);
+                while vm.disks.len() <= max {
+                    vm.disks.push(None);
                 }
-                let disk = self.disks[from].take();
+                let disk = vm.disks[from].take();
                 if disk.is_some() {
-                    self.disks[to] = disk;
+                    vm.disks[to] = disk;
                     println!(
                         "Moved drive {} -> {}",
                         parts[1].to_uppercase(),
@@ -170,9 +194,9 @@ pub fn enter_monitor(self: &mut Runtime) {
                     println!("Usage: save <drive> <path>");
                     continue;
                 }
-                if let Some(hd_idx) = crate::vm::runtime::parse_hd(parts[1]) {
+                if let Some(hd_idx) = parse_hd(parts[1]) {
                     if let Some(ref mut disk) =
-                        self.hard_disks.get_mut(hd_idx).and_then(|d| d.as_mut())
+                        vm.hard_disks.get_mut(hd_idx).and_then(|d| d.as_mut())
                     {
                         match disk.save_to_file(Path::new(parts[2])) {
                             Ok(()) => println!("HD{} saved to {}", hd_idx, parts[2]),
@@ -181,9 +205,9 @@ pub fn enter_monitor(self: &mut Runtime) {
                     } else {
                         println!("HD{} is empty", hd_idx);
                     }
-                } else if let Some(drive_idx) = crate::vm::runtime::parse_drive(parts[1]) {
+                } else if let Some(drive_idx) = parse_drive(parts[1]) {
                     if let Some(ref mut disk) =
-                        self.disks.get_mut(drive_idx).and_then(|d| d.as_mut())
+                        vm.disks.get_mut(drive_idx).and_then(|d| d.as_mut())
                     {
                         match disk.save_to_file(Path::new(parts[2])) {
                             Ok(()) => println!(
@@ -203,14 +227,14 @@ pub fn enter_monitor(self: &mut Runtime) {
                     println!("Usage: eject <drive>");
                     continue;
                 }
-                if let Some(hd_idx) = crate::vm::runtime::parse_hd(parts[1]) {
-                    if hd_idx < self.hard_disks.len() {
-                        self.hard_disks[hd_idx] = None;
+                if let Some(hd_idx) = parse_hd(parts[1]) {
+                    if hd_idx < vm.hard_disks.len() {
+                        vm.hard_disks[hd_idx] = None;
                         println!("HD{}: ejected", hd_idx);
                     }
-                } else if let Some(drive_idx) = crate::vm::runtime::parse_drive(parts[1]) {
-                    if drive_idx < self.disks.len() {
-                        self.disks[drive_idx] = None;
+                } else if let Some(drive_idx) = parse_drive(parts[1]) {
+                    if drive_idx < vm.disks.len() {
+                        vm.disks[drive_idx] = None;
                         println!("Drive {}: ejected", parts[1].to_uppercase());
                     }
                 }
@@ -271,17 +295,17 @@ pub fn enter_monitor(self: &mut Runtime) {
                     }
                 };
 
-                if let Some(hd_idx) = crate::vm::runtime::parse_hd(drive_str) {
+                if let Some(hd_idx) = parse_hd(drive_str) {
                     if let Some(ref mut disk) =
-                        self.hard_disks.get_mut(hd_idx).and_then(|d| d.as_mut())
+                        vm.hard_disks.get_mut(hd_idx).and_then(|d| d.as_mut())
                     {
                         do_put(disk, &format!("HD{}", hd_idx));
                     } else {
                         println!("HD{} is empty", hd_idx);
                     }
-                } else if let Some(drive_idx) = crate::vm::runtime::parse_drive(drive_str) {
+                } else if let Some(drive_idx) = parse_drive(drive_str) {
                     if let Some(ref mut disk) =
-                        self.disks.get_mut(drive_idx).and_then(|d| d.as_mut())
+                        vm.disks.get_mut(drive_idx).and_then(|d| d.as_mut())
                     {
                         do_put(disk, &drive_str.to_uppercase());
                     } else {
@@ -295,12 +319,12 @@ pub fn enter_monitor(self: &mut Runtime) {
 
     // Re-enable raw mode and force full VGA redraw
     let _ = crossterm::terminal::enable_raw_mode();
-    self.vga_shadow.fill(0);
+    // vm.vga_shadow.fill(0);
     let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
     let _ = std::io::stdout().flush();
 
     // Clear monitor flag to unblock input thread
-    if let Some(ref flag) = self.monitor_flag {
-        flag.store(false, Ordering::SeqCst);
-    }
+    // if let Some(ref flag) = vm.monitor_flag {
+    //     flag.store(false, Ordering::SeqCst);
+    // }
 }

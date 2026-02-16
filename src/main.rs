@@ -47,14 +47,13 @@ fn parse_disk_spec(spec: &str) -> DiskSpec {
     // Heuristic to distinguish "a:path" (emulator drive) from "C:\path" (Windows path):
     // If first char is a letter, position 1 is ':', and position 2 is NOT '\' or '/',
     // treat as emulator drive letter + source. Otherwise, it's a Windows absolute path.
-    let (drive_letter, source_str) = if spec.len() >= 2
+    let (drive_letter, rest) = if spec.len() >= 2
         && spec.as_bytes()[0].is_ascii_alphabetic()
         && spec.as_bytes()[1] == b':'
         && (spec.len() == 2 || (spec.as_bytes()[2] != b'\\' && spec.as_bytes()[2] != b'/'))
     {
         (spec.as_bytes()[0], &spec[2..])
     } else {
-        // Windows absolute path or no drive prefix — default to drive A:
         (b'a', spec)
     };
 
@@ -72,6 +71,15 @@ fn parse_disk_spec(spec: &str) -> DiskSpec {
         }
     };
 
+    // Check for :ro or :rw suffix
+    let (source_str, readonly) = if rest.ends_with(":ro") {
+        (&rest[..rest.len() - 3], true)
+    } else if rest.ends_with(":rw") {
+        (&rest[..rest.len() - 3], false)
+    } else {
+        (rest, false)
+    };
+
     let source = if source_str.eq_ignore_ascii_case("memory") {
         DiskSource::Memory(FLOPPY_144_SIZE)
     } else if source_str.len() > 7 && source_str[..7].eq_ignore_ascii_case("memory:") {
@@ -85,7 +93,11 @@ fn parse_disk_spec(spec: &str) -> DiskSpec {
         DiskSource::FilePath(PathBuf::from(source_str))
     };
 
-    DiskSpec { drive, source }
+    DiskSpec {
+        drive,
+        source,
+        readonly,
+    }
 }
 
 /// Parse a boot order string like "hd0,a,hd1" into BIOS drive numbers.

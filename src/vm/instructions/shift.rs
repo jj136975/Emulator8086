@@ -9,19 +9,19 @@ use super::{update_arithmetic_flags_word, update_arithmetic_flags_byte};
 pub(super) fn group_c0_c1(vm: &mut Runtime, is_word: bool) {
     if is_word {
         let (modrm, reg) = u16::mod_rm_single(vm);
-        let count = vm.fetch_byte() as u32 & 0x1F;
+        let count = vm.cpu.fetch_byte() as u32 & 0x1F;
         shift_word(vm, modrm, reg, count);
     } else {
         let (modrm, reg) = u8::mod_rm_single(vm);
-        let count = vm.fetch_byte() as u32 & 0x1F;
+        let count = vm.cpu.fetch_byte() as u32 & 0x1F;
         shift_byte(vm, modrm, reg, count);
     }
 }
 
 pub(super) fn group_d0_d3(vm: &mut Runtime, is_word: bool, directional: bool) {
-    let mut count = if !directional { 1 } else { vm.registers.cx.low() as u32 };
+    let mut count = if !directional { 1 } else { vm.cpu.registers.cx.low() as u32 };
     // 80186+: shift counts are masked to 5 bits (max 31)
-    if vm.is_186() { count &= 0x1F; }
+    if vm.cpu.is_186() { count &= 0x1F; }
 
     if is_word {
         let (modrm, reg) = u16::mod_rm_single(vm);
@@ -42,9 +42,9 @@ fn shift_word(vm: &mut Runtime, modrm: <u16 as ModRM>::Target, reg: u8, count: u
         // ROR — CF = MSB of result (last bit rotated around)
         0b_001 => { let r = word.rotate_right(count); (r, r & 0x8000 != 0) },
         // RCL
-        0b_010 => word.rotate_carry_left(count, vm.check_flag(Carry)),
+        0b_010 => word.rotate_carry_left(count, vm.cpu.check_flag(Carry)),
         // RCR
-        0b_011 => word.rotate_carry_right(count, vm.check_flag(Carry)),
+        0b_011 => word.rotate_carry_right(count, vm.cpu.check_flag(Carry)),
         // SHL | SAL
         0b_100 => {
             let result = if count >= 16 { 0u16 } else { word.wrapping_shl(count) };
@@ -81,17 +81,17 @@ fn shift_word(vm: &mut Runtime, modrm: <u16 as ModRM>::Target, reg: u8, count: u
                 ((word ^ w) as i16) < 0
             }
         } else {
-            vm.check_flag(Overflow)
+            vm.cpu.check_flag(Overflow)
         };
         update_arithmetic_flags_word(vm, w, overflow, c);
     } else {
-        vm.update_flag(Carry, c);
+        vm.cpu.update_flag(Carry, c);
         if count == 1 {
             match reg & 0b_111 {
-                0b_000 => vm.update_flag(Overflow, ((w as i16) < 0) != c),
-                0b_001 => vm.update_flag(Overflow, ((w >> 15) ^ ((w >> 14) & 1)) != 0),
-                0b_010 => vm.update_flag(Overflow, ((w as i16) < 0) != c),
-                0b_011 => vm.update_flag(Overflow, ((w >> 15) ^ ((w >> 14) & 1)) != 0),
+                0b_000 => vm.cpu.update_flag(Overflow, ((w as i16) < 0) != c),
+                0b_001 => vm.cpu.update_flag(Overflow, ((w >> 15) ^ ((w >> 14) & 1)) != 0),
+                0b_010 => vm.cpu.update_flag(Overflow, ((w as i16) < 0) != c),
+                0b_011 => vm.cpu.update_flag(Overflow, ((w >> 15) ^ ((w >> 14) & 1)) != 0),
                 _ => unreachable!()
             }
         }
@@ -109,9 +109,9 @@ fn shift_byte(vm: &mut Runtime, modrm: <u8 as ModRM>::Target, reg: u8, count: u3
         // ROR — CF = MSB of result (last bit rotated around)
         0b_001 => { let r = byte.rotate_right(count); (r, r & 0x80 != 0) },
         // RCL
-        0b_010 => byte.rotate_carry_left(count, vm.check_flag(Carry)),
+        0b_010 => byte.rotate_carry_left(count, vm.cpu.check_flag(Carry)),
         // RCR
-        0b_011 => byte.rotate_carry_right(count, vm.check_flag(Carry)),
+        0b_011 => byte.rotate_carry_right(count, vm.cpu.check_flag(Carry)),
         // SHL | SAL
         0b_100 => {
             let result = if count >= 8 { 0u8 } else { byte.wrapping_shl(count) };
@@ -148,17 +148,17 @@ fn shift_byte(vm: &mut Runtime, modrm: <u8 as ModRM>::Target, reg: u8, count: u3
                 ((byte ^ b) as i8) < 0
             }
         } else {
-            vm.check_flag(Overflow)
+            vm.cpu.check_flag(Overflow)
         };
         update_arithmetic_flags_byte(vm, b, overflow, c);
     } else {
-        vm.update_flag(Carry, c);
+        vm.cpu.update_flag(Carry, c);
         if count == 1 {
             match reg & 0b_111 {
-                0b_000 => vm.update_flag(Overflow, ((b as i8) < 0) != c),
-                0b_001 => vm.update_flag(Overflow, ((b >> 7) ^ ((b >> 6) & 1)) != 0),
-                0b_010 => vm.update_flag(Overflow, ((b as i8) < 0) != c),
-                0b_011 => vm.update_flag(Overflow, ((b >> 7) ^ ((b >> 6) & 1)) != 0),
+                0b_000 => vm.cpu.update_flag(Overflow, ((b as i8) < 0) != c),
+                0b_001 => vm.cpu.update_flag(Overflow, ((b >> 7) ^ ((b >> 6) & 1)) != 0),
+                0b_010 => vm.cpu.update_flag(Overflow, ((b as i8) < 0) != c),
+                0b_011 => vm.cpu.update_flag(Overflow, ((b >> 7) ^ ((b >> 6) & 1)) != 0),
                 _ => unreachable!()
             }
         }

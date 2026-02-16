@@ -1,23 +1,19 @@
-use std::cell::RefCell;
-use std::fmt::{Debug, Formatter};
-use std::io::Write;
-use std::ops::DerefMut;
-use std::path::PathBuf;
-use std::rc::Rc;
 use crate::io::bus::IoBus;
-use crate::io::console::{DebugConsole, DiskTrap, PitStub};
-use crate::io::disk::{DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
+use crate::io::console::{DebugConsole, PitStub};
+use crate::io::disk::{DiskController, DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
 use crate::io::pic::{Pic, PicDevice};
+use crate::vm::cpu::{Cpu, CpuType};
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CpuType {
-    Intel8086,
-    Intel80186,
-}
+use std::fmt::{Debug, Formatter};
+use std::io::Write;
+use std::ops::DerefMut;
+use std::path::PathBuf;
+use std::time::Duration;
+use crossterm::event;
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -62,19 +58,13 @@ pub enum Prefix {
 }
 
 pub struct Runtime {
-    pub cpu_type: CpuType,
-    pub registers: Registers,
-    pub memory: Box<Memory>,
-    pub flags: u16,
-    pub halted: bool,
+    pub(crate) cpu: Cpu,
     running: bool,
     status: u16,
     pub prefix: Option<Prefix>,
     pub segment_override: Option<SegmentType>,
-    pub io_bus: Option<IoBus>,
-    pub disks: Vec<Option<DiskImage>>,
-    pub hard_disks: Vec<Option<DiskImage>>,
-    pub pic: Rc<RefCell<Pic>>,
+    io_bus: IoBus,
+    pub(crate) hard_disks: Vec<Option<DiskImage>>,
     pub boot_order: Vec<u8>,
     pub instruction_count: u64,
     pub trace: bool,
@@ -91,19 +81,20 @@ impl Runtime {
 
         let registers = Registers::new(memory.deref_mut());
         Self {
-            cpu_type: CpuType::Intel8086,
-            registers,
-            memory,
-            flags: 0,
-            halted: false,
+            cpu: Cpu {
+                cpu_type: CpuType::Intel8086,
+                registers,
+                memory,
+                flags: 0,
+                halted: false,
+                pic: Pic::new(),
+            },
             running: true,
             status: 0,
             prefix: None,
             segment_override: None,
-            io_bus: None,
-            disks: Vec::new(),
+            io_bus: IoBus::new(),
             hard_disks: Vec::new(),
-            pic: Rc::new(RefCell::new(Pic::new())),
             boot_order: Vec::new(),
             instruction_count: 0,
             trace: false,
@@ -119,28 +110,28 @@ impl Runtime {
         let mut memory = Box::new(Memory::new());
         let registers = Registers::new(memory.deref_mut());
 
-        let pic = Rc::new(RefCell::new(Pic::new()));
 
         // let keyboard = crate::io::keyboard::Keyboard::new();
         // let kb_data_avail = keyboard.shared_data_available();
 
         let mut io_bus = IoBus::new();
-        io_bus.register(0x20, 0x21, Box::new(PicDevice::new(Rc::clone(&pic))));
+        io_bus.register(0x20, 0x21, Box::new(PicDevice));
 
         Self {
-            cpu_type: CpuType::Intel8086,
-            registers,
-            memory,
-            flags: 0,
+            cpu: Cpu {
+                cpu_type: CpuType::Intel8086,
+                registers,
+                memory,
+                flags: 0,
+                halted: false,
+                pic: Pic::new(),
+            },
             running: true,
-            halted: false,
             status: 0,
             prefix: None,
             segment_override: None,
-            io_bus: Some(io_bus),
-            disks: Vec::new(),
+            io_bus,
             hard_disks: Vec::new(),
-            pic,
             boot_order: Vec::new(),
             instruction_count: 0,
             trace: false,
@@ -152,29 +143,28 @@ impl Runtime {
         let mut memory = Box::new(Memory::new());
         let registers = Registers::new(memory.deref_mut());
 
-        // Build disks vec — size to fit the highest requested drive index
-        let max_drive = disk_specs.iter().map(|s| s.drive).max().unwrap_or(0) as usize;
-        let mut disks: Vec<Option<DiskImage>> = (0..=max_drive).map(|_| None).collect();
+        let mut disk_ctrl = DiskController::new();
+
         for spec in disk_specs {
             let image = match &spec.source {
                 DiskSource::FilePath(path) => {
                     if spec.drive == 0 {
                         // Boot drive: must exist
-                        DiskImage::open(path).expect("Failed to open disk image")
+                        DiskImage::open(path, spec.readonly).expect("Failed to open disk image")
                     } else {
                         // Non-boot drive: create if doesn't exist
-                        DiskImage::open_or_create(path).expect("Failed to open/create disk image")
+                        DiskImage::open_or_create(path, spec.readonly).expect("Failed to open/create disk image")
                     }
                 }
                 DiskSource::Memory(size) => {
-                    let mut img = DiskImage::new_in_memory_sized(*size);
+                    let mut img = DiskImage::new_in_memory_sized(*size, spec.readonly);
                     if let Err(e) = img.format_fat() {
                         eprintln!("Warning: could not format floppy: {}", e);
                     }
                     img
                 }
             };
-            disks[spec.drive as usize] = Some(image);
+            disk_ctrl.attach(spec.drive, image);
         }
 
         // Build hard disks vec
@@ -190,124 +180,44 @@ impl Runtime {
             hard_disks.push(Some(image));
         }
 
-        // Create shared PIC
-        let pic = Rc::new(RefCell::new(Pic::new()));
-
         // Create I/O bus and register devices
         let mut io_bus = IoBus::new();
 
-        io_bus.register(0x20, 0x21, Box::new(PicDevice::new(Rc::clone(&pic))));
+        io_bus.register(0x20, 0x21, Box::new(PicDevice));
         io_bus.register(0x40, 0x43, Box::new(PitStub));
-        io_bus.register(0xB0, 0xB0, Box::new(DiskTrap));
+
+        io_bus.register(0xB0, 0xB0, Box::new(disk_ctrl));
         io_bus.register(0xE9, 0xE9, Box::new(DebugConsole));
 
         let mut vm = Self {
-            cpu_type: CpuType::Intel80186,
-            registers,
-            memory,
-            flags: 0,
-            halted: false,
+            cpu: Cpu {
+                cpu_type: CpuType::Intel8086,
+                registers,
+                memory,
+                flags: 0,
+                halted: false,
+                pic: Pic::new(),
+            },
             running: true,
             status: 0,
             prefix: None,
             segment_override: None,
-            io_bus: Some(io_bus),
-            disks,
+            io_bus,
             hard_disks,
-            pic,
             boot_order: boot_order.unwrap_or_else(|| vec![0x00, 0x80]),
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
         };
 
-        vm.set_flag(Interrupt);
+        vm.cpu.set_flag(Interrupt);
         // crate::bios::init::init_bios(&mut vm);
         vm
-    }
-
-    #[inline]
-    pub fn is_186(&self) -> bool {
-        self.cpu_type == CpuType::Intel80186
     }
 
     pub fn exit(&mut self, status: u16) {
         self.running = false;
         self.status = status;
-    }
-
-    #[inline]
-    pub fn fetch_byte(&mut self) -> u8 {
-        let res = self.registers.cs.read_byte(self.registers.pc.word());
-        self.registers.pc.operation(1, u16::wrapping_add);
-        res
-    }
-
-    #[inline]
-    pub fn fetch_word(&mut self) -> u16 {
-        let res = self.registers.cs.read_word(self.registers.pc.word());
-        self.registers.pc.operation(2, u16::wrapping_add);
-        res
-    }
-
-    pub fn data_segment(&mut self) -> &mut Segment {
-        if let Some(segment) = self.segment_override {
-            return self.get_segment(segment);
-        }
-        if let Some(Prefix::Seg(segment)) = &self.prefix {
-            return self.get_segment(*segment);
-        }
-        &mut self.registers.ds
-    }
-
-    /// Picks the correct default segment for a ModR/M memory operand.
-    /// BP-based addressing (rm=010, 011, or rm=110 with mod!=00) defaults to SS.
-    /// All other modes default to DS. An explicit segment override prefix wins.
-    pub fn effective_segment(&mut self, mod_val: u8, rm: u8) -> &mut Segment {
-        if let Some(segment) = self.segment_override {
-            return self.get_segment(segment);
-        }
-        if let Some(Prefix::Seg(segment)) = &self.prefix {
-            return self.get_segment(*segment);
-        }
-        let bp_based = match rm {
-            0b010 | 0b011 => true,
-            0b110 => mod_val != 0b00,
-            _ => false,
-        };
-        if bp_based {
-            &mut self.registers.ss
-        } else {
-            &mut self.registers.ds
-        }
-    }
-
-    #[inline(always)]
-    pub fn set_flag(&mut self, flag: CpuFlag) {
-        self.flags |= 1u16 << (flag as u8);
-    }
-    #[inline(always)]
-    pub fn unset_flag(&mut self, flag: CpuFlag) {
-        self.flags &= !(1u16 << (flag as u8));
-    }
-
-    #[inline(always)]
-    pub fn update_flag(&mut self, flag: CpuFlag, active: bool) {
-        if active {
-            self.set_flag(flag);
-        } else {
-            self.unset_flag(flag);
-        }
-    }
-
-    #[inline(always)]
-    pub fn flip_flag(&mut self, flag: CpuFlag) {
-        self.update_flag(flag, !self.check_flag(flag));
-    }
-
-    #[inline(always)]
-    pub fn check_flag(&self, flag: CpuFlag) -> bool {
-        (self.flags & 1u16 << (flag as u8)) != 0
     }
 
     pub(crate) fn load_rom(&mut self, path: PathBuf) {
@@ -318,7 +228,7 @@ impl Runtime {
 
         let load_address = 0xF0000;
         for (i, byte) in rom_data.iter().enumerate() {
-            self.memory.write_byte(load_address + i, *byte);
+            self.cpu.memory.write_byte(load_address + i, *byte);
         }
     }
 
@@ -330,18 +240,32 @@ impl Runtime {
         let _ = std::io::stdout().flush();
 
         while self.running {
+            // Poll for terminal input (non-blocking)
+            if event::poll(Duration::ZERO).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = event::read() {
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
+                        self.running = false;
+                        break;
+                    }
+                    // Forward other keys to the keyboard controller
+                    // self.handle_key_event(key);
+                }
+            }
+
             if self.trace {
                 eprintln!("{:?}", self);
             }
 
-            if !self.halted {
+            if !self.cpu.halted {
                 process(self);
                 self.instruction_count += 1;
             }
 
-            if self.pic.borrow().has_interrupt() {
-                let vector = self.pic.borrow_mut().acknowledge();
-                self.halted = false;
+            if self.cpu.pic.has_interrupt() {
+                let vector = self.cpu.pic.acknowledge();
+                self.cpu.halted = false;
                 self.handle_interrupt(vector);
             }
         }
@@ -351,25 +275,41 @@ impl Runtime {
         let _ = std::io::stdout().flush();
     }
 
+    pub fn port_in_byte(&mut self, port: u16) -> u8 {
+        self.io_bus.port_in_byte(port, &mut self.cpu)
+    }
+
+    pub fn port_in_word(&mut self, port: u16) -> u16 {
+        self.io_bus.port_in_word(port, &mut self.cpu)
+    }
+
+    pub fn port_out_byte(&mut self, port: u16, value: u8) {
+        self.io_bus.port_out_byte(port, value, &mut self.cpu);
+    }
+
+    pub fn port_out_word(&mut self, port: u16, value: u16) {
+        self.io_bus.port_out_word(port, value, &mut self.cpu);
+    }
+
     pub(crate) fn handle_interrupt(&mut self, vector: u8) {
         let addr = (vector as usize) * 4;
 
         // Push flags with 8086 fixed bits applied
-        let flags = (self.flags & 0x0FD5) | 0xF002;
+        let flags = (self.cpu.flags & 0x0FD5) | 0xF002;
         self.push_word(flags);
-        self.push_word(self.registers.cs.reg().word());
-        self.push_word(self.registers.pc.word());
+        self.push_word(self.cpu.registers.cs.reg().word());
+        self.push_word(self.cpu.registers.pc.word());
 
         // Clear IF and TF
-        self.unset_flag(Interrupt);
-        self.unset_flag(Trap);
+        self.cpu.unset_flag(Interrupt);
+        self.cpu.unset_flag(Trap);
 
         // Load new CS:IP from IVT
-        self.registers.pc.set(self.memory.read_word(addr));
-        self.registers
+        self.cpu.registers.pc.set(self.cpu.memory.read_word(addr));
+        self.cpu.registers
             .cs
             .reg_mut()
-            .set(self.memory.read_word(addr + 2));
+            .set(self.cpu.memory.read_word(addr + 2));
     }
 
     /// Check if the F12 monitor flag is set.
@@ -380,50 +320,73 @@ impl Runtime {
     // }
 
     /// Look up a disk by BIOS drive number (DL < 0x80 = floppy, DL >= 0x80 = hard disk).
-    pub fn get_disk(&self, dl: u8) -> Option<&DiskImage> {
-        if dl >= 0x80 {
-            self.hard_disks
-                .get((dl - 0x80) as usize)
-                .and_then(|d| d.as_ref())
-        } else {
-            self.disks.get(dl as usize).and_then(|d| d.as_ref())
-        }
-    }
-
-    pub fn get_disk_mut(&mut self, dl: u8) -> Option<&mut DiskImage> {
-        if dl >= 0x80 {
-            self.hard_disks
-                .get_mut((dl - 0x80) as usize)
-                .and_then(|d| d.as_mut())
-        } else {
-            self.disks.get_mut(dl as usize).and_then(|d| d.as_mut())
-        }
-    }
+    // pub fn get_disk(&self, dl: u8) -> Option<&DiskImage> {
+    //     if dl >= 0x80 {
+    //         self.hard_disks
+    //             .get((dl - 0x80) as usize)
+    //             .and_then(|d| d.as_ref())
+    //     } else {
+    //         self.disks.get(dl as usize).and_then(|d| d.as_ref())
+    //     }
+    // }
+    //
+    // pub fn get_disk_mut(&mut self, dl: u8) -> Option<&mut DiskImage> {
+    //     if dl >= 0x80 {
+    //         self.hard_disks
+    //             .get_mut((dl - 0x80) as usize)
+    //             .and_then(|d| d.as_mut())
+    //     } else {
+    //         self.disks.get_mut(dl as usize).and_then(|d| d.as_mut())
+    //     }
+    // }
 
     pub fn push_word(&mut self, word: u16) {
-        let address = self.registers.sp.operation(2, u16::wrapping_sub);
-        self.registers.ss.write_word(address, word);
+        let address = self.cpu.registers.sp.operation(2, u16::wrapping_sub);
+        self.cpu.registers.ss.write_word(address, word);
     }
 
     pub fn pop_word(&mut self) -> u16 {
-        let address = self.registers.sp.word();
-        self.registers.sp.operation(2, u16::wrapping_add);
-        self.registers.ss.read_word(address)
+        let address = self.cpu.registers.sp.word();
+        self.cpu.registers.sp.operation(2, u16::wrapping_add);
+        self.cpu.registers.ss.read_word(address)
     }
 
-    pub fn get_segment(&mut self, segment: SegmentType) -> &mut Segment {
-        match segment {
-            SegmentType::ES => &mut self.registers.es,
-            SegmentType::CS => &mut self.registers.cs,
-            SegmentType::SS => &mut self.registers.ss,
-            SegmentType::DS => &mut self.registers.ds,
+    pub fn data_segment(&mut self) -> &mut Segment {
+        if let Some(segment) = self.segment_override {
+            return self.cpu.get_segment(segment);
+        }
+        if let Some(Prefix::Seg(segment)) = &self.prefix {
+            return self.cpu.get_segment(*segment);
+        }
+        &mut self.cpu.registers.ds
+    }
+
+    /// Picks the correct default segment for a ModR/M memory operand.
+    /// BP-based addressing (rm=010, 011, or rm=110 with mod!=00) defaults to SS.
+    /// All other modes default to DS. An explicit segment override prefix wins.
+    pub fn effective_segment(&mut self, mod_val: u8, rm: u8) -> &mut Segment {
+        if let Some(segment) = self.segment_override {
+            return self.cpu.get_segment(segment);
+        }
+        if let Some(Prefix::Seg(segment)) = &self.prefix {
+            return self.cpu.get_segment(*segment);
+        }
+        let bp_based = match rm {
+            0b010 | 0b011 => true,
+            0b110 => mod_val != 0b00,
+            _ => false,
+        };
+        if bp_based {
+            &mut self.cpu.registers.ss
+        } else {
+            &mut self.cpu.registers.ds
         }
     }
 }
 
 #[inline(always)]
 fn show_flag(vm: &Runtime, flag: CpuFlag, c: char) -> char {
-    if vm.check_flag(flag) {
+    if vm.cpu.check_flag(flag) {
         return c;
     }
     '-'
@@ -431,25 +394,25 @@ fn show_flag(vm: &Runtime, flag: CpuFlag, c: char) -> char {
 
 impl Debug for Runtime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let pc = self.registers.pc.word();
+        let pc = self.cpu.registers.pc.word();
         write!(
             f,
             "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{} {:04x}:{:02x}{:02x}",
-            self.registers.ax.word(),
-            self.registers.bx.word(),
-            self.registers.cx.word(),
-            self.registers.dx.word(),
-            self.registers.sp.word(),
-            self.registers.bp.word(),
-            self.registers.si.word(),
-            self.registers.di.word(),
+            self.cpu.registers.ax.word(),
+            self.cpu.registers.bx.word(),
+            self.cpu.registers.cx.word(),
+            self.cpu.registers.dx.word(),
+            self.cpu.registers.sp.word(),
+            self.cpu.registers.bp.word(),
+            self.cpu.registers.si.word(),
+            self.cpu.registers.di.word(),
             show_flag(self, Overflow, 'O'),
             show_flag(self, Sign, 'S'),
             show_flag(self, Zero, 'Z'),
             show_flag(self, Carry, 'C'),
             pc,
-            self.registers.cs.read_byte(pc),
-            self.registers.cs.read_byte(pc.wrapping_add(1)),
+            self.cpu.registers.cs.read_byte(pc),
+            self.cpu.registers.cs.read_byte(pc.wrapping_add(1)),
         )?;
         Ok(())
     }

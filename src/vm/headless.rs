@@ -344,31 +344,6 @@ fn headless_parse_drive(s: &str) -> Option<usize> {
     }
 }
 
-fn parse_drive(s: &str) -> Option<usize> {
-    match s.to_lowercase().as_str() {
-        "a" => Some(0),
-        "b" => Some(1),
-        "c" => Some(2),
-        "d" => Some(3),
-        _ => {
-            if parse_hd(s).is_none() {
-                println!("Invalid drive '{}' (use a-d or hd0, hd1, ...)", s);
-            }
-            None
-        }
-    }
-}
-
-/// Parse "hd0", "hd1", etc. Returns the HD index.
-fn parse_hd(s: &str) -> Option<usize> {
-    let lower = s.to_lowercase();
-    if lower.starts_with("hd") {
-        lower[2..].parse::<usize>().ok()
-    } else {
-        None
-    }
-}
-
 // VGA attribute to ANSI color mapping (VGA color order differs from ANSI)
 const VGA_TO_ANSI_FG: [u8; 16] = [
     30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97,
