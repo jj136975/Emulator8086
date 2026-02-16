@@ -1,5 +1,7 @@
-pub mod handlers;
+pub mod bda;
+pub mod disk;
 pub mod init;
-
-#[cfg(test)]
-mod tests;
+pub mod keyboard;
+pub mod system;
+pub mod timer;
+pub mod video;

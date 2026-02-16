@@ -4,7 +4,7 @@ use clap::Parser;
 use clap_derive::Parser;
 
 use crate::io::disk::{DiskSource, DiskSpec, FLOPPY_144_SIZE};
-use crate::vm::runtime::Runtime;
+use crate::vm::runtime::{HeadlessConfig, Runtime};
 
 mod bios;
 mod io;
@@ -33,6 +33,15 @@ struct CLI {
     /// Enable register trace output (MINIX mode)
     #[arg(long)]
     trace: bool,
+    /// Run in headless mode (no terminal UI)
+    #[arg(long)]
+    headless: bool,
+    /// Path to write VGA screen dump (default: screen.txt when headless)
+    #[arg(long)]
+    screen_dump: Option<PathBuf>,
+    /// Path to read keystroke commands from (default: keys.txt when headless)
+    #[arg(long)]
+    key_input: Option<PathBuf>,
     /// Arguments to pass to the a.out executable
     args: Vec<String>,
 }
@@ -113,6 +122,16 @@ fn main() {
     }
     let specs: Vec<DiskSpec> = args.disk.iter().map(|s| parse_disk_spec(s)).collect();
     let boot_order = args.boot.as_deref().map(parse_boot_order);
-    let mut runtime = Runtime::new(&specs, &args.hd, boot_order);
+
+    let headless_config = if args.headless {
+        Some(HeadlessConfig {
+            screen_dump_path: args.screen_dump.unwrap_or_else(|| PathBuf::from("screen.txt")),
+            key_input_path: args.key_input.unwrap_or_else(|| PathBuf::from("keys.txt")),
+        })
+    } else {
+        None
+    };
+
+    let mut runtime = Runtime::new(&specs, &args.hd, boot_order, headless_config);
     runtime.run();
 }

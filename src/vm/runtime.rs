@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::io::Write;
 use std::ops::DerefMut;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -13,6 +13,12 @@ use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment, BIOS_ROM};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Zero};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CpuType {
+    Intel8086,
+    Intel80186,
+}
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -56,7 +62,13 @@ pub enum Prefix {
     Queued(Box<Prefix>),
 }
 
+pub struct HeadlessConfig {
+    pub screen_dump_path: PathBuf,
+    pub key_input_path: PathBuf,
+}
+
 pub struct Runtime {
+    pub cpu_type: CpuType,
     pub registers: Registers,
     pub memory: Box<Memory>,
     pub flags: u16,
@@ -82,6 +94,13 @@ pub struct Runtime {
     last_refresh: Option<Instant>,
     vga_shadow: Vec<u8>,
     monitor_flag: Option<Arc<AtomicBool>>,
+    // Headless mode fields
+    headless: bool,
+    screen_dump_path: Option<PathBuf>,
+    key_input_path: Option<PathBuf>,
+    key_input_offset: u64,
+    key_wait_until: Option<Instant>,
+    headless_frame: u64,
 }
 
 impl Runtime {
@@ -91,6 +110,7 @@ impl Runtime {
         let mut memory = Box::new(Memory::new());
         let registers = Registers::new(memory.deref_mut());
         Self {
+            cpu_type: CpuType::Intel8086,
             registers,
             memory,
             flags: 0,
@@ -116,6 +136,12 @@ impl Runtime {
             last_refresh: None,
             vga_shadow: Vec::new(),
             monitor_flag: None,
+            headless: false,
+            screen_dump_path: None,
+            key_input_path: None,
+            key_input_offset: 0,
+            key_wait_until: None,
+            headless_frame: 0,
         }
     }
 
@@ -151,6 +177,7 @@ impl Runtime {
         );
 
         Self {
+            cpu_type: CpuType::Intel8086,
             registers,
             memory,
             flags: 0,
@@ -176,10 +203,16 @@ impl Runtime {
             last_refresh: None,
             vga_shadow: Vec::new(),
             monitor_flag: None,
+            headless: false,
+            screen_dump_path: None,
+            key_input_path: None,
+            key_input_offset: 0,
+            key_wait_until: None,
+            headless_frame: 0,
         }
     }
 
-    pub fn new(disk_specs: &[DiskSpec], hd_specs: &[String], boot_order: Option<Vec<u8>>) -> Self {
+    pub fn new(disk_specs: &[DiskSpec], hd_specs: &[String], boot_order: Option<Vec<u8>>, headless_config: Option<HeadlessConfig>) -> Self {
         let mut memory = Box::new(Memory::new());
         let registers = Registers::new(memory.deref_mut());
 
@@ -253,7 +286,13 @@ impl Runtime {
         );
         io_bus.register(0x3D4, 0x3DA, Box::new(crate::io::vga::Vga::new()));
 
+        let (headless, screen_dump_path, key_input_path) = match headless_config {
+            Some(cfg) => (true, Some(cfg.screen_dump_path), Some(cfg.key_input_path)),
+            None => (false, None, None),
+        };
+
         let mut vm = Self {
+            cpu_type: CpuType::Intel80186,
             registers,
             memory,
             flags: 0,
@@ -279,11 +318,22 @@ impl Runtime {
             last_refresh: Some(Instant::now()),
             vga_shadow: vec![0u8; 4000],
             monitor_flag: Some(monitor_flag),
+            headless,
+            screen_dump_path,
+            key_input_path,
+            key_input_offset: 0,
+            key_wait_until: None,
+            headless_frame: 0,
         };
 
         vm.set_flag(Interrupt);
         crate::bios::init::init_bios(&mut vm);
         vm
+    }
+
+    #[inline]
+    pub fn is_186(&self) -> bool {
+        self.cpu_type == CpuType::Intel80186
     }
 
     pub fn exit(&mut self, status: u16) {
@@ -368,20 +418,30 @@ impl Runtime {
     }
 
     pub fn run(&mut self) {
-        // In BIOS mode: enable raw terminal and clear screen for VGA rendering
-        let _ = crossterm::terminal::enable_raw_mode();
+        if !self.headless {
+            // In BIOS mode: enable raw terminal and clear screen for VGA rendering
+            let _ = crossterm::terminal::enable_raw_mode();
 
-        let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
-        let _ = std::io::stdout().flush();
+            let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
+            let _ = std::io::stdout().flush();
 
-        // Start keyboard input thread AFTER raw mode is enabled so it
-        // doesn't pick up stale console events from before raw mode.
-        if let (Some(ref buf), Some(ref irq), Some(ref mon)) = (
-            &self.keyboard_buffer,
-            &self.keyboard_irq,
-            &self.monitor_flag,
-        ) {
-            crate::io::keyboard::start_keyboard_thread(buf.clone(), irq.clone(), mon.clone());
+            // Start keyboard input thread AFTER raw mode is enabled so it
+            // doesn't pick up stale console events from before raw mode.
+            if let (Some(ref buf), Some(ref irq), Some(ref mon)) = (
+                &self.keyboard_buffer,
+                &self.keyboard_irq,
+                &self.monitor_flag,
+            ) {
+                crate::io::keyboard::start_keyboard_thread(buf.clone(), irq.clone(), mon.clone());
+            }
+        } else {
+            eprintln!("[HEADLESS] Emulator started in headless mode");
+            if let Some(ref p) = self.screen_dump_path {
+                eprintln!("[HEADLESS] Screen dump: {}", p.display());
+            }
+            if let Some(ref p) = self.key_input_path {
+                eprintln!("[HEADLESS] Key input: {}", p.display());
+            }
         }
 
         while self.running {
@@ -410,21 +470,21 @@ impl Runtime {
             // In BIOS mode: periodic timer tick, VGA refresh, and monitor check
             if self.instruction_count % 1000 == 0 {
                 self.idle_tick();
-                if self
-                    .monitor_flag
-                    .as_ref()
-                    .map_or(false, |f| f.load(Ordering::SeqCst))
-                {
+                if !self.headless && self.check_monitor_flag() {
                     self.enter_monitor();
                 }
             }
         }
 
-        // In BIOS mode: restore terminal on exit
-        let _ = crossterm::terminal::disable_raw_mode();
+        if !self.headless {
+            // In BIOS mode: restore terminal on exit
+            let _ = crossterm::terminal::disable_raw_mode();
 
-        let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
-        let _ = std::io::stdout().flush();
+            let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
+            let _ = std::io::stdout().flush();
+        } else {
+            eprintln!("[HEADLESS] Emulator stopped");
+        }
     }
 
     pub(crate) fn check_hw_interrupts(&mut self) {
@@ -486,13 +546,131 @@ impl Runtime {
     /// Run periodic tasks (timer, keyboard, VGA refresh).
     /// Called from the run loop AND from blocking I/O handlers (INT 16h, HLT)
     /// to keep the system responsive during waits.
-    /// Run periodic tasks (timer, keyboard, VGA refresh).
-    /// Called from the run loop AND from blocking I/O handlers (INT 16h, HLT)
-    /// to keep the system responsive during waits.
     pub fn idle_tick(&mut self) {
         self.check_timer_tick();
         self.deliver_keyboard_irq();
-        self.check_vga_refresh();
+        if self.headless {
+            self.poll_key_input();
+            self.check_vga_refresh_headless();
+        } else {
+            self.check_vga_refresh();
+        }
+    }
+
+    /// Dispatch pending hardware IRQs through the IVT, just like the main loop.
+    /// If the IVT still points to our ROM stubs, uses the fast Tier 1 path.
+    /// If DOS has hooked the vector, runs the guest handler via a mini
+    /// execution loop so the full handler chain (DOS → BIOS) executes.
+    pub fn service_bios_irqs(&mut self) {
+        loop {
+            let vector = if let Some(ref pic) = self.pic {
+                let mut pic = pic.lock().unwrap();
+                if pic.has_interrupt() {
+                    pic.acknowledge()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let vector = match vector {
+                Some(v) => v,
+                None => break,
+            };
+
+            // Read IVT to find the actual handler target
+            let ivt_offset = vector as usize * 4;
+            let new_ip = self.memory.read_word(ivt_offset);
+            let new_cs = self.memory.read_word(ivt_offset + 2);
+            let phys = (((new_cs as usize) << 4) + new_ip as usize) & 0xFFFFF;
+
+            if phys >= BIOS_ROM {
+                let b0 = self.memory.read_byte(phys);
+
+                // Generic IRET stub (0xCF) — no real handler, just send EOI
+                if b0 == 0xCF {
+                    if let Some(ref pic) = self.pic {
+                        pic.lock().unwrap().eoi();
+                    }
+                    continue;
+                }
+
+                // ROM stub fast path: CD xx CF → call bios_handlers[xx] directly
+                if b0 == 0xCD {
+                    let trap_vec = self.memory.read_byte((phys + 1) & 0xFFFFF);
+                    if self.memory.read_byte((phys + 2) & 0xFFFFF) == 0xCF {
+                        if let Some(handler) = self.bios_handlers[trap_vec as usize] {
+                            handler(self);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // IVT target is NOT our ROM stub — DOS has hooked this interrupt.
+            // Run the full guest handler chain so DOS's hook executes properly.
+            self.run_guest_isr(new_cs, new_ip);
+        }
+    }
+
+    /// Execute a guest interrupt service routine by pushing a sentinel return
+    /// address and running the instruction loop until the handler IRETs back.
+    fn run_guest_isr(&mut self, handler_cs: u16, handler_ip: u16) {
+        // Sentinel: F000:0007 — an unused ROM address after the stubs.
+        // We check CS:IP BEFORE calling process(), so the byte there is
+        // never actually executed.
+        const RET_SEG: u16 = 0xF000;
+        const RET_OFF: u16 = 0x0007;
+
+        // Save CS:IP so we can restore them after the handler completes.
+        // This is critical when run_guest_isr is called from inside a Tier 1
+        // handler (e.g. int16h's blocking loop via service_bios_irqs): after
+        // the handler IRETs to the sentinel, CS:IP would be left at F000:0007
+        // and the main loop would execute garbage instead of resuming DOS code.
+        let saved_cs = self.registers.cs.reg().word();
+        let saved_ip = self.registers.pc.word();
+        let saved_flags = self.flags;
+        let original_sp = self.registers.sp.word();
+
+        // Push fake interrupt frame: FLAGS, sentinel CS, sentinel IP
+        self.push_word(self.flags);
+        self.unset_flag(CpuFlag::Interrupt);
+        self.unset_flag(CpuFlag::Trap);
+        self.push_word(RET_SEG);
+        self.push_word(RET_OFF);
+
+        // Jump to the hooked handler
+        self.registers.cs.reg_mut().set(handler_cs);
+        self.registers.pc.set(handler_ip);
+
+        // Run guest instructions until the handler IRETs back to sentinel
+        for _ in 0..500_000u32 {
+            // Check sentinel BEFORE executing — never runs the byte at F000:0007
+            if self.registers.cs.reg().word() == RET_SEG
+                && self.registers.pc.word() == RET_OFF
+                && self.registers.sp.word() == original_sp
+            {
+                break;
+            }
+
+            // Replicate main-loop interrupt handling
+            if self.interrupt_inhibit {
+                self.interrupt_inhibit = false;
+            } else if self.check_flag(CpuFlag::Interrupt) {
+                self.check_hw_interrupts();
+            }
+
+            process(self);
+            self.instruction_count += 1;
+        }
+
+        // Restore CS:IP and FLAGS to their pre-ISR values.
+        // The sentinel IRET already popped FLAGS from the stack (restoring
+        // the value we pushed), but CS:IP are left at the sentinel address.
+        self.registers.cs.reg_mut().set(saved_cs);
+        self.registers.pc.set(saved_ip);
+        self.flags = saved_flags;
     }
 
     fn check_timer_tick(&mut self) {
@@ -527,19 +705,29 @@ impl Runtime {
     /// port 0x60, stores the ASCII for the BIOS handler, and raises IRQ 1.
     /// Only delivers if IRQ 1 is not already pending or in-service.
     pub(crate) fn deliver_keyboard_irq(&mut self) {
-        // Only deliver if IRQ 1 is not pending AND not in-service.
-        // We MUST check ISR (not just IRR) because the INT 09h handler
-        // hasn't read port 0x60 yet — overwriting the latch while the
-        // handler is running would lose the previous scancode.
-        let (irq_busy, irr, isr, imr) = if let Some(ref pic) = self.pic {
-            let p = pic.lock().unwrap();
-            (p.irq_busy(1), p.debug_irr(), p.debug_isr(), p.debug_imr())
+        // Guard: don't overwrite the latch while the previous scancode
+        // hasn't been consumed yet.  The INT 09h handler clears this flag
+        // when it reads port 0x60.  This covers the full window including
+        // the gap between EOI (clears ISR) and IRET (restores IF).
+        let data_avail = self.keyboard_data_available.as_ref()
+            .map(|f| f.load(Ordering::SeqCst))
+            .unwrap_or(false);
+
+        // Also check if IRQ 1 is still pending or in-service in the PIC.
+        let irq_busy = if let Some(ref pic) = self.pic {
+            pic.lock().unwrap().irq_busy(1)
         } else {
             return;
         };
-        if irq_busy {
-            log::debug!("[KB-DELIVER] SKIP irq_busy=true IRR={:02X} ISR={:02X} IMR={:02X} ic={}",
-                       irr, isr, imr, self.instruction_count);
+
+        if data_avail || irq_busy {
+            let has_data = self.keyboard_buffer.as_ref()
+                .map(|b| !b.lock().unwrap().is_empty())
+                .unwrap_or(false);
+            if has_data {
+                eprintln!("[KB-SKIP] data_avail={} irq_busy={} ic={}",
+                         data_avail, irq_busy, self.instruction_count);
+            }
             return;
         }
 
@@ -558,8 +746,8 @@ impl Runtime {
             None => return,
         };
 
-        log::debug!("[KB-DELIVER] sc={:02X} ascii={:02X} buf_remaining={} IRR={:02X} ISR={:02X} IMR={:02X} ic={}",
-                   scancode, ascii, buf_len, irr, isr, imr, self.instruction_count);
+        eprintln!("[KB-DELIVER] sc={:02X} ascii={:02X} buf_remaining={} ic={}",
+                   scancode, ascii, buf_len, self.instruction_count);
 
         // Latch scancode to port 0x60
         if let Some(ref latch) = self.keyboard_latch {
@@ -577,6 +765,276 @@ impl Runtime {
         // Raise IRQ 1
         if let Some(ref pic) = self.pic {
             pic.lock().unwrap().raise_irq(1);
+        }
+    }
+
+    /// Poll the key input file for new commands (headless mode).
+    fn poll_key_input(&mut self) {
+        let path = match &self.key_input_path {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        // Respect wait commands
+        if let Some(wait_until) = self.key_wait_until {
+            if Instant::now() < wait_until {
+                return;
+            }
+            self.key_wait_until = None;
+        }
+
+        // Try to open the file; if it doesn't exist yet, no-op
+        let mut file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| eprintln!("[HEADLESS] key input file not found: {}", e));
+                return;
+            }
+        };
+
+        use std::io::{Read, Seek, SeekFrom};
+        if file.seek(SeekFrom::Start(self.key_input_offset)).is_err() {
+            return;
+        }
+
+        let mut new_data = String::new();
+        if file.read_to_string(&mut new_data).is_err() {
+            return;
+        }
+        if new_data.is_empty() {
+            return;
+        }
+
+        eprintln!("[HEADLESS] read {} bytes from offset {}", new_data.len(), self.key_input_offset);
+
+        // Process lines one at a time, tracking byte offset so `wait`
+        // can pause and resume from the correct position.
+        let base_offset = self.key_input_offset;
+        let mut byte_pos = 0usize;
+
+        for line in new_data.lines() {
+            // Advance past this line (including the newline delimiter)
+            let line_end = byte_pos + line.len();
+            let next_pos = if new_data[line_end..].starts_with('\n') {
+                line_end + 1
+            } else if new_data[line_end..].starts_with("\r\n") {
+                line_end + 2
+            } else {
+                line_end // last line, no newline
+            };
+
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                byte_pos = next_pos;
+                continue;
+            }
+
+            let (cmd, args) = match line.split_once(' ') {
+                Some((c, a)) => (c, a.trim()),
+                None => (line, ""),
+            };
+
+            match cmd.to_lowercase().as_str() {
+                "type" => {
+                    self.headless_type_string(args);
+                }
+                "key" => {
+                    self.headless_press_key(args);
+                }
+                "wait" => {
+                    if let Ok(ms) = args.parse::<u64>() {
+                        // Advance offset past the wait line, remaining lines
+                        // will be read on the next poll after the wait expires.
+                        self.key_input_offset = base_offset + next_pos as u64;
+                        self.key_wait_until = Some(Instant::now() + std::time::Duration::from_millis(ms));
+                        return;
+                    }
+                }
+                "raw" => {
+                    self.headless_raw_scancode(args);
+                }
+                "swap" => {
+                    self.headless_swap_disk(args);
+                }
+                "eject" => {
+                    self.headless_eject_disk(args);
+                }
+                _ => {
+                    eprintln!("[HEADLESS] unknown command: {}", line);
+                }
+            }
+
+            byte_pos = next_pos;
+        }
+
+        self.key_input_offset = base_offset + new_data.len() as u64;
+    }
+
+    /// Type a string by generating make+break for each character.
+    fn headless_type_string(&mut self, text: &str) {
+        let buf = match &self.keyboard_buffer {
+            Some(b) => b.clone(),
+            None => return,
+        };
+
+        let mut q = buf.lock().unwrap();
+        for ch in text.chars() {
+            if let Some((scancode, ascii, needs_shift)) = crate::io::keyboard::char_to_key(ch) {
+                if needs_shift {
+                    q.push_back((0x2A, 0)); // Left Shift make
+                }
+                q.push_back((scancode, ascii));     // make
+                q.push_back((scancode | 0x80, 0));  // break
+                if needs_shift {
+                    q.push_back((0xAA, 0)); // Left Shift break
+                }
+            }
+        }
+
+        *self.keyboard_irq.as_ref().unwrap().lock().unwrap() = true;
+    }
+
+    /// Press a named key or key combination (e.g. "enter", "ctrl+c").
+    fn headless_press_key(&mut self, key_str: &str) {
+        let buf = match &self.keyboard_buffer {
+            Some(b) => b.clone(),
+            None => return,
+        };
+
+        let mut q = buf.lock().unwrap();
+
+        // Parse modifier+key combinations
+        let parts: Vec<&str> = key_str.split('+').collect();
+        let key_name = parts.last().unwrap_or(&"");
+        let has_ctrl = parts.iter().any(|p| p.eq_ignore_ascii_case("ctrl"));
+        let has_alt = parts.iter().any(|p| p.eq_ignore_ascii_case("alt"));
+        let has_shift = parts.iter().any(|p| p.eq_ignore_ascii_case("shift"));
+
+        // Press modifiers
+        if has_ctrl { q.push_back((0x1D, 0)); }  // Ctrl make
+        if has_alt { q.push_back((0x38, 0)); }    // Alt make
+        if has_shift { q.push_back((0x2A, 0)); }  // Shift make
+
+        // Try named key first, then single character
+        let key_entry = if let Some(entry) = crate::io::keyboard::parse_key_name(key_name) {
+            Some(entry)
+        } else if key_name.len() == 1 {
+            let ch = key_name.chars().next().unwrap();
+            crate::io::keyboard::char_to_key(ch).map(|(sc, mut ascii, _)| {
+                if has_ctrl && ch.is_ascii_alphabetic() {
+                    ascii = (ch.to_ascii_uppercase() as u8) & 0x1F;
+                }
+                (sc, ascii, false)
+            })
+        } else {
+            None
+        };
+
+        if let Some((scancode, ascii, enhanced)) = key_entry {
+            if enhanced { q.push_back((0xE0, 0x00)); }
+            q.push_back((scancode, ascii));
+            if enhanced { q.push_back((0xE0, 0x00)); }
+            q.push_back((scancode | 0x80, 0));
+        } else {
+            eprintln!("[HEADLESS] unknown key: {}", key_str);
+        }
+
+        // Release modifiers (reverse order)
+        if has_shift { q.push_back((0xAA, 0)); }
+        if has_alt { q.push_back((0xB8, 0)); }
+        if has_ctrl { q.push_back((0x9D, 0)); }
+
+        *self.keyboard_irq.as_ref().unwrap().lock().unwrap() = true;
+    }
+
+    /// Inject raw scancodes from a "raw <scancode> <ascii>" command.
+    fn headless_raw_scancode(&mut self, args: &str) {
+        let buf = match &self.keyboard_buffer {
+            Some(b) => b.clone(),
+            None => return,
+        };
+
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let scancode = u8::from_str_radix(parts[0], 16).unwrap_or(0);
+            let ascii = u8::from_str_radix(parts[1], 16).unwrap_or(0);
+            let mut q = buf.lock().unwrap();
+            q.push_back((scancode, ascii));
+            q.push_back((scancode | 0x80, 0));
+            *self.keyboard_irq.as_ref().unwrap().lock().unwrap() = true;
+        }
+    }
+
+    /// Swap a disk image from a headless command: "swap <drive> <path>"
+    /// e.g. "swap a assets/ms-dos/Disk2.img" or "swap hd0 disk.img"
+    fn headless_swap_disk(&mut self, args: &str) {
+        let parts: Vec<&str> = args.splitn(2, ' ').collect();
+        if parts.len() < 2 {
+            eprintln!("[HEADLESS] swap: usage: swap <drive> <path>");
+            return;
+        }
+        let drive_str = parts[0];
+        let path_str = parts[1].trim();
+
+        if let Some(hd_idx) = parse_hd(drive_str) {
+            while self.hard_disks.len() <= hd_idx {
+                self.hard_disks.push(None);
+            }
+            match DiskImage::open_or_create_hard_disk(
+                Path::new(path_str),
+                HD_DEFAULT_SIZE_MB,
+            ) {
+                Ok(disk) => {
+                    self.hard_disks[hd_idx] = Some(disk);
+                    eprintln!("[HEADLESS] HD{}: swapped to {}", hd_idx, path_str);
+                }
+                Err(e) => eprintln!("[HEADLESS] swap error: {}", e),
+            }
+        } else if let Some(drive_idx) = headless_parse_drive(drive_str) {
+            while self.disks.len() <= drive_idx {
+                self.disks.push(None);
+            }
+            if path_str.to_ascii_lowercase().starts_with("memory") {
+                let size = if let Some(rest) = path_str
+                    .strip_prefix("memory:")
+                    .or_else(|| path_str.strip_prefix("MEMORY:"))
+                {
+                    rest.parse::<u64>().unwrap_or(1440) * 1024
+                } else {
+                    crate::io::disk::FLOPPY_144_SIZE
+                };
+                let mut img = DiskImage::new_in_memory_sized(size);
+                if let Err(e) = img.format_fat() {
+                    eprintln!("[HEADLESS] Warning: could not format floppy: {}", e);
+                }
+                self.disks[drive_idx] = Some(img);
+                eprintln!("[HEADLESS] Drive {}: formatted {}KB in-memory floppy", drive_str.to_uppercase(), size / 1024);
+            } else {
+                match DiskImage::open_or_create(Path::new(path_str)) {
+                    Ok(disk) => {
+                        self.disks[drive_idx] = Some(disk);
+                        eprintln!("[HEADLESS] Drive {}: swapped to {}", drive_str.to_uppercase(), path_str);
+                    }
+                    Err(e) => eprintln!("[HEADLESS] swap error: {}", e),
+                }
+            }
+        }
+    }
+
+    /// Eject a disk from a headless command: "eject <drive>"
+    fn headless_eject_disk(&mut self, args: &str) {
+        let drive_str = args.trim();
+        if let Some(hd_idx) = parse_hd(drive_str) {
+            if hd_idx < self.hard_disks.len() {
+                self.hard_disks[hd_idx] = None;
+                eprintln!("[HEADLESS] HD{}: ejected", hd_idx);
+            }
+        } else if let Some(drive_idx) = headless_parse_drive(drive_str) {
+            if drive_idx < self.disks.len() {
+                self.disks[drive_idx] = None;
+                eprintln!("[HEADLESS] Drive {}: ejected", drive_str.to_uppercase());
+            }
         }
     }
 
@@ -649,7 +1107,63 @@ impl Runtime {
         }
     }
 
-    fn enter_monitor(&mut self) {
+    /// Write VGA text memory to the screen dump file (headless mode).
+    fn check_vga_refresh_headless(&mut self) {
+        let should_refresh = if let Some(ref last_refresh) = self.last_refresh {
+            last_refresh.elapsed().as_millis() >= 50
+        } else {
+            false
+        };
+
+        if !should_refresh {
+            return;
+        }
+        self.last_refresh = Some(Instant::now());
+
+        let path = match &self.screen_dump_path {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let vga_base = crate::vm::memory::VGA_TEXT_BASE;
+
+        // Read cursor position from BDA
+        let cursor_off = crate::vm::memory::BDA_BASE + 0x50;
+        let col = self.memory.read_byte(cursor_off);
+        let row = self.memory.read_byte(cursor_off + 1);
+
+        let mut out = String::with_capacity(2200);
+        use std::fmt::Write as _;
+        let _ = writeln!(out, "--- Frame {} | Cursor: {},{} ---", self.headless_frame, col, row);
+
+        for r in 0..25usize {
+            for c in 0..80usize {
+                let offset = (r * 80 + c) * 2;
+                let ch = self.memory.read_byte(vga_base + offset);
+                // Map CP437 to ASCII-safe: keep printable ASCII, replace others with substitutes
+                let display = cp437_to_ascii(ch);
+                out.push(display);
+            }
+            out.push('\n');
+        }
+
+        self.headless_frame += 1;
+
+        // Write atomically: write to temp file, then rename
+        let tmp_path = path.with_extension("tmp");
+        if let Ok(()) = std::fs::write(&tmp_path, out.as_bytes()) {
+            let _ = std::fs::rename(&tmp_path, &path);
+        }
+    }
+
+    /// Check if the F12 monitor flag is set.
+    pub fn check_monitor_flag(&self) -> bool {
+        self.monitor_flag
+            .as_ref()
+            .map_or(false, |f| f.load(Ordering::SeqCst))
+    }
+
+    pub fn enter_monitor(&mut self) {
         use std::io::Write;
 
         // Disable raw mode for normal terminal I/O
@@ -993,6 +1507,22 @@ impl Runtime {
     }
 }
 
+/// Like parse_drive but sends errors to stderr (for headless mode).
+fn headless_parse_drive(s: &str) -> Option<usize> {
+    match s.to_lowercase().as_str() {
+        "a" => Some(0),
+        "b" => Some(1),
+        "c" => Some(2),
+        "d" => Some(3),
+        _ => {
+            if parse_hd(s).is_none() {
+                eprintln!("[HEADLESS] Invalid drive '{}' (use a-d or hd0, hd1, ...)", s);
+            }
+            None
+        }
+    }
+}
+
 fn parse_drive(s: &str) -> Option<usize> {
     match s.to_lowercase().as_str() {
         "a" => Some(0),
@@ -1062,6 +1592,39 @@ const CP437: [char; 256] = [
 
 // AX   BX   CX   DX   SP   BP   SI   DI  FLAGS IP
 // 0000 0000 0000 0000 ffdc 0000 0000 0000 ---- 0000:31ed
+
+/// Map a CP437 byte to an ASCII-safe character for the headless screen dump.
+/// Printable ASCII (0x20..=0x7E) passes through; common CP437 box-drawing and
+/// special characters are mapped to reasonable ASCII substitutes.
+fn cp437_to_ascii(ch: u8) -> char {
+    match ch {
+        0x20..=0x7E => ch as char,
+        0x00 => ' ',
+        // Box-drawing singles
+        0xB3 => '|', 0xB4 => '|', 0xC3 => '|', 0xC4 => '-', 0xC5 => '+',
+        0xBF => '+', 0xC0 => '+', 0xD9 => '+', 0xDA => '+',
+        // Box-drawing doubles
+        0xBA => '|', 0xB9 => '|', 0xCC => '|', 0xCD => '=', 0xCE => '+',
+        0xBB => '+', 0xBC => '+', 0xC8 => '+', 0xC9 => '+',
+        // Mixed box-drawing
+        0xB5 => '|', 0xB6 => '|', 0xC6 => '|', 0xC7 => '|',
+        0xD5 => '+', 0xD6 => '+', 0xB8 => '+', 0xB7 => '+',
+        0xBD => '+', 0xBE => '+', 0xD3 => '+', 0xD4 => '+',
+        // T-junctions
+        0xC1 => '+', 0xC2 => '+', 0xCB => '+', 0xCA => '+',
+        0xD0 => '+', 0xD1 => '+', 0xD2 => '+', 0xCF => '+',
+        // Block elements
+        0xDB => '#', 0xDC => '_', 0xDD => '|', 0xDE => '|', 0xDF => '-',
+        0xB0 => '.', 0xB1 => ':', 0xB2 => '#',
+        // Arrows
+        0x10 => '>', 0x11 => '<', 0x1E => '^', 0x1F => 'v',
+        0x18 => '^', 0x19 => 'v', 0x1A => '>', 0x1B => '<',
+        // Misc
+        0x07 => '*', 0x09 => ' ', 0x0D => ' ', 0x0A => ' ',
+        0xFE => '#', 0xFF => ' ',
+        _ => '.',
+    }
+}
 
 #[inline(always)]
 fn show_flag(vm: &Runtime, flag: CpuFlag, c: char) -> char {

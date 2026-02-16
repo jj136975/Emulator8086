@@ -143,11 +143,28 @@ pub fn start_keyboard_thread(
                 std::process::exit(0);
             }
 
-            // F12 opens the monitor — set flag and sleep until main loop clears it
+            // F12 opens the monitor — set flag and wait for main loop to clear it.
+            // Keep polling for Ctrl+C so the user can always exit, even if
+            // the main thread is stuck in a blocking handler (e.g. INT 16h).
             if code == KeyCode::F(12) {
                 monitor_flag.store(true, Ordering::SeqCst);
                 while monitor_flag.load(Ordering::SeqCst) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    if let Ok(true) = event::poll(Duration::from_millis(50)) {
+                        if let Ok(Event::Key(KeyEvent {
+                            code: KeyCode::Char('c'),
+                            modifiers: m,
+                            ..
+                        })) = event::read()
+                        {
+                            if m.contains(KeyModifiers::CONTROL) {
+                                let _ = crossterm::terminal::disable_raw_mode();
+                                use std::io::Write;
+                                let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
+                                let _ = std::io::stdout().flush();
+                                std::process::exit(0);
+                            }
+                        }
+                    }
                 }
                 continue;
             }
@@ -231,6 +248,50 @@ fn keycode_to_scancode(code: crossterm::event::KeyCode, modifiers: crossterm::ev
 
         _ => None,
     }
+}
+
+/// Parse a named key (e.g. "enter", "f1", "esc") to (scancode, ascii, enhanced).
+/// Used by headless key input.
+pub fn parse_key_name(name: &str) -> Option<(u8, u8, bool)> {
+    match name.to_lowercase().as_str() {
+        "enter" | "return" => Some((0x1C, 0x0D, false)),
+        "esc" | "escape" => Some((0x01, 0x1B, false)),
+        "tab" => Some((0x0F, 0x09, false)),
+        "backspace" | "bksp" => Some((0x0E, 0x08, false)),
+        "space" => Some((0x39, 0x20, false)),
+        "up" => Some((0x48, 0xE0, true)),
+        "down" => Some((0x50, 0xE0, true)),
+        "left" => Some((0x4B, 0xE0, true)),
+        "right" => Some((0x4D, 0xE0, true)),
+        "home" => Some((0x47, 0xE0, true)),
+        "end" => Some((0x4F, 0xE0, true)),
+        "pgup" | "pageup" => Some((0x49, 0xE0, true)),
+        "pgdn" | "pagedown" => Some((0x51, 0xE0, true)),
+        "insert" | "ins" => Some((0x52, 0xE0, true)),
+        "delete" | "del" => Some((0x53, 0xE0, true)),
+        "f1" => Some((0x3B, 0x00, false)),
+        "f2" => Some((0x3C, 0x00, false)),
+        "f3" => Some((0x3D, 0x00, false)),
+        "f4" => Some((0x3E, 0x00, false)),
+        "f5" => Some((0x3F, 0x00, false)),
+        "f6" => Some((0x40, 0x00, false)),
+        "f7" => Some((0x41, 0x00, false)),
+        "f8" => Some((0x42, 0x00, false)),
+        "f9" => Some((0x43, 0x00, false)),
+        "f10" => Some((0x44, 0x00, false)),
+        "f11" => Some((0x57, 0x00, false)),
+        "f12" => Some((0x58, 0x00, false)),
+        _ => None,
+    }
+}
+
+/// Map a character to (scancode, ascii, needs_shift) for the `type` command.
+/// Returns None for unmappable characters.
+pub fn char_to_key(ch: char) -> Option<(u8, u8, bool)> {
+    let scancode = char_to_scancode(ch)?;
+    let needs_shift = ch.is_ascii_uppercase() || "~!@#$%^&*()_+{}|:\"<>?".contains(ch);
+    let ascii = if ch.is_ascii() { ch as u8 } else { 0 };
+    Some((scancode, ascii, needs_shift))
 }
 
 /// Map an ASCII/Unicode character to its PC AT scancode.

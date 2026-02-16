@@ -87,7 +87,7 @@ pub(super) fn group_fe_ff(vm: &mut Runtime, is_word: bool) {
         // PUSH (reg=7 is undocumented alias on 8086)
         0b_110 | 0b_111 => {
             // 8086 quirk: PUSH SP pushes the already-decremented value
-            let is_sp_reg = (modrm_byte >> 6) == 0b11 && (modrm_byte & 0b111) == 4;
+            let is_sp_reg = !vm.is_186() && (modrm_byte >> 6) == 0b11 && (modrm_byte & 0b111) == 4;
             if is_sp_reg {
                 vm.registers.sp.operation(2, u16::wrapping_sub);
                 let sp = vm.registers.sp.word();
@@ -100,7 +100,7 @@ pub(super) fn group_fe_ff(vm: &mut Runtime, is_word: bool) {
     };
 }
 
-pub(super) fn dispatch_int(vm: &mut Runtime, vector: u8) {
+pub fn dispatch_int(vm: &mut Runtime, vector: u8) {
     if let Some(handler) = vm.bios_handlers[vector as usize] {
         handler(vm);
 
@@ -184,5 +184,10 @@ pub(super) fn dispatch_int(vm: &mut Runtime, vector: u8) {
 }
 
 pub(super) fn div_zero(vm: &mut Runtime) {
+    // 80186+: return address points to the faulting DIV/IDIV instruction (allows retry)
+    // 8086: return address points past the instruction (already advanced)
+    if vm.is_186() {
+        vm.registers.pc.set(vm.registers.op_pc);
+    }
     dispatch_int(vm, 0);
 }

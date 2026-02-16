@@ -139,6 +139,23 @@ impl Pic {
         (self.irr & mask) != 0 || (self.isr & mask) != 0
     }
 
+    /// Non-specific EOI: clear highest-priority ISR bit.
+    /// Duplicates the OCW2 non-specific EOI logic so BIOS handlers can
+    /// send EOI without borrowing the full IO bus.
+    pub fn eoi(&mut self) {
+        for i in 0..8u8 {
+            if self.isr & (1 << i) != 0 {
+                self.isr &= !(1 << i);
+                break;
+            }
+        }
+    }
+
+    /// Directly set the IMR (interrupt mask register).
+    pub fn set_imr(&mut self, value: u8) {
+        self.imr = value;
+    }
+
     pub fn debug_irr(&self) -> u8 { self.irr }
     pub fn debug_isr(&self) -> u8 { self.isr }
     pub fn debug_imr(&self) -> u8 { self.imr }

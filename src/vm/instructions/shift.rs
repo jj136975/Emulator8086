@@ -19,7 +19,9 @@ pub(super) fn group_c0_c1(vm: &mut Runtime, is_word: bool) {
 }
 
 pub(super) fn group_d0_d3(vm: &mut Runtime, is_word: bool, directional: bool) {
-    let count = if !directional { 1 } else { vm.registers.cx.low() as u32 };
+    let mut count = if !directional { 1 } else { vm.registers.cx.low() as u32 };
+    // 80186+: shift counts are masked to 5 bits (max 31)
+    if vm.is_186() { count &= 0x1F; }
 
     if is_word {
         let (modrm, reg) = u16::mod_rm_single(vm);

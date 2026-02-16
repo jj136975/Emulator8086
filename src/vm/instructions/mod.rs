@@ -1,5 +1,5 @@
 mod alu;
-pub(super) mod control;
+pub mod control;
 mod shift;
 mod string;
 
@@ -915,6 +915,13 @@ pub fn process(vm: &mut Runtime) {
         0x62 => {
             let _ = u16::mod_rm_single(vm);
         }
+        // 8086 alias: JNB rel8 (same as 0x73)
+        0x63 => {
+            let disp = vm.fetch_byte() as i8;
+            if !vm.check_flag(Carry) {
+                vm.registers.pc.operation(disp as i16, u16::wrapping_add_signed);
+            }
+        }
         // FS/GS segment prefix (386+) — ignore in real mode (treat as DS)
         0x64 | 0x65 => {
             vm.prefix = Some(Queued(Box::new(Seg(SegmentType::DS))));
@@ -1089,7 +1096,7 @@ pub fn process(vm: &mut Runtime) {
         // PUSH reg
         0b_0101_0000..=0b_0101_0111 => {
             let reg = opcode & 0b111;
-            if reg == 4 {
+            if reg == 4 && !vm.is_186() {
                 // 8086 quirk: PUSH SP pushes the already-decremented value
                 vm.registers.sp.operation(2, u16::wrapping_sub);
                 let sp = vm.registers.sp.word();
@@ -1118,6 +1125,32 @@ pub fn process(vm: &mut Runtime) {
         // ROL / ROR / RCL / RCR / SHL / SHR / SAL / SAR  r/m, imm8  (186+, needed by MS-DOS)
         0xC0 | 0xC1 => {
             shift::group_c0_c1(vm, is_word);
+        }
+        // ENTER imm16, imm8 (80186+)
+        0xC8 => {
+            let alloc_size = vm.fetch_word();
+            let nesting = (vm.fetch_byte() & 0x1F) as u16;
+            vm.push_word(vm.registers.bp.word());
+            let frame = vm.registers.sp.word();
+            if nesting > 1 {
+                for _ in 1..nesting {
+                    let bp = vm.registers.bp.word().wrapping_sub(2);
+                    vm.registers.bp.set(bp);
+                    let val = vm.registers.ss.read_word(bp);
+                    vm.push_word(val);
+                }
+                vm.push_word(frame);
+            } else if nesting == 1 {
+                vm.push_word(frame);
+            }
+            vm.registers.bp.set(frame);
+            vm.registers.sp.operation(alloc_size, u16::wrapping_sub);
+        }
+        // LEAVE (80186+)
+        0xC9 => {
+            vm.registers.sp.set(vm.registers.bp.word());
+            let bp = vm.pop_word();
+            vm.registers.bp.set(bp);
         }
         // ROL / ROR / RCL / RCR / SHL / SHR / SAL / SAR
         0b_1101_0000..=0b_1101_0011 => {
