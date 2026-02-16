@@ -1,3 +1,5 @@
+use log::debug;
+
 pub trait IoDevice {
     fn port_in_byte(&mut self, port: u16) -> u8;
     fn port_out_byte(&mut self, port: u16, value: u8);
@@ -25,6 +27,8 @@ struct PortMapping {
 pub struct IoBus {
     devices: Vec<Box<dyn IoDevice>>,
     mappings: Vec<PortMapping>,
+    first_port: u16,
+    last_port: u16,
 }
 
 impl IoBus {
@@ -32,10 +36,17 @@ impl IoBus {
         Self {
             devices: Vec::new(),
             mappings: Vec::new(),
+            first_port: 0,
+            last_port: 0,
         }
     }
 
+    // Registers a device to handle I/O ports in the range [start, end].
+    // Should only be called during initialization, and with increasing port ranges.
     pub fn register(&mut self, start: u16, end: u16, device: Box<dyn IoDevice>) {
+        if !self.mappings.is_empty() && (start <= self.last_port || end < start) {
+            panic!("Port ranges must be registered in increasing order without overlap");
+        }
         let idx = self.devices.len();
         self.devices.push(device);
         self.mappings.push(PortMapping {
@@ -43,41 +54,61 @@ impl IoBus {
             end,
             device_idx: idx,
         });
+        if self.mappings.len() == 1 {
+            self.first_port = start;
+        }
+        self.last_port = end;
     }
 
     pub fn port_in_byte(&mut self, port: u16) -> u8 {
-        for i in 0..self.mappings.len() {
-            if port >= self.mappings[i].start && port <= self.mappings[i].end {
-                return self.devices[self.mappings[i].device_idx].port_in_byte(port);
+        if port < self.first_port || port > self.last_port {
+            return 0xFF; // Unmapped ports read as 0xFF
+        }
+        for mapping in &self.mappings {
+            if port >= mapping.start && port <= mapping.end {
+                return self.devices[mapping.device_idx].port_in_byte(port);
             }
         }
+        debug!("Read from unmapped port {:04X}", port);
         0xFF
     }
 
     pub fn port_in_word(&mut self, port: u16) -> u16 {
-        for i in 0..self.mappings.len() {
-            if port >= self.mappings[i].start && port <= self.mappings[i].end {
-                return self.devices[self.mappings[i].device_idx].port_in_word(port);
+        if port < self.first_port || port > self.last_port {
+            return 0xFF; // Unmapped ports read as 0xFF
+        }
+        for mapping in &self.mappings {
+            if port >= mapping.start && port <= mapping.end {
+                return self.devices[mapping.device_idx].port_in_word(port);
             }
         }
+        debug!("Read from unmapped port {:04X}", port);
         0xFFFF
     }
 
     pub fn port_out_byte(&mut self, port: u16, value: u8) {
-        for i in 0..self.mappings.len() {
-            if port >= self.mappings[i].start && port <= self.mappings[i].end {
-                self.devices[self.mappings[i].device_idx].port_out_byte(port, value);
+        if port < self.first_port || port > self.last_port {
+            return; // Ignore writes to unmapped ports
+        }
+        for mapping in &self.mappings {
+            if port >= mapping.start && port <= mapping.end {
+                self.devices[mapping.device_idx].port_out_byte(port, value);
                 return;
             }
         }
+        debug!("Write to unmapped port {:04X}: {:02X}", port, value);
     }
 
     pub fn port_out_word(&mut self, port: u16, value: u16) {
-        for i in 0..self.mappings.len() {
-            if port >= self.mappings[i].start && port <= self.mappings[i].end {
-                self.devices[self.mappings[i].device_idx].port_out_word(port, value);
+        if port < self.first_port || port > self.last_port {
+            return; // Ignore writes to unmapped ports
+        }
+        for mapping in &self.mappings {
+            if port >= mapping.start && port <= mapping.end {
+                self.devices[mapping.device_idx].port_out_word(port, value);
                 return;
             }
         }
+        debug!("Write to unmapped port {:04X}: {:04X}", port, value);
     }
 }

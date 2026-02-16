@@ -4,9 +4,8 @@ use clap::Parser;
 use clap_derive::Parser;
 
 use crate::io::disk::{DiskSource, DiskSpec, FLOPPY_144_SIZE};
-use crate::vm::runtime::{HeadlessConfig, Runtime};
+use crate::vm::runtime::Runtime;
 
-mod bios;
 mod io;
 mod utils;
 mod vm;
@@ -17,8 +16,8 @@ mod cpu_tests;
 #[derive(Parser, Debug)]
 #[command(name = "emulator8086", about = "Intel 8086 emulator")]
 struct CLI {
-    /// Path to a.out executable (for MINIX mode)
-    path: Option<PathBuf>,
+    /// Path to boot ROM image (e.g. --rom boot.bin)
+    rom: PathBuf,
     /// Disk specification: DRIVE:SOURCE (e.g. a:boot.img, b:memory, a:C:\path\to\image.img)
     #[arg(long, action = clap::ArgAction::Append)]
     disk: Vec<String>,
@@ -32,18 +31,16 @@ struct CLI {
     boot: Option<String>,
     /// Enable register trace output (MINIX mode)
     #[arg(long)]
-    trace: bool,
-    /// Run in headless mode (no terminal UI)
-    #[arg(long)]
-    headless: bool,
-    /// Path to write VGA screen dump (default: screen.txt when headless)
-    #[arg(long)]
-    screen_dump: Option<PathBuf>,
-    /// Path to read keystroke commands from (default: keys.txt when headless)
-    #[arg(long)]
-    key_input: Option<PathBuf>,
-    /// Arguments to pass to the a.out executable
-    args: Vec<String>,
+    trace: bool
+    // /// Run in headless mode (no terminal UI)
+    // #[arg(long)]
+    // headless: bool,
+    // /// Path to write VGA screen dump (default: screen.txt when headless)
+    // #[arg(long)]
+    // screen_dump: Option<PathBuf>,
+    // /// Path to read keystroke commands from (default: keys.txt when headless)
+    // #[arg(long)]
+    // key_input: Option<PathBuf>,
 }
 
 fn parse_disk_spec(spec: &str) -> DiskSpec {
@@ -116,22 +113,19 @@ fn main() {
     env_logger::init();
     let args = CLI::parse();
 
-    if args.disk.is_empty() && args.hd.is_empty() {
-        eprintln!("Error: at least one --disk or --hd is required for BIOS mode");
-        std::process::exit(1);
-    }
     let specs: Vec<DiskSpec> = args.disk.iter().map(|s| parse_disk_spec(s)).collect();
     let boot_order = args.boot.as_deref().map(parse_boot_order);
 
-    let headless_config = if args.headless {
-        Some(HeadlessConfig {
-            screen_dump_path: args.screen_dump.unwrap_or_else(|| PathBuf::from("screen.txt")),
-            key_input_path: args.key_input.unwrap_or_else(|| PathBuf::from("keys.txt")),
-        })
-    } else {
-        None
-    };
+    // let headless_config = if args.headless {
+    //     Some(HeadlessConfig {
+    //         screen_dump_path: args.screen_dump.unwrap_or_else(|| PathBuf::from("screen.txt")),
+    //         key_input_path: args.key_input.unwrap_or_else(|| PathBuf::from("keys.txt")),
+    //     })
+    // } else {
+    //     None
+    // };
 
-    let mut runtime = Runtime::new(&specs, &args.hd, boot_order, headless_config);
+    let mut runtime = Runtime::new(specs, args.hd, boot_order);
+    runtime.load_rom(args.rom);
     runtime.run();
 }

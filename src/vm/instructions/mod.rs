@@ -504,13 +504,7 @@ pub fn process(vm: &mut Runtime) {
         }
         // HLT
         0xF4 => {
-            // Run periodic tasks so VGA/timer stay responsive during halt
-            vm.idle_tick();
-            // Rewind PC so the run loop can process interrupts before retrying.
-            // When a hardware interrupt fires, its handler runs via IRET and
-            // execution resumes at the instruction *after* HLT naturally.
-            vm.registers.pc.set(vm.registers.op_pc);
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            vm.halted = true;
         }
         // IN ac,DX
         0xEC | 0xED => {
@@ -567,18 +561,17 @@ pub fn process(vm: &mut Runtime) {
         }
         // INT 3 (breakpoint)
         0xCC => {
-            let vector: u8 = 3;
-            control::dispatch_int(vm, vector);
+            vm.handle_interrupt(0x03);
         }
         // INT imm8
         0xCD => {
             let vector = vm.fetch_byte();
-            control::dispatch_int(vm, vector);
+            vm.handle_interrupt(vector);
         }
         // INTO (Interrupt on Overflow)
         0xCE => {
             if vm.check_flag(Overflow) {
-                control::dispatch_int(vm, 4);
+                vm.handle_interrupt(0x04)
             }
         }
         // IRET
@@ -1091,7 +1084,8 @@ pub fn process(vm: &mut Runtime) {
         // POPF
         0x9D => {
             // 8086: bits 12-15 always 1, bit 1 always 1, bits 3,5 always 0
-            vm.flags = (vm.pop_word() & 0x0FD5) | 0xF002;
+            let flags = vm.pop_word();
+            vm.flags = (flags & 0x0FD5) | 0xF002;
         }
         // PUSH reg
         0b_0101_0000..=0b_0101_0111 => {

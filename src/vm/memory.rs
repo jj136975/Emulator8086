@@ -1,13 +1,7 @@
-use crate::vm::registers::{ByteWrapper, HIGH_IDX, LOW_IDX, Register, WordWrapper};
+use crate::vm::registers::{ByteWrapper, Register, WordWrapper};
 
 pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
 
-pub const IVT_BASE: usize = 0x00000;
-pub const BDA_BASE: usize = 0x00400;
-pub const BOOT_ADDR: usize = 0x07C00;
-pub const CONV_MEM_END: usize = 0xA0000;
-pub const VGA_TEXT_BASE: usize = 0xB8000;
-pub const BIOS_ROM: usize = 0xF0000;
 
 pub struct Memory {
     mem: Box<[u8]>,
@@ -28,40 +22,44 @@ impl Memory {
 
     #[inline]
     pub fn ref_byte(&mut self, address: usize) -> ByteWrapper {
-        ByteWrapper::new(&mut self.mem[address])
+        ByteWrapper::new(&mut self.mem[address & 0xFFFFF])
     }
 
     #[inline]
     pub fn ref_word(&mut self, address: usize) -> WordWrapper {
+        // NOTE: Does NOT wrap at 1MB boundary. Only use when address < 0xFFFFF.
+        // For wrapping access, use read_word/write_word instead.
+        let addr = address & 0xFFFFF;
         let slice: &mut [u8; 2] = {
-            let x = &mut self.mem[address..=address + 1];
+            let x = &mut self.mem[addr..=addr + 1];
             x.try_into()
-                .unwrap_or_else(|_| panic!("Invalid Memory address: {}", address))
+                .unwrap_or_else(|_| panic!("Invalid Memory address: {}", addr))
         };
         WordWrapper::from_slice(slice)
     }
 
     #[inline]
     pub fn read_byte(&self, address: usize) -> u8 {
-        self.mem[address]
+        self.mem[address & 0xFFFFF]
     }
 
     #[inline]
     pub fn read_word(&self, address: usize) -> u16 {
-        let bytes: [u8; 2] = [self.mem[address], self.mem[address + 1]];
-        u16::from_le_bytes(bytes)
+        let lo = self.mem[address & 0xFFFFF];
+        let hi = self.mem[(address + 1) & 0xFFFFF];
+        u16::from_le_bytes([lo, hi])
     }
 
     #[inline]
     pub fn write_byte(&mut self, address: usize, byte: u8) {
-        self.mem[address] = byte;
+        self.mem[address & 0xFFFFF] = byte;
     }
 
     #[inline]
     pub fn write_word(&mut self, address: usize, word: u16) {
         let bytes = word.to_le_bytes();
-        self.mem[address + LOW_IDX] = bytes[0];
-        self.mem[address + HIGH_IDX] = bytes[1];
+        self.mem[address & 0xFFFFF] = bytes[0];
+        self.mem[(address + 1) & 0xFFFFF] = bytes[1];
     }
 }
 
@@ -91,8 +89,9 @@ impl Segment {
 
     #[inline]
     pub fn ref_word(&mut self, address: u16) -> WordWrapper {
+        // NOTE: Does NOT wrap at 1MB. Only safe when access won't cross boundary.
         let address = self.phys_address(address);
-        unsafe {(* self.mem).ref_word(address) }
+        unsafe { (*self.mem).ref_word(address) }
     }
 
     #[inline]
@@ -103,7 +102,7 @@ impl Segment {
 
     #[inline]
     pub fn read_word(&self, address: u16) -> u16 {
-        // Read byte-by-byte so offset 0xFFFF wraps to 0x0000 within the segment
+        // Byte-by-byte so offset 0xFFFF wraps correctly within segment
         let lo = self.read_byte(address);
         let hi = self.read_byte(address.wrapping_add(1));
         u16::from_le_bytes([lo, hi])

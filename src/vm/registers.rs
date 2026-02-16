@@ -8,17 +8,13 @@ pub union Register {
 
 impl Register {
     pub fn new(word: u16) -> Self {
-        Self {
-            word
-        }
+        Self { word }
     }
 }
 
 impl Default for Register {
     fn default() -> Self {
-        Self {
-            word: 0u16
-        }
+        Self { word: 0u16 }
     }
 }
 
@@ -28,9 +24,7 @@ pub struct ByteWrapper {
 
 impl ByteWrapper {
     pub fn new(byte: &mut u8) -> Self {
-        Self {
-            inner: byte
-        }
+        Self { inner: byte }
     }
 
     #[inline(always)]
@@ -44,15 +38,15 @@ impl ByteWrapper {
     }
 
     #[inline(always)]
-    pub fn operation(&self, value: u8, operation: fn (u8, u8) -> u8) -> u8 {
-        let res = operation( unsafe { *self.inner }, value);
+    pub fn operation(&self, value: u8, operation: fn(u8, u8) -> u8) -> u8 {
+        let res = operation(unsafe { *self.inner }, value);
         unsafe { *self.inner = res };
         res
     }
 
     #[inline(always)]
-    pub fn apply<T>(&self, value: u8, operation: fn (u8, u8) -> T) -> T {
-        operation( unsafe { *self.inner }, value)
+    pub fn apply<T>(&self, value: u8, operation: fn(u8, u8) -> T) -> T {
+        operation(unsafe { *self.inner }, value)
     }
 
     #[inline]
@@ -68,14 +62,12 @@ pub struct WordWrapper {
 impl WordWrapper {
     pub fn from_register(register: &mut Register) -> Self {
         Self {
-            inner: unsafe { &mut register.byte }
+            inner: unsafe { &mut register.byte },
         }
     }
 
     pub fn from_slice(slice: &mut [u8; 2]) -> Self {
-        Self {
-            inner: slice
-        }
+        Self { inner: slice }
     }
 
     #[inline(always)]
@@ -91,7 +83,7 @@ impl WordWrapper {
     }
 
     #[inline(always)]
-    pub fn operation<T>(&self, value: T, operation: fn (u16, T) -> u16) -> u16 {
+    pub fn operation<T>(&self, value: T, operation: fn(u16, T) -> u16) -> u16 {
         let res = operation(self.word(), value);
         self.set(res);
         res
@@ -107,12 +99,11 @@ impl WordWrapper {
         unsafe { core::ptr::swap(self.inner as *mut u16, &mut register.word) };
     }
 
-    pub unsafe fn next(&self) -> u16 {
-        unsafe {
-            let ptr = (self.inner as *const u8).add(2);
-            let bytes = [*ptr, *ptr.add(1)];
-            u16::from_le_bytes(bytes)
-        }
+    pub unsafe fn read_next_word(&self) -> u16 {
+        let ptr = self.inner as *const u8;
+        let lo = *ptr.add(2);
+        let hi = *ptr.add(3);
+        u16::from_le_bytes([lo, hi])
     }
 }
 
@@ -168,26 +159,26 @@ impl Register {
     }
 
     #[inline(always)]
-    pub fn operation<T>(&mut self, value: T, operation: fn (u16, T) -> u16) -> u16 {
+    pub fn operation<T>(&mut self, value: T, operation: fn(u16, T) -> u16) -> u16 {
         let res = operation(self.word(), value);
         self.set(res);
         res
     }
 
     #[inline(always)]
-    pub fn operation_low<T>(&mut self, value: T, operation: fn (u8, T) -> u8) -> u8 {
+    pub fn operation_low<T>(&mut self, value: T, operation: fn(u8, T) -> u8) -> u8 {
         let res = operation(self.low(), value);
         self.set_low(res);
         res
     }
 
     #[inline(always)]
-    pub fn apply_low<T, U>(&self, value: U, operation: fn (u8, U) -> T) -> T {
+    pub fn apply_low<T, U>(&self, value: U, operation: fn(u8, U) -> T) -> T {
         operation(self.low(), value)
     }
 
     #[inline(always)]
-    pub fn operation_high<T>(&mut self, value: T, operation: fn (u8, T) -> u8) -> u8 {
+    pub fn operation_high<T>(&mut self, value: T, operation: fn(u8, T) -> u8) -> u8 {
         let res = operation(self.high(), value);
         self.set_high(res);
         res
@@ -208,11 +199,15 @@ pub struct Registers {
     pub es: Segment,
     pub ss: Segment,
     pub pc: Register,
-    pub op_pc: u16
+    pub op_pc: u16,
 }
 
-impl  Registers {
-    pub fn new(memory: &mut Memory) -> Self {
+impl Registers {
+    /// Creates registers in 8086 power-on reset state.
+    /// CS=0xFFFF, IP=0x0000 -> execution starts at physical 0xFFFF0.
+    /// All other registers are 0x0000.
+    /// The BIOS is responsible for setting up the stack and segments.
+    pub fn new(memory: *mut Memory) -> Self {
         Self {
             ax: Register::default(),
             bx: Register::default(),
@@ -220,13 +215,13 @@ impl  Registers {
             dx: Register::default(),
             si: Register::default(),
             di: Register::default(),
-            sp: Register::new(0x7C00), // Stack below boot sector
+            sp: Register::default(),        // BIOS sets up stack
             bp: Register::default(),
-            cs: Segment::new(0x0000, memory),
+            cs: Segment::new(0xFFFF, memory), // reset vector segment
             ds: Segment::new(0x0000, memory),
             es: Segment::new(0x0000, memory),
             ss: Segment::new(0x0000, memory),
-            pc: Register::default(),
+            pc: Register::default(),          // IP = 0x0000
             op_pc: 0,
         }
     }
@@ -242,7 +237,7 @@ impl  Registers {
             0b101 => self.cx.ref_mut_high(),
             0b110 => self.dx.ref_mut_high(),
             0b111 => self.bx.ref_mut_high(),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -257,7 +252,7 @@ impl  Registers {
             0b101 => self.cx.high(),
             0b110 => self.dx.high(),
             0b111 => self.bx.high(),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -272,7 +267,7 @@ impl  Registers {
             0b101 => &mut self.bp,
             0b110 => &mut self.si,
             0b111 => &mut self.di,
-            _ => unreachable!()
+            _ => unreachable!(),
         })
     }
 
@@ -287,7 +282,7 @@ impl  Registers {
             0b101 => self.bp.word(),
             0b110 => self.si.word(),
             0b111 => self.di.word(),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }
