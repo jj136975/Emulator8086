@@ -1,224 +1,192 @@
-use crate::bios::handlers::*;
-use crate::vm::memory::{BDA_BASE, BIOS_ROM};
+use crate::bios::{bda, disk, keyboard, system, timer, video};
+use crate::vm::memory::{BIOS_ROM, VGA_TEXT_BASE};
 use crate::vm::runtime::Runtime;
 
+/// ROM stub layout starting at 0xF0000:
+///   0xF0000: CD F0 CF    — INT 08h IVT stub → bios_handlers[0xF0]
+///   0xF0003: CD F1 CF    — INT 09h IVT stub → bios_handlers[0xF1]
+///   0xF0006: CF          — Generic IRET for default vectors
+const ROM_STUB_BASE: usize = BIOS_ROM;      // 0xF0000
+const ROM_STUB_INT08: usize = ROM_STUB_BASE; // CD F0 CF
+const ROM_STUB_INT09: usize = ROM_STUB_BASE + 3; // CD F1 CF
+const ROM_STUB_IRET: usize = ROM_STUB_BASE + 6; // CF
+
+/// Diskette parameter table location in ROM
+const DPT_ADDR: usize = BIOS_ROM + 0x100;  // 0xF0100
+/// Hard disk 0 parameter table
+const HDPT0_ADDR: usize = BIOS_ROM + 0x110; // 0xF0110
+/// Hard disk 1 parameter table
+const HDPT1_ADDR: usize = BIOS_ROM + 0x120; // 0xF0120
+
 pub fn init_bios(vm: &mut Runtime) {
-    // Register BIOS handlers on private trap vectors (0xF0-0xF8).
-    // Each BIOS interrupt (INT 09h, 10h, …) gets a ROM stub that does
-    //     INT Fxh ; IRET
-    // The IVT entry for the interrupt points to this stub.  dispatch_int
-    // finds bios_handlers[0xFx] for the trap vector and calls the Rust
-    // handler directly.
-    //
-    // This design lets guest software (DOS, TSRs) hook any BIOS vector by
-    // changing the IVT — dispatch_int will follow the IVT to the guest
-    // hook, which can chain to the original ROM stub if desired.
-    vm.bios_handlers[0xF0] = Some(int09h_bios);
-    vm.bios_handlers[0xF1] = Some(int10h);
-    vm.bios_handlers[0xF2] = Some(int11h);
-    vm.bios_handlers[0xF3] = Some(int12h);
-    vm.bios_handlers[0xF4] = Some(int13h);
-    vm.bios_handlers[0xF5] = Some(int15h);
-    vm.bios_handlers[0xF6] = Some(int16h);
-    vm.bios_handlers[0xF7] = Some(int19h);
-    vm.bios_handlers[0xF8] = Some(int1ah);
+    write_rom_stubs(vm);
+    setup_ivt(vm);
+    setup_data_tables(vm);
+    init_bda(vm);
+    register_handlers(vm);
+    init_pic(vm);
+    clear_vga(vm);
 
-    // Write 256 IRET stubs in ROM area — one per interrupt vector.
-    // This ensures ANY unhandled INT (e.g. INT 2Fh, INT 33h) safely
-    // executes IRET instead of jumping to 0000:0000 and crashing.
-    let iret_base = BIOS_ROM + 0x100;
-    let stub_seg = (BIOS_ROM >> 4) as u16;
-    for i in 0..256u16 {
-        let stub_addr = iret_base + i as usize;
-        vm.memory.write_byte(stub_addr, 0xCF); // IRET
+    // Bootstrap: load boot sector and set CS:IP to 0000:7C00
+    system::int19h(vm);
+}
 
-        let ivt_offset = (i * 4) as usize;
-        vm.memory.write_word(ivt_offset, (stub_addr & 0xFFFF) as u16);
-        vm.memory.write_word(ivt_offset + 2, stub_seg);
+fn write_rom_stubs(vm: &mut Runtime) {
+    // INT 08h stub: CD F0 CF (INT 0xF0; IRET)
+    vm.memory.write_byte(ROM_STUB_INT08, 0xCD);
+    vm.memory.write_byte(ROM_STUB_INT08 + 1, 0xF0);
+    vm.memory.write_byte(ROM_STUB_INT08 + 2, 0xCF);
+
+    // INT 09h stub: CD F1 CF (INT 0xF1; IRET)
+    vm.memory.write_byte(ROM_STUB_INT09, 0xCD);
+    vm.memory.write_byte(ROM_STUB_INT09 + 1, 0xF1);
+    vm.memory.write_byte(ROM_STUB_INT09 + 2, 0xCF);
+
+    // Generic IRET stub
+    vm.memory.write_byte(ROM_STUB_IRET, 0xCF);
+}
+
+fn setup_ivt(vm: &mut Runtime) {
+    // Default all vectors to the IRET stub at F000:0006
+    for i in 0..256 {
+        let ivt_offset = i * 4;
+        vm.memory.write_word(ivt_offset, ROM_STUB_IRET as u16 - BIOS_ROM as u16); // IP offset within F000 segment
+        vm.memory.write_word(ivt_offset + 2, 0xF000);  // CS = F000
     }
 
-    // Write ROM stubs for all BIOS interrupt handlers.
-    // Each stub is 3 bytes:  INT Fxh ; IRET
-    // The IVT entry for the corresponding vector points here.
-    // Guest software can hook a vector by changing the IVT; dispatch_int
-    // will follow the IVT chain.  The original handler is reachable by
-    // calling or jumping to the ROM stub address.
-    let stub_seg = (BIOS_ROM >> 4) as u16;
-    let bios_stubs: &[(u8, u8)] = &[
-        // (BIOS vector, trap vector)
-        (0x09, 0xF0),  // Keyboard IRQ
-        (0x10, 0xF1),  // Video services
-        (0x11, 0xF2),  // Equipment list
-        (0x12, 0xF3),  // Memory size
-        (0x13, 0xF4),  // Disk services
-        (0x15, 0xF5),  // System services
-        (0x16, 0xF6),  // Keyboard services
-        (0x19, 0xF7),  // Bootstrap loader
-        (0x1A, 0xF8),  // Time services
-    ];
-    for (i, &(bios_vec, trap_vec)) in bios_stubs.iter().enumerate() {
-        let stub_addr = BIOS_ROM + 0x400 + i * 3;
-        vm.memory.write_byte(stub_addr, 0xCD);         // INT
-        vm.memory.write_byte(stub_addr + 1, trap_vec);  //   Fxh
-        vm.memory.write_byte(stub_addr + 2, 0xCF);     // IRET
+    // Timer IRQ (INT 08h) → F000:0000 (ROM stub that calls handler 0xF0)
+    vm.memory.write_word(0x08 * 4, 0x0000);
+    vm.memory.write_word(0x08 * 4 + 2, 0xF000);
 
-        // Point IVT[bios_vec] to this stub (overrides the IRET-only stub)
-        let ivt_offset = bios_vec as usize * 4;
-        vm.memory.write_word(ivt_offset, (stub_addr & 0xFFFF) as u16);
-        vm.memory.write_word(ivt_offset + 2, stub_seg);
-    }
+    // Keyboard IRQ (INT 09h) → F000:0003 (ROM stub that calls handler 0xF1)
+    vm.memory.write_word(0x09 * 4, 0x0003);
+    vm.memory.write_word(0x09 * 4 + 2, 0xF000);
 
-    // Write a generic "EOI + IRET" stub for hardware interrupts (IRQ 0-7).
-    // Without EOI, the PIC's ISR bit stays set and blocks lower-priority IRQs.
-    //   PUSH AX      ; 50
-    //   MOV AL, 20h  ; B0 20
-    //   OUT 20h, AL  ; E6 20
-    //   POP AX       ; 58
-    //   IRET         ; CF
-    let eoi_stub = BIOS_ROM + 0x440;
-    vm.memory.write_byte(eoi_stub, 0x50);         // PUSH AX
-    vm.memory.write_byte(eoi_stub + 1, 0xB0);     // MOV AL, imm8
-    vm.memory.write_byte(eoi_stub + 2, 0x20);     //   0x20
-    vm.memory.write_byte(eoi_stub + 3, 0xE6);     // OUT imm8, AL
-    vm.memory.write_byte(eoi_stub + 4, 0x20);     //   0x20
-    vm.memory.write_byte(eoi_stub + 5, 0x58);     // POP AX
-    vm.memory.write_byte(eoi_stub + 6, 0xCF);     // IRET
+    // INT 1Ch (user timer hook) → IRET (default, can be hooked by user code)
+    // Already set to IRET by the loop above
+}
 
-    // Point hardware interrupt vectors (INT 08h-0Fh) to the EOI+IRET stub,
-    // EXCEPT INT 09h which keeps its keyboard-specific handler.
-    for vec in 0x08u16..=0x0F {
-        if vec == 0x09 { continue; } // keyboard uses its own stub
-        vm.memory.write_word((vec * 4) as usize, (eoi_stub & 0xFFFF) as u16);
-        vm.memory.write_word((vec * 4 + 2) as usize, stub_seg);
-    }
-
-    // Program the PIC (like real BIOS POST) — unmask all IRQs
-    if let Some(ref mut io_bus) = vm.io_bus {
-        io_bus.port_out_byte(0x20, 0x11);  // ICW1: edge-triggered, cascade, ICW4 needed
-        io_bus.port_out_byte(0x21, 0x08);  // ICW2: vector offset 8 (IRQ0 → INT 08h)
-        io_bus.port_out_byte(0x21, 0x04);  // ICW3: slave on IRQ 2
-        io_bus.port_out_byte(0x21, 0x01);  // ICW4: 8086 mode
-        io_bus.port_out_byte(0x21, 0x00);  // OCW1: unmask all IRQs
-    }
-
-    // Initialize BDA
-    vm.memory.write_byte(BDA_BASE + 0x49, 0x03);     // Video mode = 3 (80x25 color)
-    vm.memory.write_word(BDA_BASE + 0x4A, 80);        // Columns per row
-    vm.memory.write_word(BDA_BASE + 0x4C, 4000);      // Video buffer size
-    vm.memory.write_word(BDA_BASE + 0x13, 640);       // Memory size in KB
-
-    // Equipment word: bit 0 = has floppies, bits 6-7 = (floppy_count - 1)
-    // bits 4-5 = initial video mode (01 = 80x25 color)
-    let floppy_count = vm.disks.iter().filter(|d| d.is_some()).count() as u16;
-    let equip = if floppy_count > 0 {
-        0x0001 | ((floppy_count - 1) << 6) | 0x0020 // has floppies + count + 80x25 color
-    } else {
-        0x0020 // just 80x25 color, no floppies
-    };
-    vm.memory.write_word(BDA_BASE + 0x10, equip);
-
-    // Hard disk count at BDA 0x75
-    let hd_count = vm.hard_disks.iter().filter(|d| d.is_some()).count() as u8;
-    vm.memory.write_byte(BDA_BASE + 0x75, hd_count);
-
-    vm.memory.write_byte(BDA_BASE + 0x50, 0);         // Cursor col page 0
-    vm.memory.write_byte(BDA_BASE + 0x51, 0);         // Cursor row page 0
-
-    // Initialize BDA keyboard buffer
-    // Head and tail both point to buffer start (empty)
-    vm.memory.write_word(BDA_BASE + 0x1A, 0x1E);     // Keyboard buffer head offset
-    vm.memory.write_word(BDA_BASE + 0x1C, 0x1E);     // Keyboard buffer tail offset
-    // Enhanced keyboard buffer start/end pointers (used by some programs)
-    vm.memory.write_word(BDA_BASE + 0x80, 0x1E);     // Buffer start offset
-    vm.memory.write_word(BDA_BASE + 0x82, 0x3E);     // Buffer end offset
-
-    // Set up diskette parameter table at a fixed location in ROM
-    // INT 1Eh vector (0x78-0x7B) should point to this table
-    let dpt_addr = BIOS_ROM + 0x200;
-    // Standard 1.44MB floppy parameter table (11 bytes)
+fn setup_data_tables(vm: &mut Runtime) {
+    // Diskette Parameter Table (11 bytes) for INT 1Eh
     let dpt: [u8; 11] = [
-        0xDF, // SRT=D, HUT=F (step rate time, head unload time)
-        0x02, // HLT=01, DMA=1 (head load time, DMA mode)
+        0xDF, // SRT=D, HUT=F
+        0x02, // DMA mode, HLT=1
         0x25, // Motor wait time (ticks)
         0x02, // Bytes per sector (2 = 512)
-        0x12, // Sectors per track (18)
+        18,   // Sectors per track (1.44M)
         0x1B, // Gap length
-        0xFF, // Data length
-        0x6C, // Format gap length
-        0xF6, // Fill byte for format
+        0xFF, // DTL
+        0x54, // Format gap length
+        0xF6, // Format fill byte
         0x0F, // Head settle time (ms)
-        0x08, // Motor start time (1/8 seconds)
+        0x08, // Motor start time (1/8 sec)
     ];
     for (i, &b) in dpt.iter().enumerate() {
-        vm.memory.write_byte(dpt_addr + i, b);
+        vm.memory.write_byte(DPT_ADDR + i, b);
     }
-    // Set INT 1Eh vector to point to the DPT
-    let ivt_1e = 0x1E * 4;
-    vm.memory.write_word(ivt_1e, (dpt_addr & 0xFFFF) as u16);
-    vm.memory.write_word(ivt_1e + 2, (BIOS_ROM >> 4) as u16);
+    // Set INT 1Eh vector to point to DPT
+    vm.memory.write_word(0x1E * 4, (DPT_ADDR - BIOS_ROM) as u16);
+    vm.memory.write_word(0x1E * 4 + 2, 0xF000);
 
-    // Set up Fixed Disk Parameter Table (FDPT) for hard disk 0 at INT 41h
-    if let Some(Some(hd)) = vm.hard_disks.get(0) {
-        let fdpt_addr = BIOS_ROM + 0x300;
-        // 16-byte FDPT
-        vm.memory.write_word(fdpt_addr, hd.cylinders);           // 00h: cylinders
-        vm.memory.write_byte(fdpt_addr + 2, hd.heads);           // 02h: heads
-        vm.memory.write_word(fdpt_addr + 3, 0);                  // 03h: reduced write current (unused)
-        vm.memory.write_word(fdpt_addr + 5, hd.cylinders + 1);   // 05h: write precomp cylinder
-        vm.memory.write_byte(fdpt_addr + 7, 0);                  // 07h: max ECC burst
-        let control = if hd.heads > 8 { 0x08 } else { 0x00 };    // 08h: control byte
-        vm.memory.write_byte(fdpt_addr + 8, control);
-        vm.memory.write_byte(fdpt_addr + 9, 0);                  // 09h: standard timeout
-        vm.memory.write_byte(fdpt_addr + 10, 0);                 // 0Ah: formatting timeout
-        vm.memory.write_byte(fdpt_addr + 11, 0);                 // 0Bh: check timeout
-        vm.memory.write_word(fdpt_addr + 12, hd.cylinders + 1);  // 0Ch: landing zone
-        vm.memory.write_byte(fdpt_addr + 14, hd.sectors_per_track); // 0Eh: sectors per track
-        vm.memory.write_byte(fdpt_addr + 15, 0);                 // 0Fh: reserved
+    // Hard disk parameter tables (INT 41h = HD0, INT 46h = HD1)
+    for (hd_idx, ivt_num) in [(0usize, 0x41u16), (1usize, 0x46u16)] {
+        if let Some(Some(disk)) = vm.hard_disks.get(hd_idx) {
+            let table_addr = if hd_idx == 0 { HDPT0_ADDR } else { HDPT1_ADDR };
+            // 16-byte HD parameter table
+            let cyls = disk.cylinders;
+            let heads = disk.heads;
+            let spt = disk.sectors_per_track;
 
-        // Point INT 41h vector to FDPT
-        let ivt_41 = 0x41 * 4;
-        vm.memory.write_word(ivt_41, (fdpt_addr & 0xFFFF) as u16);
-        vm.memory.write_word(ivt_41 + 2, (BIOS_ROM >> 4) as u16);
+            vm.memory.write_word(table_addr, cyls);       // Max cylinders
+            vm.memory.write_byte(table_addr + 2, heads);  // Max heads
+            vm.memory.write_word(table_addr + 3, 0);      // Reduced write current cyl
+            vm.memory.write_word(table_addr + 5, cyls);   // Write precomp cyl
+            vm.memory.write_byte(table_addr + 7, 0);      // Max ECC burst length
+            vm.memory.write_byte(table_addr + 8, 0x08);   // Control byte (no retries)
+            vm.memory.write_byte(table_addr + 9, 0);      // Std timeout
+            vm.memory.write_byte(table_addr + 10, 0);     // Format timeout
+            vm.memory.write_byte(table_addr + 11, 0);     // Check timeout
+            vm.memory.write_word(table_addr + 12, cyls);  // Landing zone
+            vm.memory.write_byte(table_addr + 14, spt);   // Sectors per track
+            vm.memory.write_byte(table_addr + 15, 0);     // Reserved
+
+            // Set IVT vector
+            vm.memory.write_word((ivt_num as usize) * 4, (table_addr - BIOS_ROM) as u16);
+            vm.memory.write_word((ivt_num as usize) * 4 + 2, 0xF000);
+        }
+    }
+}
+
+fn init_bda(vm: &mut Runtime) {
+    // Conventional memory
+    vm.memory.write_word(bda::MEMORY_SIZE_KB, 640);
+
+    // Video
+    vm.memory.write_byte(bda::VIDEO_MODE, 3);
+    vm.memory.write_word(bda::VIDEO_COLS, 80);
+    vm.memory.write_byte(bda::VIDEO_ROWS, 24);
+    vm.memory.write_word(bda::CRTC_PORT, 0x3D4);
+    vm.memory.write_word(bda::CURSOR_SHAPE, 0x0607); // Standard underline cursor
+    vm.memory.write_word(bda::CHAR_HEIGHT, 16);
+    vm.memory.write_byte(bda::ACTIVE_PAGE, 0);
+
+    // Keyboard buffer: empty, head = tail = start offset
+    vm.memory.write_word(bda::KB_HEAD, bda::KB_BUF_OFFSET_START);
+    vm.memory.write_word(bda::KB_TAIL, bda::KB_BUF_OFFSET_START);
+
+    // Equipment word
+    let num_floppies = vm.disks.iter().filter(|d| d.is_some()).count() as u16;
+    let num_hd = vm.hard_disks.iter().filter(|d| d.is_some()).count() as u8;
+    let mut equip: u16 = 0;
+    if num_floppies > 0 {
+        equip |= 0x01; // Floppy drive(s) installed
+        equip |= ((num_floppies.min(4) - 1) & 0x03) << 6; // Number of floppies - 1
+    }
+    equip |= 0x02;  // Math coprocessor (pretend present for DOS compatibility)
+    equip |= 0x20;  // Initial video mode: 80x25 color (bits 4-5 = 10)
+    vm.memory.write_word(bda::EQUIP_WORD, equip);
+
+    // Hard disk count
+    vm.memory.write_byte(bda::HD_COUNT, num_hd);
+
+    // Zero out cursor positions
+    for i in 0..16 {
+        vm.memory.write_byte(bda::CURSOR_POS + i, 0);
     }
 
-    // Set up FDPT for hard disk 1 at INT 46h
-    if let Some(Some(hd)) = vm.hard_disks.get(1) {
-        let fdpt_addr = BIOS_ROM + 0x310;
-        vm.memory.write_word(fdpt_addr, hd.cylinders);
-        vm.memory.write_byte(fdpt_addr + 2, hd.heads);
-        vm.memory.write_word(fdpt_addr + 3, 0);
-        vm.memory.write_word(fdpt_addr + 5, hd.cylinders + 1);
-        vm.memory.write_byte(fdpt_addr + 7, 0);
-        let control = if hd.heads > 8 { 0x08 } else { 0x00 };
-        vm.memory.write_byte(fdpt_addr + 8, control);
-        vm.memory.write_byte(fdpt_addr + 9, 0);
-        vm.memory.write_byte(fdpt_addr + 10, 0);
-        vm.memory.write_byte(fdpt_addr + 11, 0);
-        vm.memory.write_word(fdpt_addr + 12, hd.cylinders + 1);
-        vm.memory.write_byte(fdpt_addr + 14, hd.sectors_per_track);
-        vm.memory.write_byte(fdpt_addr + 15, 0);
+    // Timer
+    vm.memory.write_word(bda::TICK_COUNT, 0);
+    vm.memory.write_word(bda::TICK_COUNT + 2, 0);
+    vm.memory.write_byte(bda::TICK_OVERFLOW, 0);
+}
 
-        let ivt_46 = 0x46 * 4;
-        vm.memory.write_word(ivt_46, (fdpt_addr & 0xFFFF) as u16);
-        vm.memory.write_word(ivt_46 + 2, (BIOS_ROM >> 4) as u16);
+fn register_handlers(vm: &mut Runtime) {
+    // IRQ handlers (via ROM stubs, slots 0xF0-0xF1)
+    vm.bios_handlers[0xF0] = Some(timer::int08h);
+    vm.bios_handlers[0xF1] = Some(keyboard::int09h);
+
+    // BIOS service interrupts (Tier 1 direct dispatch)
+    vm.bios_handlers[0x10] = Some(video::int10h);
+    vm.bios_handlers[0x11] = Some(system::int11h);
+    vm.bios_handlers[0x12] = Some(system::int12h);
+    vm.bios_handlers[0x13] = Some(disk::int13h);
+    vm.bios_handlers[0x15] = Some(system::int15h);
+    vm.bios_handlers[0x16] = Some(keyboard::int16h);
+    vm.bios_handlers[0x19] = Some(system::int19h);
+    vm.bios_handlers[0x1A] = Some(timer::int1ah);
+}
+
+fn init_pic(vm: &mut Runtime) {
+    // Unmask IRQ 0 (timer) and IRQ 1 (keyboard), mask all others
+    if let Some(ref pic) = vm.pic {
+        pic.lock().unwrap().set_imr(0xFC);
     }
+}
 
-    // BIOS ROM identification at FFFF:000E (physical 0xFFFFE)
-    // IBM PC AT compatible model byte
-    vm.memory.write_byte(0xFFFFE, 0xFC); // 0xFC = AT class machine
-
-    // BIOS date string at FFFF:0005 (physical 0xFFFF5) - "01/01/00"
-    let bios_date = b"01/01/00";
-    for (i, &b) in bios_date.iter().enumerate() {
-        vm.memory.write_byte(0xFFFF5 + i, b);
+fn clear_vga(vm: &mut Runtime) {
+    // Fill VGA text memory with spaces + light gray on black
+    for i in 0..4000 {
+        vm.memory.write_byte(VGA_TEXT_BASE + i * 2, 0x20);
+        vm.memory.write_byte(VGA_TEXT_BASE + i * 2 + 1, 0x07);
     }
-
-    // Clear VGA text buffer
-    for i in 0..2000 {
-        vm.memory.write_byte(crate::vm::memory::VGA_TEXT_BASE + i * 2, b' ');
-        vm.memory.write_byte(crate::vm::memory::VGA_TEXT_BASE + i * 2 + 1, 0x07);
-    }
-
-    // Bootstrap: load boot sector
-    int19h(vm);
 }
