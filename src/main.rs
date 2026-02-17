@@ -29,7 +29,7 @@ struct CLI {
     /// Default: a,hd0 (floppy first, then hard disk).
     #[arg(long)]
     boot: Option<String>,
-    /// Enable register trace output (MINIX mode)
+    /// Enable register trace output
     #[arg(long)]
     trace: bool
     // /// Run in headless mode (no terminal UI)

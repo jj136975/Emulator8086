@@ -1,16 +1,17 @@
-use std::collections::VecDeque;
-use std::sync::mpsc;
-use std::thread;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use log::debug;
 use crate::io::bus::IoDevice;
 use crate::io::pic::Pic;
 use crate::vm::cpu::Cpu;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use log::debug;
+use std::collections::VecDeque;
+use std::sync::mpsc;
+use std::thread;
 
 #[derive(Debug)]
 pub enum EmulatorEvent {
-    Scancode(u8),       // make code
-    ScanRelease(u8),    // break code (scancode | 0x80)
+    Scancode(u8),    // make code
+    ScanRelease(u8), // break code (scancode | 0x80)
+    EnterCLI,        // signal to enter command line interface
     Quit,
 }
 
@@ -19,7 +20,7 @@ pub struct KeyboardController {
     data: u8,
     port_b: u8,
     rx: mpsc::Receiver<EmulatorEvent>,
-    pending: VecDeque<u8>,  // scancode queue
+    pending: VecDeque<u8>, // scancode queue
 }
 
 impl KeyboardController {
@@ -31,6 +32,11 @@ impl KeyboardController {
                 if let Ok(Event::Key(key)) = event::read() {
                     // Only handle key press, not release
                     if key.kind != event::KeyEventKind::Press {
+                        continue;
+                    }
+
+                    if key.code == KeyCode::F(12) {
+                        let _ = tx.send(EmulatorEvent::EnterCLI);
                         continue;
                     }
 
@@ -61,10 +67,10 @@ impl KeyboardController {
     /// Call this periodically from the main loop (e.g. every N instructions).
     /// Drains the channel and queues scancodes.
     /// Returns true if Quit was received.
-    pub fn poll(&mut self, pic: &mut Pic) -> bool {
+    pub fn poll(&mut self, pic: &mut Pic) -> Option<EmulatorEvent> {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                EmulatorEvent::Quit => return true,
+                EmulatorEvent::Quit | EmulatorEvent::EnterCLI => return Some(event),
                 EmulatorEvent::Scancode(sc) | EmulatorEvent::ScanRelease(sc) => {
                     debug!("Received scancode: 0x{:02X}", sc);
                     self.pending.push_back(sc);
@@ -73,8 +79,10 @@ impl KeyboardController {
         }
 
         // If controller has no pending byte and queue has data, load next
-        debug!("KeyboardController: status={:02X}, data={:02X}, pending={:?}",
-            self.status, self.data, self.pending);
+        debug!(
+            "KeyboardController: status={:02X}, data={:02X}, pending={:?}",
+            self.status, self.data, self.pending
+        );
         if self.status & 0x01 == 0 {
             if let Some(sc) = self.pending.pop_front() {
                 debug!("Raising IRQ for scancode: 0x{:02X}", sc);
@@ -89,7 +97,7 @@ impl KeyboardController {
         } else {
             pic.lower_irq(1);
         }
-        false
+        None
     }
 }
 
@@ -112,13 +120,17 @@ impl IoDevice for KeyboardController {
             0x61 => {
                 self.port_b = (value & 0x0F) | (self.port_b & 0xF0);
             }
-            0x64 => {
-                match value {
-                    0xAA => { self.data = 0x55; self.status |= 0x01; }
-                    0xAB => { self.data = 0x00; self.status |= 0x01; }
-                    _ => {}
+            0x64 => match value {
+                0xAA => {
+                    self.data = 0x55;
+                    self.status |= 0x01;
                 }
-            }
+                0xAB => {
+                    self.data = 0x00;
+                    self.status |= 0x01;
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -130,7 +142,7 @@ impl IoDevice for KeyboardController {
 
 fn key_to_scancode(key: &KeyEvent) -> Option<u8> {
     match key.code {
-        KeyCode::Esc       => Some(0x01),
+        KeyCode::Esc => Some(0x01),
         KeyCode::Char('1') => Some(0x02),
         KeyCode::Char('2') => Some(0x03),
         KeyCode::Char('3') => Some(0x04),
@@ -144,7 +156,7 @@ fn key_to_scancode(key: &KeyEvent) -> Option<u8> {
         KeyCode::Char('-') => Some(0x0C),
         KeyCode::Char('=') => Some(0x0D),
         KeyCode::Backspace => Some(0x0E),
-        KeyCode::Tab       => Some(0x0F),
+        KeyCode::Tab => Some(0x0F),
         KeyCode::Char('q') | KeyCode::Char('Q') => Some(0x10),
         KeyCode::Char('w') | KeyCode::Char('W') => Some(0x11),
         KeyCode::Char('e') | KeyCode::Char('E') => Some(0x12),
@@ -157,7 +169,7 @@ fn key_to_scancode(key: &KeyEvent) -> Option<u8> {
         KeyCode::Char('p') | KeyCode::Char('P') => Some(0x19),
         KeyCode::Char('[') => Some(0x1A),
         KeyCode::Char(']') => Some(0x1B),
-        KeyCode::Enter     => Some(0x1C),
+        KeyCode::Enter => Some(0x1C),
         KeyCode::Char('a') | KeyCode::Char('A') => Some(0x1E),
         KeyCode::Char('s') | KeyCode::Char('S') => Some(0x1F),
         KeyCode::Char('d') | KeyCode::Char('D') => Some(0x20),
@@ -182,26 +194,26 @@ fn key_to_scancode(key: &KeyEvent) -> Option<u8> {
         KeyCode::Char('.') => Some(0x34),
         KeyCode::Char('/') => Some(0x35),
         KeyCode::Char(' ') => Some(0x39),
-        KeyCode::F(1)      => Some(0x3B),
-        KeyCode::F(2)      => Some(0x3C),
-        KeyCode::F(3)      => Some(0x3D),
-        KeyCode::F(4)      => Some(0x3E),
-        KeyCode::F(5)      => Some(0x3F),
-        KeyCode::F(6)      => Some(0x40),
-        KeyCode::F(7)      => Some(0x41),
-        KeyCode::F(8)      => Some(0x42),
-        KeyCode::F(9)      => Some(0x43),
-        KeyCode::F(10)     => Some(0x44),
-        KeyCode::Home      => Some(0x47),
-        KeyCode::Up        => Some(0x48),
-        KeyCode::PageUp    => Some(0x49),
-        KeyCode::Left      => Some(0x4B),
-        KeyCode::Right      => Some(0x4D),
-        KeyCode::End       => Some(0x4F),
-        KeyCode::Down      => Some(0x50),
-        KeyCode::PageDown  => Some(0x51),
-        KeyCode::Insert    => Some(0x52),
-        KeyCode::Delete    => Some(0x53),
+        KeyCode::F(1) => Some(0x3B),
+        KeyCode::F(2) => Some(0x3C),
+        KeyCode::F(3) => Some(0x3D),
+        KeyCode::F(4) => Some(0x3E),
+        KeyCode::F(5) => Some(0x3F),
+        KeyCode::F(6) => Some(0x40),
+        KeyCode::F(7) => Some(0x41),
+        KeyCode::F(8) => Some(0x42),
+        KeyCode::F(9) => Some(0x43),
+        KeyCode::F(10) => Some(0x44),
+        KeyCode::Home => Some(0x47),
+        KeyCode::Up => Some(0x48),
+        KeyCode::PageUp => Some(0x49),
+        KeyCode::Left => Some(0x4B),
+        KeyCode::Right => Some(0x4D),
+        KeyCode::End => Some(0x4F),
+        KeyCode::Down => Some(0x50),
+        KeyCode::PageDown => Some(0x51),
+        KeyCode::Insert => Some(0x52),
+        KeyCode::Delete => Some(0x53),
         _ => None,
     }
 }

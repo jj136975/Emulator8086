@@ -109,6 +109,10 @@ bios_entry:
     mov byte [BDA_TIMER_OFLOW], 0
     mov byte [BDA_KBD_FLAGS1], 0
 
+    ; BDA offset 0x0075 = number of hard disks
+    ; The disk trap will set this correctly, but set a default
+    mov byte [0x0075], 1          ; 1 hard disk
+
     ; Init PIC
     mov al, 0x11
     out 0x20, al

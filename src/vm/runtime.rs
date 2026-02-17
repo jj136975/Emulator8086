@@ -3,19 +3,20 @@ use crate::io::console::{DebugConsole, PitStub};
 use crate::io::disk::{DiskController, DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
 use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
+use crate::io::vga::VgaTextMode;
+use crate::vm::cli::enter_monitor;
 use crate::vm::cpu::{Cpu, CpuType};
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
+use log::debug;
 use std::cell::RefCell;
 use std::fmt::{Debug, Formatter};
 use std::io::Write;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::rc::Rc;
-use log::debug;
-use crate::io::vga::VgaTextMode;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -67,14 +68,14 @@ pub struct Runtime {
     status: u16,
     pub prefix: Option<Prefix>,
     pub segment_override: Option<SegmentType>,
-    io_bus: IoBus,
-    pub(crate) hard_disks: Vec<Option<DiskImage>>,
     pub boot_order: Vec<u8>,
     pub instruction_count: u64,
     pub trace: bool,
     pub interrupt_inhibit: bool,
 
     // Devices
+    io_bus: IoBus,
+    pub disks: Rc<RefCell<DiskController>>,
     keyboard: Option<Rc<RefCell<KeyboardController>>>,
     vga: Option<Rc<RefCell<VgaTextMode>>>,
 }
@@ -100,12 +101,12 @@ impl Runtime {
             prefix: None,
             segment_override: None,
             io_bus: IoBus::new(),
-            hard_disks: Vec::new(),
             boot_order: Vec::new(),
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
 
+            disks: Rc::new(RefCell::new(DiskController::new())),
             keyboard: None,
             vga: None,
         }
@@ -139,12 +140,12 @@ impl Runtime {
             prefix: None,
             segment_override: None,
             io_bus,
-            hard_disks: Vec::new(),
             boot_order: Vec::new(),
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
 
+            disks: Rc::new(RefCell::new(DiskController::new())),
             keyboard: None,
             vga: None,
         }
@@ -185,8 +186,7 @@ impl Runtime {
         }
 
         // Build hard disks vec
-        let mut hard_disks: Vec<Option<DiskImage>> = Vec::new();
-        for spec in hd_specs {
+        for (id, spec) in hd_specs.into_iter().enumerate() {
             let image = if spec.eq_ignore_ascii_case("memory") {
                 DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB)
             } else {
@@ -194,19 +194,20 @@ impl Runtime {
                 DiskImage::open_or_create_hard_disk(&path, HD_DEFAULT_SIZE_MB)
                     .expect("Failed to open/create hard disk image")
             };
-            hard_disks.push(Some(image));
+            disk_ctrl.attach(0x80 + id as u8, image);
         }
 
         // Create I/O bus and register devices
         let mut io_bus = IoBus::new();
         let keyboard = Rc::new(RefCell::new(KeyboardController::new()));
         let vga = Rc::new(RefCell::new(VgaTextMode::new()));
+        let disk_ctrl = Rc::new(RefCell::new(disk_ctrl));
 
         io_bus.register(0x20, 0x21, Box::new(PicDevice));
         io_bus.register(0x40, 0x43, Box::new(PitStub));
         io_bus.register(0x60, 0x61, Box::new(Rc::clone(&keyboard)));
         io_bus.register(0x64, 0x64, Box::new(Rc::clone(&keyboard)));
-        io_bus.register(0xB0, 0xB0, Box::new(disk_ctrl));
+        io_bus.register(0xB0, 0xB0, Box::new(Rc::clone(&disk_ctrl)));
         io_bus.register(0xE9, 0xE9, Box::new(DebugConsole));
         io_bus.register(0x3D4, 0x3DA, Box::new(Rc::clone(&vga)));
 
@@ -224,12 +225,12 @@ impl Runtime {
             prefix: None,
             segment_override: None,
             io_bus,
-            hard_disks,
             boot_order: boot_order.unwrap_or_else(|| vec![0x00, 0x80]),
             instruction_count: 0,
             trace,
             interrupt_inhibit: false,
 
+            disks: disk_ctrl,
             keyboard: Some(keyboard),
             vga: Some(vga),
         };
@@ -257,7 +258,10 @@ impl Runtime {
     }
 
     pub fn run(&mut self) {
-        debug!("Starting emulator with boot order: {:02X?}", self.boot_order);
+        debug!(
+            "Starting emulator with boot order: {:02X?}",
+            self.boot_order
+        );
         if self.trace {
             debug!("Tracing Enabled");
         }
@@ -285,12 +289,15 @@ impl Runtime {
             // Poll keyboard every 1000 instructions
             if self.instruction_count % 1000 == 0 || self.cpu.halted {
                 if let Some(kb) = &self.keyboard {
-                    if kb.borrow_mut().poll(&mut self.cpu.pic) {
-                        self.running = false; // Ctrl+C
+                    match kb.borrow_mut().poll(&mut self.cpu.pic) {
+                        Some(crate::io::keyboard::EmulatorEvent::Quit) => self.running = false, // Ctrl+C
+                        Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
+                            enter_monitor(&mut *self.disks.borrow_mut())
+                        }
+                        _ => { /* no event */ }
                     }
                 }
             }
-
 
             if self.interrupt_inhibit {
                 self.interrupt_inhibit = false; // one-shot, cleared after next instruction
@@ -308,7 +315,10 @@ impl Runtime {
         let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
         let _ = std::io::stdout().flush();
 
-        debug!("Emulator exited with status {:04X} after {} instructions", self.status, self.instruction_count);
+        debug!(
+            "Emulator exited with status {:04X} after {} instructions",
+            self.status, self.instruction_count
+        );
     }
 
     pub fn port_in_byte(&mut self, port: u16) -> u8 {

@@ -580,7 +580,7 @@ fn copy_host_dir_recursive<T: Read + Write + Seek>(
 /// The BIOS INT 13h handler does `OUT 0xB0, AL` which triggers this device
 /// to read CPU registers, perform disk I/O, and set return values + flags.
 pub struct DiskController {
-    drives: Vec<(u8, DiskImage)>, // (drive number, image)
+    pub drives: Vec<(u8, DiskImage)>, // (drive number, image)
 }
 
 impl DiskController {
@@ -592,7 +592,7 @@ impl DiskController {
         self.drives.push((drive, image));
     }
 
-    fn find_drive(&mut self, drive: u8) -> Option<&mut DiskImage> {
+    pub(crate) fn find_drive(&mut self, drive: u8) -> Option<&mut DiskImage> {
         self.drives
             .iter_mut()
             .find(|(d, _)| *d == drive)
@@ -700,32 +700,54 @@ impl DiskController {
             }
 
             // AH=08: Get drive parameters
-            0x08 => match self.find_drive(drive) {
-                Some(disk) => {
-                    let max_cyl = disk.cylinders - 1;
-                    let max_head = disk.heads - 1;
-                    let spt = disk.sectors_per_track;
+            0x08 => {
+                match self.find_drive(drive) {
+                    Some(disk) => {
+                        let max_cyl = disk.cylinders - 1;
+                        let max_head = disk.heads - 1;
+                        let spt = disk.sectors_per_track;
 
-                    cpu.registers.ax.set_high(0x00);
-                    cpu.registers.bx.set_low(0x04);
-                    cpu.registers.cx.set_high((max_cyl & 0xFF) as u8);
-                    cpu.registers
-                        .cx
-                        .set_low((spt & 0x3F) | (((max_cyl >> 8) as u8) << 6));
-                    cpu.registers.dx.set_high(max_head);
-                    cpu.registers.dx.set_low(
-                        self.drives
-                            .iter()
-                            .filter(|(d, _)| (*d < 0x80) == (drive < 0x80))
-                            .count() as u8,
-                    );
-                    cpu.unset_flag(Carry);
+                        cpu.registers.ax.set_high(0x00);
+                        cpu.registers.cx.set_high((max_cyl & 0xFF) as u8);
+                        cpu.registers.cx.set_low(
+                            (spt & 0x3F) | (((max_cyl >> 8) as u8) << 6)
+                        );
+                        cpu.registers.dx.set_high(max_head);
+
+                        if drive < 0x80 {
+                            // Floppy: BL = drive type, DL = number of floppies
+                            cpu.registers.bx.set_low(
+                                match disk.total_bytes() {
+                                    368_640 => 0x01,    // 360K
+                                    1_228_800 => 0x02,  // 1.2M
+                                    737_280 => 0x03,    // 720K
+                                    1_474_560 => 0x04,  // 1.44M
+                                    2_949_120 => 0x06,  // 2.88M
+                                    _ => 0x04,
+                                }
+                            );
+                            cpu.registers.dx.set_low(
+                                self.drives.iter()
+                                    .filter(|(d, _)| *d < 0x80)
+                                    .count() as u8
+                            );
+                        } else {
+                            // Hard disk: BL unused, DL = number of hard disks
+                            cpu.registers.bx.set_low(0x00);
+                            cpu.registers.dx.set_low(
+                                self.drives.iter()
+                                    .filter(|(d, _)| *d >= 0x80)
+                                    .count() as u8
+                            );
+                        }
+                        cpu.unset_flag(Carry);
+                    }
+                    None => {
+                        cpu.registers.ax.set_high(0x07);
+                        cpu.set_flag(Carry);
+                    }
                 }
-                None => {
-                    cpu.registers.ax.set_high(0x07);
-                    cpu.set_flag(Carry);
-                }
-            },
+            }
 
             // AH=15: Get disk type
             0x15 => match self.find_drive(drive) {
@@ -746,6 +768,22 @@ impl DiskController {
                 cpu.set_flag(Carry);
             }
         }
+    }
+
+    /// Remove a drive and return its image.
+    pub fn detach(&mut self, drive: u8) -> Option<DiskImage> {
+        if let Some(pos) = self.drives.iter().position(|(d, _)| *d == drive) {
+            Some(self.drives.remove(pos).1)
+        } else {
+            None
+        }
+    }
+
+    /// Get a mutable reference to a drive's image.
+    pub fn find_drive_mut(&mut self, drive: u8) -> Option<&mut DiskImage> {
+        self.drives.iter_mut()
+            .find(|(d, _)| *d == drive)
+            .map(|(_, img)| img)
     }
 }
 
