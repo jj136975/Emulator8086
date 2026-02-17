@@ -2,4 +2,5 @@ pub mod bus;
 pub mod pic;
 pub mod disk;
 pub mod console;
-mod keyboard;
+pub mod keyboard;
+pub mod vga;

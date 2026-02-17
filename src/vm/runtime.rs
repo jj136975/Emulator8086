@@ -1,19 +1,21 @@
 use crate::io::bus::IoBus;
 use crate::io::console::{DebugConsole, PitStub};
 use crate::io::disk::{DiskController, DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
+use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
 use crate::vm::cpu::{Cpu, CpuType};
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
+use std::cell::RefCell;
 use std::fmt::{Debug, Formatter};
 use std::io::Write;
 use std::ops::DerefMut;
 use std::path::PathBuf;
-use std::time::Duration;
-use crossterm::event;
-use crossterm::event::{Event, KeyCode, KeyModifiers};
+use std::rc::Rc;
+use log::debug;
+use crate::io::vga::VgaTextMode;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -57,6 +59,8 @@ pub enum Prefix {
     Queued(Box<Prefix>),
 }
 
+const RENDER_INTERVAL: u64 = 50_000; // every ~50K instructions
+
 pub struct Runtime {
     pub(crate) cpu: Cpu,
     running: bool,
@@ -69,6 +73,10 @@ pub struct Runtime {
     pub instruction_count: u64,
     pub trace: bool,
     pub interrupt_inhibit: bool,
+
+    // Devices
+    keyboard: Option<Rc<RefCell<KeyboardController>>>,
+    vga: Option<Rc<RefCell<VgaTextMode>>>,
 }
 
 impl Runtime {
@@ -76,8 +84,6 @@ impl Runtime {
     pub fn new_test() -> Self {
         use std::ops::DerefMut;
         let mut memory = Box::new(Memory::new());
-
-
 
         let registers = Registers::new(memory.deref_mut());
         Self {
@@ -99,6 +105,9 @@ impl Runtime {
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
+
+            keyboard: None,
+            vga: None,
         }
     }
 
@@ -109,7 +118,6 @@ impl Runtime {
         use std::ops::DerefMut;
         let mut memory = Box::new(Memory::new());
         let registers = Registers::new(memory.deref_mut());
-
 
         // let keyboard = crate::io::keyboard::Keyboard::new();
         // let kb_data_avail = keyboard.shared_data_available();
@@ -136,10 +144,18 @@ impl Runtime {
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
+
+            keyboard: None,
+            vga: None,
         }
     }
 
-    pub fn new(disk_specs: Vec<DiskSpec>, hd_specs: Vec<String>, boot_order: Option<Vec<u8>>) -> Self {
+    pub fn new(
+        disk_specs: Vec<DiskSpec>,
+        hd_specs: Vec<String>,
+        boot_order: Option<Vec<u8>>,
+        trace: bool,
+    ) -> Self {
         let mut memory = Box::new(Memory::new());
         let registers = Registers::new(memory.deref_mut());
 
@@ -153,7 +169,8 @@ impl Runtime {
                         DiskImage::open(path, spec.readonly).expect("Failed to open disk image")
                     } else {
                         // Non-boot drive: create if doesn't exist
-                        DiskImage::open_or_create(path, spec.readonly).expect("Failed to open/create disk image")
+                        DiskImage::open_or_create(path, spec.readonly)
+                            .expect("Failed to open/create disk image")
                     }
                 }
                 DiskSource::Memory(size) => {
@@ -182,12 +199,16 @@ impl Runtime {
 
         // Create I/O bus and register devices
         let mut io_bus = IoBus::new();
+        let keyboard = Rc::new(RefCell::new(KeyboardController::new()));
+        let vga = Rc::new(RefCell::new(VgaTextMode::new()));
 
         io_bus.register(0x20, 0x21, Box::new(PicDevice));
         io_bus.register(0x40, 0x43, Box::new(PitStub));
-
+        io_bus.register(0x60, 0x61, Box::new(Rc::clone(&keyboard)));
+        io_bus.register(0x64, 0x64, Box::new(Rc::clone(&keyboard)));
         io_bus.register(0xB0, 0xB0, Box::new(disk_ctrl));
         io_bus.register(0xE9, 0xE9, Box::new(DebugConsole));
+        io_bus.register(0x3D4, 0x3DA, Box::new(Rc::clone(&vga)));
 
         let mut vm = Self {
             cpu: Cpu {
@@ -206,8 +227,11 @@ impl Runtime {
             hard_disks,
             boot_order: boot_order.unwrap_or_else(|| vec![0x00, 0x80]),
             instruction_count: 0,
-            trace: false,
+            trace,
             interrupt_inhibit: false,
+
+            keyboard: Some(keyboard),
+            vga: Some(vga),
         };
 
         vm.cpu.set_flag(Interrupt);
@@ -233,29 +257,18 @@ impl Runtime {
     }
 
     pub fn run(&mut self) {
-        // In BIOS mode: enable raw terminal and clear screen for VGA rendering
-        let _ = crossterm::terminal::enable_raw_mode();
+        debug!("Starting emulator with boot order: {:02X?}", self.boot_order);
+        if self.trace {
+            debug!("Tracing Enabled");
+        }
 
+        let _ = crossterm::terminal::enable_raw_mode();
         let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
         let _ = std::io::stdout().flush();
 
         while self.running {
-            // Poll for terminal input (non-blocking)
-            if event::poll(Duration::ZERO).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('c')
-                    {
-                        self.running = false;
-                        break;
-                    }
-                    // Forward other keys to the keyboard controller
-                    // self.handle_key_event(key);
-                }
-            }
-
             if self.trace {
-                eprintln!("{:?}", self);
+                debug!("{:#?}", self);
             }
 
             if !self.cpu.halted {
@@ -263,16 +276,39 @@ impl Runtime {
                 self.instruction_count += 1;
             }
 
-            if self.cpu.pic.has_interrupt() {
+            if self.instruction_count % RENDER_INTERVAL == 0 || self.cpu.halted {
+                if let Some(vga) = &self.vga {
+                    vga.borrow_mut().render(&self.cpu.memory);
+                }
+            }
+
+            // Poll keyboard every 1000 instructions
+            if self.instruction_count % 1000 == 0 || self.cpu.halted {
+                if let Some(kb) = &self.keyboard {
+                    if kb.borrow_mut().poll(&mut self.cpu.pic) {
+                        self.running = false; // Ctrl+C
+                    }
+                }
+            }
+
+
+            if self.interrupt_inhibit {
+                self.interrupt_inhibit = false; // one-shot, cleared after next instruction
+            } else if self.cpu.pic.has_interrupt() {
                 let vector = self.cpu.pic.acknowledge();
                 self.cpu.halted = false;
                 self.handle_interrupt(vector);
+            } else if self.cpu.halted {
+                // If halted and no interrupts, just wait (don't burn CPU cycles)
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-        let _ = crossterm::terminal::disable_raw_mode();
 
+        let _ = crossterm::terminal::disable_raw_mode();
         let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
         let _ = std::io::stdout().flush();
+
+        debug!("Emulator exited with status {:04X} after {} instructions", self.status, self.instruction_count);
     }
 
     pub fn port_in_byte(&mut self, port: u16) -> u8 {
@@ -306,7 +342,8 @@ impl Runtime {
 
         // Load new CS:IP from IVT
         self.cpu.registers.pc.set(self.cpu.memory.read_word(addr));
-        self.cpu.registers
+        self.cpu
+            .registers
             .cs
             .reg_mut()
             .set(self.cpu.memory.read_word(addr + 2));
@@ -397,7 +434,7 @@ impl Debug for Runtime {
         let pc = self.cpu.registers.pc.word();
         write!(
             f,
-            "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{} {:04x}:{:02x}{:02x}",
+            "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {}{}{}{}{} {:04x}:{:02x}{:02x} State: {}",
             self.cpu.registers.ax.word(),
             self.cpu.registers.bx.word(),
             self.cpu.registers.cx.word(),
@@ -410,9 +447,11 @@ impl Debug for Runtime {
             show_flag(self, Sign, 'S'),
             show_flag(self, Zero, 'Z'),
             show_flag(self, Carry, 'C'),
+            show_flag(self, Interrupt, 'I'),
             pc,
             self.cpu.registers.cs.read_byte(pc),
             self.cpu.registers.cs.read_byte(pc.wrapping_add(1)),
+            if self.cpu.halted { "Halted" } else if self.running { "Running" } else { "Stopped" }
         )?;
         Ok(())
     }

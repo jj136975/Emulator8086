@@ -137,7 +137,7 @@ fn main() {
     //     None
     // };
 
-    let mut runtime = Runtime::new(specs, args.hd, boot_order);
+    let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace);
     runtime.load_rom(args.rom);
     runtime.run();
 }

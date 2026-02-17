@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use log::debug;
 use crate::vm::cpu::Cpu;
 
@@ -17,6 +19,24 @@ pub trait IoDevice {
     }
 
     fn name(&self) -> &'static str;
+}
+
+impl <T: IoDevice> IoDevice for Rc<RefCell<T>> {
+    fn port_in_byte(&mut self, port: u16, cpu: &mut Cpu) -> u8 {
+        self.borrow_mut().port_in_byte(port, cpu)
+    }
+    fn port_out_byte(&mut self, port: u16, value: u8, cpu: &mut Cpu) {
+        self.borrow_mut().port_out_byte(port, value, cpu)
+    }
+    fn port_in_word(&mut self, port: u16, cpu: &mut Cpu) -> u16 {
+        self.borrow_mut().port_in_word(port, cpu)
+    }
+    fn port_out_word(&mut self, port: u16, value: u16, cpu: &mut Cpu) {
+        self.borrow_mut().port_out_word(port, value, cpu)
+    }
+    fn name(&self) -> &'static str {
+        self.borrow().name()
+    }
 }
 
 struct PortMapping {

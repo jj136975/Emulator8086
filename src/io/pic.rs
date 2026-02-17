@@ -1,3 +1,4 @@
+use log::debug;
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
 
@@ -66,6 +67,9 @@ impl Pic {
             return true;
         }
         let highest_in_service = self.isr.trailing_zeros();
+        debug!("PIC: pending IRQ{} (vector {:02X}), in-service IRQ{} (vector {:02X})",
+            highest_pending, self.vector_base + highest_pending as u8,
+            highest_in_service, self.vector_base + highest_in_service as u8);
         highest_pending < highest_in_service
     }
 
