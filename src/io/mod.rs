@@ -4,3 +4,4 @@ pub mod disk;
 pub mod console;
 pub mod keyboard;
 pub mod vga;
+pub mod pit;

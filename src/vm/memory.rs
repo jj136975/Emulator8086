@@ -5,12 +5,14 @@ pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
 
 pub struct Memory {
     mem: Box<[u8]>,
+    pub(crate) boundary_buf: [u8; 2],
 }
 
 impl Memory {
     pub fn new() -> Self {
         Self {
-            mem: vec![0u8; MEMORY_SIZE].into_boxed_slice()
+            mem: vec![0u8; MEMORY_SIZE].into_boxed_slice(),
+            boundary_buf: [0; 2],
         }
     }
 }
@@ -89,9 +91,20 @@ impl Segment {
 
     #[inline]
     pub fn ref_word(&mut self, address: u16) -> WordWrapper {
-        // NOTE: Does NOT wrap at 1MB. Only safe when access won't cross boundary.
-        let address = self.phys_address(address);
-        unsafe { (*self.mem).ref_word(address) }
+        if address == 0xFFFF {
+            // Offset wraps within segment: low byte from :FFFF, high byte from :0000
+            let lo = self.phys_address(0xFFFF);
+            let hi = self.phys_address(0x0000);
+            unsafe {
+                let mem = &mut *self.mem;
+                mem.boundary_buf[0] = mem.mem[lo];
+                mem.boundary_buf[1] = mem.mem[hi];
+                WordWrapper::from_slice(&mut mem.boundary_buf)
+            }
+        } else {
+            let address = self.phys_address(address);
+            unsafe { (*self.mem).ref_word(address) }
+        }
     }
 
     #[inline]

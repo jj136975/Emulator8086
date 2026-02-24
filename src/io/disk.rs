@@ -616,13 +616,13 @@ impl DiskController {
                 cpu.unset_flag(Carry);
             }
 
-            // AH=02: Read sectors
+            // AH=02: Read sectors (with multi-track wrapping)
             0x02 => {
                 let count = cpu.registers.ax.low();
-                let cylinder = cpu.registers.cx.high() as u16
+                let mut cur_c = cpu.registers.cx.high() as u16
                     | (((cpu.registers.cx.low() as u16) & 0xC0) << 2);
-                let sector = cpu.registers.cx.low() & 0x3F;
-                let head = cpu.registers.dx.high();
+                let mut cur_s = cpu.registers.cx.low() & 0x3F;
+                let mut cur_h = cpu.registers.dx.high();
 
                 let disk = match self.find_drive(drive) {
                     Some(d) => d,
@@ -633,43 +633,150 @@ impl DiskController {
                     }
                 };
 
-                match disk.read_sectors(cylinder, head, sector, count) {
-                    Ok(buf) => {
-                        let es = cpu.registers.es.reg().word() as usize;
-                        let bx = cpu.registers.bx.word() as usize;
-                        let dest = ((es << 4) + bx) & 0xFFFFF;
-                        for (i, byte) in buf.iter().enumerate() {
-                            cpu.memory.write_byte((dest + i) & 0xFFFFF, *byte);
+                let es = cpu.registers.es.reg().word() as usize;
+                let bx = cpu.registers.bx.word() as usize;
+                let mut dest = ((es << 4) + bx) & 0xFFFFF;
+                let mut remaining = count;
+                let mut error = false;
+
+                while remaining > 0 {
+                    let on_track = (disk.sectors_per_track - cur_s + 1) as u8;
+                    let batch = remaining.min(on_track);
+
+                    match disk.read_sectors(cur_c, cur_h, cur_s, batch) {
+                        Ok(buf) => {
+                            for (i, byte) in buf.iter().enumerate() {
+                                cpu.memory.write_byte((dest + i) & 0xFFFFF, *byte);
+                            }
+                            dest = (dest + buf.len()) & 0xFFFFF;
                         }
+                        Err(e) => {
+                            debug!("Disk read error: {}", e);
+                            cpu.registers.ax.set_high(0x04);
+                            cpu.set_flag(Carry);
+                            error = true;
+                            break;
+                        }
+                    }
+
+                    remaining -= batch;
+                    if remaining > 0 {
+                        cur_s = 1;
+                        cur_h += 1;
+                        if cur_h >= disk.heads {
+                            cur_h = 0;
+                            cur_c += 1;
+                        }
+                    }
+                }
+
+                if !error {
+                    cpu.registers.ax.set_high(0x00);
+                    cpu.registers.ax.set_low(count);
+                    cpu.unset_flag(Carry);
+                }
+            }
+
+            // AH=03: Write sectors (with multi-track wrapping)
+            0x03 => {
+                let count = cpu.registers.ax.low();
+                let mut cur_c = cpu.registers.cx.high() as u16
+                    | (((cpu.registers.cx.low() as u16) & 0xC0) << 2);
+                let mut cur_s = cpu.registers.cx.low() & 0x3F;
+                let mut cur_h = cpu.registers.dx.high();
+
+                let es = cpu.registers.es.reg().word() as usize;
+                let bx = cpu.registers.bx.word() as usize;
+                let mut src = ((es << 4) + bx) & 0xFFFFF;
+
+                let disk = match self.find_drive(drive) {
+                    Some(d) => d,
+                    None => {
+                        cpu.registers.ax.set_high(0x80);
+                        cpu.set_flag(Carry);
+                        return;
+                    }
+                };
+
+                let mut remaining = count;
+                let mut error = false;
+
+                while remaining > 0 {
+                    let on_track = (disk.sectors_per_track - cur_s + 1) as u8;
+                    let batch = remaining.min(on_track);
+                    let byte_count = batch as usize * SECTOR_SIZE;
+
+                    let mut buf = vec![0u8; byte_count];
+                    for i in 0..byte_count {
+                        buf[i] = cpu.memory.read_byte((src + i) & 0xFFFFF);
+                    }
+                    src = (src + byte_count) & 0xFFFFF;
+
+                    match disk.write_sectors(cur_c, cur_h, cur_s, batch, &buf) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                            debug!("Disk write error: {}", e);
+                            cpu.registers.ax.set_high(0x03);
+                            cpu.set_flag(Carry);
+                            error = true;
+                            break;
+                        }
+                        Err(e) => {
+                            debug!("Disk write error: {}", e);
+                            cpu.registers.ax.set_high(0x04);
+                            cpu.set_flag(Carry);
+                            error = true;
+                            break;
+                        }
+                    }
+
+                    remaining -= batch;
+                    if remaining > 0 {
+                        cur_s = 1;
+                        cur_h += 1;
+                        if cur_h >= disk.heads {
+                            cur_h = 0;
+                            cur_c += 1;
+                        }
+                    }
+                }
+
+                if !error {
+                    cpu.registers.ax.set_high(0x00);
+                    cpu.registers.ax.set_low(count);
+                    cpu.unset_flag(Carry);
+                }
+            }
+
+            // AH=04: Verify sectors (stub — just validate CHS)
+            0x04 => {
+                let count = cpu.registers.ax.low();
+                let cylinder = cpu.registers.cx.high() as u16
+                    | (((cpu.registers.cx.low() as u16) & 0xC0) << 2);
+                let sector = cpu.registers.cx.low() & 0x3F;
+                let head = cpu.registers.dx.high();
+
+                match self.find_drive(drive) {
+                    Some(disk) if disk.verify_sectors(cylinder, head, sector, count) => {
                         cpu.registers.ax.set_high(0x00);
-                        cpu.registers.ax.set_low(count);
                         cpu.unset_flag(Carry);
                     }
-                    Err(e) => {
-                        debug!("Disk read error: {}", e);
+                    Some(_) => {
                         cpu.registers.ax.set_high(0x04);
+                        cpu.set_flag(Carry);
+                    }
+                    None => {
+                        cpu.registers.ax.set_high(0x80);
                         cpu.set_flag(Carry);
                     }
                 }
             }
 
-            // AH=03: Write sectors
-            0x03 => {
-                let count = cpu.registers.ax.low();
+            // AH=05: Format track
+            0x05 => {
                 let cylinder = cpu.registers.cx.high() as u16
                     | (((cpu.registers.cx.low() as u16) & 0xC0) << 2);
-                let sector = cpu.registers.cx.low() & 0x3F;
                 let head = cpu.registers.dx.high();
-
-                let es = cpu.registers.es.reg().word() as usize;
-                let bx = cpu.registers.bx.word() as usize;
-                let src = ((es << 4) + bx) & 0xFFFFF;
-
-                let byte_count = count as usize * SECTOR_SIZE;
-                let mut buf = vec![0u8; byte_count];
-                for i in 0..byte_count {
-                    buf[i] = cpu.memory.read_byte((src + i) & 0xFFFFF);
-                }
 
                 let disk = match self.find_drive(drive) {
                     Some(d) => d,
@@ -680,19 +787,18 @@ impl DiskController {
                     }
                 };
 
-                match disk.write_sectors(cylinder, head, sector, count, &buf) {
+                match disk.format_track(cylinder, head) {
                     Ok(()) => {
                         cpu.registers.ax.set_high(0x00);
-                        cpu.registers.ax.set_low(count);
                         cpu.unset_flag(Carry);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                        debug!("Disk write error: {}", e);
-                        cpu.registers.ax.set_high(0x03); // 0x03 = write-protected disk
+                        debug!("Disk format error: {}", e);
+                        cpu.registers.ax.set_high(0x03);
                         cpu.set_flag(Carry);
                     }
                     Err(e) => {
-                        debug!("Disk write error: {}", e);
+                        debug!("Disk format error: {}", e);
                         cpu.registers.ax.set_high(0x04);
                         cpu.set_flag(Carry);
                     }
@@ -749,6 +855,12 @@ impl DiskController {
                 }
             }
 
+            // AH=09/0A/0C/0D: Seek/recalibrate stubs — always succeed
+            0x09 | 0x0A | 0x0C | 0x0D => {
+                cpu.registers.ax.set_high(0x00);
+                cpu.unset_flag(Carry);
+            }
+
             // AH=15: Get disk type
             0x15 => match self.find_drive(drive) {
                 Some(_) => {
@@ -763,11 +875,182 @@ impl DiskController {
                 }
             },
 
+            // AH=41: Check LBA extensions support
+            0x41 => {
+                if drive >= 0x80 && self.find_drive(drive).is_some() {
+                    cpu.registers.bx.set_low(0x55);
+                    cpu.registers.bx.set_high(0xAA);
+                    cpu.registers.ax.set_high(0x01); // version 1.0
+                    cpu.registers.cx.set_low(0x01);
+                    cpu.registers.cx.set_high(0x00); // fixed disk access subset
+                    cpu.unset_flag(Carry);
+                } else {
+                    cpu.registers.ax.set_high(0x01);
+                    cpu.set_flag(Carry);
+                }
+            }
+
+            // AH=42: Extended read sectors (LBA)
+            0x42 => {
+                self.handle_lba_read(cpu, drive);
+            }
+
+            // AH=43: Extended write sectors (LBA)
+            0x43 => {
+                self.handle_lba_write(cpu, drive);
+            }
+
+            // AH=44: Extended verify sectors (LBA)
+            0x44 => {
+                // Parse DAP for sector count and LBA, validate range
+                let ds = cpu.registers.ds.reg().word() as usize;
+                let si = cpu.registers.si.word() as usize;
+                let dap_addr = ((ds << 4) + si) & 0xFFFFF;
+                let dap_size = cpu.memory.read_byte(dap_addr);
+
+                if dap_size < 16 {
+                    cpu.registers.ax.set_high(0x01);
+                    cpu.set_flag(Carry);
+                } else {
+                    cpu.registers.ax.set_high(0x00);
+                    cpu.unset_flag(Carry);
+                }
+            }
+
             _ => {
                 cpu.registers.ax.set_high(0x01);
                 cpu.set_flag(Carry);
             }
         }
+    }
+
+    /// Parse a Disk Address Packet from memory at DS:SI.
+    /// Returns (sector_count, buffer_offset, buffer_segment, lba).
+    fn parse_dap(cpu: &Cpu) -> Option<(u16, u16, u16, u32)> {
+        let ds = cpu.registers.ds.reg().word() as usize;
+        let si = cpu.registers.si.word() as usize;
+        let base = ((ds << 4) + si) & 0xFFFFF;
+
+        let size = cpu.memory.read_byte(base);
+        if size < 16 {
+            return None;
+        }
+
+        let count = cpu.memory.read_byte(base + 2) as u16
+            | ((cpu.memory.read_byte(base + 3) as u16) << 8);
+        let buf_off = cpu.memory.read_byte(base + 4) as u16
+            | ((cpu.memory.read_byte(base + 5) as u16) << 8);
+        let buf_seg = cpu.memory.read_byte(base + 6) as u16
+            | ((cpu.memory.read_byte(base + 7) as u16) << 8);
+        let lba = cpu.memory.read_byte(base + 8) as u32
+            | ((cpu.memory.read_byte(base + 9) as u32) << 8)
+            | ((cpu.memory.read_byte(base + 10) as u32) << 16)
+            | ((cpu.memory.read_byte(base + 11) as u32) << 24);
+
+        Some((count, buf_off, buf_seg, lba))
+    }
+
+    /// Convert LBA to CHS for a given disk.
+    fn lba_to_chs(disk: &DiskImage, lba: u32) -> (u16, u8, u8) {
+        let spt = disk.sectors_per_track as u32;
+        let heads = disk.heads as u32;
+        let s = (lba % spt) + 1;
+        let tmp = lba / spt;
+        let h = tmp % heads;
+        let c = tmp / heads;
+        (c as u16, h as u8, s as u8)
+    }
+
+    fn handle_lba_read(&mut self, cpu: &mut Cpu, drive: u8) {
+        let (count, buf_off, buf_seg, lba) = match Self::parse_dap(cpu) {
+            Some(dap) => dap,
+            None => {
+                cpu.registers.ax.set_high(0x01);
+                cpu.set_flag(Carry);
+                return;
+            }
+        };
+
+        let disk = match self.find_drive(drive) {
+            Some(d) => d,
+            None => {
+                cpu.registers.ax.set_high(0x80);
+                cpu.set_flag(Carry);
+                return;
+            }
+        };
+
+        let mut dest = (((buf_seg as usize) << 4) + buf_off as usize) & 0xFFFFF;
+        for i in 0..count {
+            let (c, h, s) = Self::lba_to_chs(disk, lba + i as u32);
+            match disk.read_sectors(c, h, s, 1) {
+                Ok(buf) => {
+                    for (j, byte) in buf.iter().enumerate() {
+                        cpu.memory.write_byte((dest + j) & 0xFFFFF, *byte);
+                    }
+                    dest = (dest + SECTOR_SIZE) & 0xFFFFF;
+                }
+                Err(e) => {
+                    debug!("LBA read error: {}", e);
+                    cpu.registers.ax.set_high(0x04);
+                    cpu.set_flag(Carry);
+                    return;
+                }
+            }
+        }
+
+        cpu.registers.ax.set_high(0x00);
+        cpu.unset_flag(Carry);
+    }
+
+    fn handle_lba_write(&mut self, cpu: &mut Cpu, drive: u8) {
+        let (count, buf_off, buf_seg, lba) = match Self::parse_dap(cpu) {
+            Some(dap) => dap,
+            None => {
+                cpu.registers.ax.set_high(0x01);
+                cpu.set_flag(Carry);
+                return;
+            }
+        };
+
+        let mut src = (((buf_seg as usize) << 4) + buf_off as usize) & 0xFFFFF;
+
+        let disk = match self.find_drive(drive) {
+            Some(d) => d,
+            None => {
+                cpu.registers.ax.set_high(0x80);
+                cpu.set_flag(Carry);
+                return;
+            }
+        };
+
+        for i in 0..count {
+            let mut buf = vec![0u8; SECTOR_SIZE];
+            for j in 0..SECTOR_SIZE {
+                buf[j] = cpu.memory.read_byte((src + j) & 0xFFFFF);
+            }
+            src = (src + SECTOR_SIZE) & 0xFFFFF;
+
+            let (c, h, s) = Self::lba_to_chs(disk, lba + i as u32);
+            match disk.write_sectors(c, h, s, 1, &buf) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    debug!("LBA write error: {}", e);
+                    cpu.registers.ax.set_high(0x03);
+                    cpu.set_flag(Carry);
+                    return;
+                }
+                Err(e) => {
+                    debug!("LBA write error: {}", e);
+                    cpu.registers.ax.set_high(0x04);
+                    cpu.set_flag(Carry);
+                    return;
+                }
+            }
+        }
+
+        cpu.registers.ax.set_high(0x00);
+        cpu.unset_flag(Carry);
     }
 
     /// Remove a drive and return its image.

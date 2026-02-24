@@ -96,7 +96,7 @@ impl IoBus {
 
     pub fn port_in_word(&mut self, port: u16, cpu: &mut Cpu) -> u16 {
         if port < self.first_port || port > self.last_port {
-            return 0xFF; // Unmapped ports read as 0xFF
+            return 0xFFFF; // Unmapped ports read as 0xFFFF
         }
         for mapping in &self.mappings {
             if port >= mapping.start && port <= mapping.end {

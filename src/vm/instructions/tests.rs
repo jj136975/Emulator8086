@@ -5,10 +5,10 @@ use crate::vm::runtime::Runtime;
 
 fn setup(code: &[u8]) -> Runtime {
     let mut vm = Runtime::new_test();
-    // Set SP to 0xFFFE for stack room, PC at 0
+    // Set CS=0 so CS:IP starts at physical 0x00000
+    vm.cpu.registers.cs.reg_mut().set(0);
     vm.cpu.registers.sp.set(0xFFFE);
     vm.cpu.registers.pc.set(0);
-    // Load code at CS:0000 (physical 0x00000 since CS=0)
     Memory::copy_data(&mut vm.cpu.memory, 0, code);
     vm
 }

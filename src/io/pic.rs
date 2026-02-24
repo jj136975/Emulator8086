@@ -23,6 +23,13 @@ pub struct Pic {
     icw_step: u8,
     /// Whether ICW4 is expected
     icw4_expected: bool,
+    /// SNGL bit from ICW1: true = single PIC (no ICW3), false = cascade (ICW3 required)
+    single_pic: bool,
+
+    /// Auto-EOI mode (ICW4 bit 1)
+    auto_eoi: bool,
+    /// Which register to return on port 0x20 read: 0=IRR, 1=ISR
+    read_register: u8,
 
     /// Set after full initialization
     initialized: bool,
@@ -37,6 +44,9 @@ impl Pic {
             vector_base: 0x08, // default IBM PC mapping: IRQ0 = INT 08h
             icw_step: 0,
             icw4_expected: false,
+            single_pic: false,
+            auto_eoi: false,
+            read_register: 0,
             initialized: false,
         }
     }
@@ -84,7 +94,9 @@ impl Pic {
         }
         let irq = pending.trailing_zeros() as u8;
         self.irr &= !(1 << irq);
-        self.isr |= 1 << irq;
+        if !self.auto_eoi {
+            self.isr |= 1 << irq;
+        }
         self.vector_base + irq
     }
 
@@ -93,6 +105,7 @@ impl Pic {
             // ICW1 — start initialization sequence
             self.icw_step = 1;
             self.icw4_expected = value & 0x01 != 0;
+            self.single_pic = value & 0x02 != 0;
             self.imr = 0;
             self.isr = 0;
             self.irr = 0;
@@ -115,8 +128,13 @@ impl Pic {
                 }
                 _ => {} // Other EOI modes — ignore for now
             }
+        } else {
+            // OCW3 (bit 3 set, bit 4 clear)
+            if value & 0x02 != 0 {
+                // RR=1: select read register
+                self.read_register = value & 0x01; // 0=IRR, 1=ISR
+            }
         }
-        // OCW3 (value & 0x08 != 0) — read IRR/ISR commands, can be added later
     }
 
     fn write_data(&mut self, value: u8) {
@@ -125,16 +143,27 @@ impl Pic {
                 1 => {
                     // ICW2 — vector base (upper 5 bits matter)
                     self.vector_base = value & 0xF8;
-                    // On a single-PIC system, skip ICW3
+                    if self.single_pic {
+                        // SNGL=1: no ICW3 needed, skip to ICW4 or done
+                        self.icw_step = if self.icw4_expected { 3 } else { 0 };
+                    } else {
+                        // SNGL=0 (cascade): ICW3 is next
+                        self.icw_step = 2;
+                    }
+                    if self.icw_step == 0 {
+                        self.initialized = true;
+                    }
+                }
+                2 => {
+                    // ICW3 — cascade configuration (consumed, not used in emulation)
                     self.icw_step = if self.icw4_expected { 3 } else { 0 };
                     if self.icw_step == 0 {
                         self.initialized = true;
                     }
                 }
-                // ICW3 would be step 2 — skipped for single PIC
                 3 => {
-                    // ICW4 — we mostly ignore it (auto-EOI bit, 8086 mode, etc.)
-                    // bit 1 = auto-EOI — could be implemented later
+                    // ICW4 — bit 1 = auto-EOI mode
+                    self.auto_eoi = value & 0x02 != 0;
                     self.icw_step = 0;
                     self.initialized = true;
                 }
@@ -150,9 +179,7 @@ impl Pic {
     }
 
     fn read_command(&self) -> u8 {
-        // Default: return IRR (a full implementation would track
-        // OCW3 read-register commands to switch between IRR/ISR)
-        self.irr
+        if self.read_register == 1 { self.isr } else { self.irr }
     }
 
     fn read_data(&self) -> u8 {

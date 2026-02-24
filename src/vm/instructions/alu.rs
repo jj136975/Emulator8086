@@ -221,7 +221,8 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     // which the multiply/divide microcode uses for sign tracking.
                     // This causes an extra negation of the quotient.
                     if matches!(vm.prefix, Some(Prefix::Rep(_))) { quot = -quot; }
-                    if quot < -32768 || quot > 32767 {
+                    // 8086 checks unsigned quotient > 0x7FFF before sign application
+                    if quot < -32767 || quot > 32767 {
                         div_zero(vm);
                     } else {
                         vm.cpu.registers.ax.set(quot as u16);
@@ -307,7 +308,8 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     let rem = numerator % denum;
                     // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
                     if matches!(vm.prefix, Some(Prefix::Rep(_))) { quot = -quot; }
-                    if quot < -128 || quot > 127 {
+                    // 8086 checks unsigned quotient > 0x7F before sign application
+                    if quot < -127 || quot > 127 {
                         div_zero(vm);
                     } else {
                         vm.cpu.registers.ax.set_low(quot as u8);

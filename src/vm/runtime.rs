@@ -17,6 +17,8 @@ use std::io::Write;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Instant;
+use crate::io::pit::Pit;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -78,6 +80,7 @@ pub struct Runtime {
     pub disks: Rc<RefCell<DiskController>>,
     keyboard: Option<Rc<RefCell<KeyboardController>>>,
     vga: Option<Rc<RefCell<VgaTextMode>>>,
+    pit: Rc<RefCell<Pit>>,
 }
 
 impl Runtime {
@@ -109,6 +112,7 @@ impl Runtime {
             disks: Rc::new(RefCell::new(DiskController::new())),
             keyboard: None,
             vga: None,
+            pit: Rc::new(RefCell::new(Pit::new())),
         }
     }
 
@@ -148,6 +152,7 @@ impl Runtime {
             disks: Rc::new(RefCell::new(DiskController::new())),
             keyboard: None,
             vga: None,
+            pit: Rc::new(RefCell::new(Pit::new())),
         }
     }
 
@@ -202,9 +207,12 @@ impl Runtime {
         let keyboard = Rc::new(RefCell::new(KeyboardController::new()));
         let vga = Rc::new(RefCell::new(VgaTextMode::new()));
         let disk_ctrl = Rc::new(RefCell::new(disk_ctrl));
+        let pit = Rc::new(RefCell::new(Pit::new()));
+
+        keyboard.borrow_mut().set_pit(Rc::clone(&pit));
 
         io_bus.register(0x20, 0x21, Box::new(PicDevice));
-        io_bus.register(0x40, 0x43, Box::new(PitStub));
+        io_bus.register(0x40, 0x43, Box::new(Rc::clone(&pit)));
         io_bus.register(0x60, 0x61, Box::new(Rc::clone(&keyboard)));
         io_bus.register(0x64, 0x64, Box::new(Rc::clone(&keyboard)));
         io_bus.register(0xB0, 0xB0, Box::new(Rc::clone(&disk_ctrl)));
@@ -233,6 +241,7 @@ impl Runtime {
             disks: disk_ctrl,
             keyboard: Some(keyboard),
             vga: Some(vga),
+            pit,
         };
 
         vm.cpu.set_flag(Interrupt);
@@ -266,6 +275,9 @@ impl Runtime {
             debug!("Tracing Enabled");
         }
 
+        let mut last_pit_tick = Instant::now();
+        const PIT_CLOCK_HZ: f64 = 1_193_182.0;
+
         let _ = crossterm::terminal::enable_raw_mode();
         let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
         let _ = std::io::stdout().flush();
@@ -278,6 +290,16 @@ impl Runtime {
             if !self.cpu.halted {
                 process(self);
                 self.instruction_count += 1;
+            }
+
+            let now = Instant::now();
+            let elapsed = now.duration_since(last_pit_tick).as_secs_f64();
+            let pit_ticks = (elapsed * PIT_CLOCK_HZ) as u16;
+            if pit_ticks > 0 {
+                last_pit_tick = now;
+                if self.pit.borrow_mut().tick(pit_ticks) {
+                    self.cpu.pic.raise_irq(0);
+                }
             }
 
             if self.instruction_count % RENDER_INTERVAL == 0 || self.cpu.halted {
@@ -293,6 +315,11 @@ impl Runtime {
                         Some(crate::io::keyboard::EmulatorEvent::Quit) => self.running = false, // Ctrl+C
                         Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
                             enter_monitor(&mut *self.disks.borrow_mut())
+                        }
+                        Some(crate::io::keyboard::EmulatorEvent::DumpVga) => {
+                            if let Some(vga) = &self.vga {
+                                vga.borrow().dump(&self.cpu.memory, "vga_dump.txt");
+                            }
                         }
                         _ => { /* no event */ }
                     }

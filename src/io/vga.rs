@@ -18,13 +18,14 @@ pub struct VgaTextMode {
     crtc_index: u8,
     crtc_regs: [u8; 256],
 
-    // Status register — bit 0 and bit 3 toggle on each read
-    status_toggle: bool,
+    // Status register — counter for realistic retrace timing
+    read_counter: u8,
 
     // Rendering state
     prev_buffer: [u16; 2000],   // previous frame for dirty detection
     cursor_prev: (u8, u8),       // previous cursor position (col, row)
     needs_full_redraw: bool,
+    blink_mode: bool,
 }
 
 const VIDEO_BASE: usize = 0xB8000;
@@ -37,10 +38,11 @@ impl VgaTextMode {
         Self {
             crtc_index: 0,
             crtc_regs: [0; 256],
-            status_toggle: false,
+            read_counter: 0,
             prev_buffer: [0xFFFF; CELLS], // force full draw on first frame
             cursor_prev: (0xFF, 0xFF),
             needs_full_redraw: true,
+            blink_mode: false,
         }
     }
 
@@ -49,13 +51,23 @@ impl VgaTextMode {
         ((self.crtc_regs[0x0E] as u16) << 8) | self.crtc_regs[0x0F] as u16
     }
 
+    /// Return the display start offset from CRTC registers 0x0C/0x0D.
+    /// The CRTC stores the offset in character cells (not bytes).
+    fn start_address(&self) -> usize {
+        let addr = ((self.crtc_regs[0x0C] as u16) << 8) | self.crtc_regs[0x0D] as u16;
+        addr as usize
+    }
+
     /// Call periodically from main loop to render video RAM to terminal.
     /// Only redraws cells that changed since last call.
     pub fn render(&mut self, memory: &Memory) {
         let mut stdout = io::stdout();
+        let start = self.start_address();
 
         for i in 0..CELLS {
-            let addr = VIDEO_BASE + i * 2;
+            // Apply start address offset — wraps within 16KB text page
+            let cell_index = (start + i) & 0x1FFF; // wrap within 8K character cells (16KB bytes)
+            let addr = VIDEO_BASE + cell_index * 2;
             let ch = memory.read_byte(addr);
             let attr = memory.read_byte(addr + 1);
             let cell = (attr as u16) << 8 | ch as u16;
@@ -68,8 +80,13 @@ impl VgaTextMode {
             let row = (i / COLS) as u16;
             let col = (i % COLS) as u16;
 
-            let fg = cga_to_color(attr & 0x0F);
-            let bg = cga_to_color((attr >> 4) & 0x07);
+            let (fg_index, bg_index) = if self.blink_mode {
+                (attr & 0x0F, (attr >> 4) & 0x07)  // 8 background colors, bit 7 = blink
+            } else {
+                (attr & 0x0F, (attr >> 4) & 0x0F)  // 16 background colors
+            };
+            let fg = cga_to_color(fg_index);
+            let bg = cga_to_color(bg_index);
             let bright = attr & 0x08 != 0;
 
             let display_char = if ch >= 0x20 && ch < 0x7F {
@@ -93,17 +110,79 @@ impl VgaTextMode {
 
         self.needs_full_redraw = false;
 
-        // Update cursor position
+        // Update cursor position (clamped to visible area)
         let offset = self.cursor_offset();
-        let col = (offset % COLS as u16) as u8;
-        let row = (offset / COLS as u16) as u8;
+        let cursor_rel = offset.wrapping_sub(start as u16);
+        let col = (cursor_rel % COLS as u16).min(COLS as u16 - 1);
+        let row = (cursor_rel / COLS as u16).min(ROWS as u16 - 1);
 
-        if (col, row) != self.cursor_prev {
-            self.cursor_prev = (col, row);
-            let _ = stdout.queue(MoveTo(col as u16, row as u16));
+        if (col as u8, row as u8) != self.cursor_prev {
+            self.cursor_prev = (col as u8, row as u8);
+            let _ = stdout.queue(MoveTo(col, row));
         }
 
         let _ = stdout.flush();
+    }
+
+    /// Dump VGA text buffer to a file for debugging.
+    /// Shows each row as: row number, ASCII text, then hex dump of char+attr pairs.
+    pub fn dump(&self, memory: &Memory, path: &str) {
+        use std::fs::File;
+        let start = self.start_address();
+        let mut f = match File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("VGA dump failed: {}", e);
+                return;
+            }
+        };
+        let offset = self.cursor_offset();
+        let _ = writeln!(f, "=== VGA Diagnostic Dump ===");
+        let _ = writeln!(f, "CRTC start_address={} cursor_offset={} (row={}, col={})",
+            start, offset, offset / COLS as u16, offset % COLS as u16);
+        let _ = writeln!(f, "CRTC regs: 0x0C={:02X} 0x0D={:02X} 0x0E={:02X} 0x0F={:02X}",
+            self.crtc_regs[0x0C], self.crtc_regs[0x0D], self.crtc_regs[0x0E], self.crtc_regs[0x0F]);
+        // BDA fields (segment 0x0040, physical 0x400+offset)
+        let _ = writeln!(f, "BDA video_mode={:02X} video_cols={} active_page={:02X}",
+            memory.read_byte(0x0449), // BDA_VIDEO_MODE
+            memory.read_word(0x044A), // BDA_VIDEO_COLS
+            memory.read_byte(0x0462)); // BDA_ACTIVE_PAGE
+        let _ = writeln!(f, "BDA cursor_pos page0: col={:02X} row={:02X}",
+            memory.read_byte(0x0450), memory.read_byte(0x0451));
+        // Show all 8 page cursor positions
+        let _ = write!(f, "BDA cursor_pos all pages:");
+        for p in 0..8 {
+            let addr = 0x0450 + p * 2;
+            let _ = write!(f, " p{}=[{:02X},{:02X}]", p,
+                memory.read_byte(addr), memory.read_byte(addr + 1));
+        }
+        let _ = writeln!(f);
+        let _ = writeln!(f);
+        for row in 0..ROWS {
+            // ASCII text line
+            let _ = write!(f, "Row {:02}: |", row);
+            for col in 0..COLS {
+                let cell_index = (start + row * COLS + col) & 0x1FFF;
+                let ch = memory.read_byte(VIDEO_BASE + cell_index * 2);
+                if ch >= 0x20 && ch < 0x7F {
+                    let _ = write!(f, "{}", ch as char);
+                } else {
+                    let _ = write!(f, ".");
+                }
+            }
+            let _ = writeln!(f, "|");
+            // Hex dump line
+            let _ = write!(f, "        ");
+            for col in 0..COLS {
+                let cell_index = (start + row * COLS + col) & 0x1FFF;
+                let addr = VIDEO_BASE + cell_index * 2;
+                let ch = memory.read_byte(addr);
+                let attr = memory.read_byte(addr + 1);
+                let _ = write!(f, "{:02X}{:02X} ", ch, attr);
+            }
+            let _ = writeln!(f);
+        }
+        eprintln!("VGA dumped to {}", path);
     }
 }
 
@@ -116,13 +195,13 @@ impl IoDevice for VgaTextMode {
             // CRTC data
             0x3D5 => self.crtc_regs[self.crtc_index as usize],
 
-            // Status register — programs poll this for retrace timing
+            // Status register — programs poll this for retrace timing.
             0x3DA => {
-                self.status_toggle = !self.status_toggle;
-                if self.status_toggle {
-                    0x09 // bit 0 (retrace) + bit 3 (vertical retrace)
+                self.read_counter = self.read_counter.wrapping_add(1);
+                if self.read_counter & 0x01 == 0 {
+                    0x09 // retrace active: bit 0 (display) + bit 3 (vertical retrace)
                 } else {
-                    0x00
+                    0x00 // display active
                 }
             }
 
@@ -140,8 +219,9 @@ impl IoDevice for VgaTextMode {
                 self.crtc_regs[self.crtc_index as usize] = value;
             }
 
-            // Mode control register — ignore for text mode
-            0x3D8 => {}
+            0x3D8 => {
+                self.blink_mode = value & 0x20 != 0;
+            }
 
             // Color select register — ignore
             0x3D9 => {}

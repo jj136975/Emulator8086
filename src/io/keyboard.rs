@@ -1,9 +1,12 @@
 use crate::io::bus::IoDevice;
 use crate::io::pic::Pic;
+use crate::io::pit::Pit;
 use crate::vm::cpu::Cpu;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use log::debug;
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 
@@ -12,6 +15,7 @@ pub enum EmulatorEvent {
     Scancode(u8),    // make code
     ScanRelease(u8), // break code (scancode | 0x80)
     EnterCLI,        // signal to enter command line interface
+    DumpVga,         // F11: dump VGA memory to file
     Quit,
 }
 
@@ -21,6 +25,7 @@ pub struct KeyboardController {
     port_b: u8,
     rx: mpsc::Receiver<EmulatorEvent>,
     pending: VecDeque<u8>, // scancode queue
+    pit: Option<Rc<RefCell<Pit>>>,
 }
 
 impl KeyboardController {
@@ -37,6 +42,11 @@ impl KeyboardController {
 
                     if key.code == KeyCode::F(12) {
                         let _ = tx.send(EmulatorEvent::EnterCLI);
+                        continue;
+                    }
+
+                    if key.code == KeyCode::F(11) {
+                        let _ = tx.send(EmulatorEvent::DumpVga);
                         continue;
                     }
 
@@ -61,7 +71,12 @@ impl KeyboardController {
             port_b: 0x00,
             rx,
             pending: VecDeque::new(),
+            pit: None,
         }
+    }
+
+    pub fn set_pit(&mut self, pit: Rc<RefCell<Pit>>) {
+        self.pit = Some(pit);
     }
 
     /// Call this periodically from the main loop (e.g. every N instructions).
@@ -70,7 +85,7 @@ impl KeyboardController {
     pub fn poll(&mut self, pic: &mut Pic) -> Option<EmulatorEvent> {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                EmulatorEvent::Quit | EmulatorEvent::EnterCLI => return Some(event),
+                EmulatorEvent::Quit | EmulatorEvent::EnterCLI | EmulatorEvent::DumpVga => return Some(event),
                 EmulatorEvent::Scancode(sc) | EmulatorEvent::ScanRelease(sc) => {
                     debug!("Received scancode: 0x{:02X}", sc);
                     self.pending.push_back(sc);
@@ -108,7 +123,20 @@ impl IoDevice for KeyboardController {
                 self.status &= !0x01;
                 self.data
             }
-            0x61 => self.port_b,
+            0x61 => {
+                let mut val = self.port_b;
+                // Bit 4: refresh toggle (flip each read, used for RAM timing loops)
+                self.port_b ^= 0x10;
+                // Bit 5: PIT channel 2 output
+                if let Some(pit) = &self.pit {
+                    if pit.borrow().channel2_output() {
+                        val |= 0x20;
+                    } else {
+                        val &= !0x20;
+                    }
+                }
+                val
+            }
             0x64 => self.status,
             _ => 0xFF,
         }
@@ -118,7 +146,7 @@ impl IoDevice for KeyboardController {
         match port {
             0x60 => { /* keyboard commands — ignore for now */ }
             0x61 => {
-                self.port_b = (value & 0x0F) | (self.port_b & 0xF0);
+                self.port_b = value;
             }
             0x64 => match value {
                 0xAA => {
