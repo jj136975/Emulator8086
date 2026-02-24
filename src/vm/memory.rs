@@ -6,6 +6,7 @@ pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
 pub struct Memory {
     mem: Box<[u8]>,
     pub(crate) boundary_buf: [u8; 2],
+    rom_start: usize,
 }
 
 impl Memory {
@@ -13,7 +14,19 @@ impl Memory {
         Self {
             mem: vec![0u8; MEMORY_SIZE].into_boxed_slice(),
             boundary_buf: [0; 2],
+            rom_start: MEMORY_SIZE, // above 1MB -- protection disabled until explicitly enabled
         }
+    }
+
+    /// Enable ROM write protection for the region starting at 0xF0000.
+    /// Call this after loading the ROM image.
+    pub fn enable_rom_protection(&mut self) {
+        self.rom_start = 0xF0000;
+    }
+
+    /// Set a custom ROM protection boundary.
+    pub fn set_rom_start(&mut self, addr: usize) {
+        self.rom_start = addr;
     }
 }
 
@@ -54,14 +67,25 @@ impl Memory {
 
     #[inline]
     pub fn write_byte(&mut self, address: usize, byte: u8) {
-        self.mem[address & 0xFFFFF] = byte;
+        let addr = address & 0xFFFFF;
+        if addr >= self.rom_start { return; }
+        self.mem[addr] = byte;
     }
 
     #[inline]
     pub fn write_word(&mut self, address: usize, word: u16) {
         let bytes = word.to_le_bytes();
-        self.mem[address & 0xFFFFF] = bytes[0];
-        self.mem[(address + 1) & 0xFFFFF] = bytes[1];
+        let lo = address & 0xFFFFF;
+        let hi = (address + 1) & 0xFFFFF;
+        if lo < self.rom_start { self.mem[lo] = bytes[0]; }
+        if hi < self.rom_start { self.mem[hi] = bytes[1]; }
+    }
+
+    /// Write a byte without ROM protection checks.
+    /// Used for loading ROM images into memory.
+    #[inline]
+    pub fn write_byte_unchecked(&mut self, address: usize, byte: u8) {
+        self.mem[address & 0xFFFFF] = byte;
     }
 }
 

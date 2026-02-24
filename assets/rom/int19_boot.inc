@@ -33,6 +33,8 @@ int19_handler:
     mov al, '!'
     out 0xE9, al
     cs mov dl, [di-1]
+    xor ax, ax
+    mov ds, ax
     jmp 0x0000:0x7C00
 
 .fail:

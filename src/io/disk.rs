@@ -199,7 +199,12 @@ impl DiskImage {
 
         let byte_offset = self.chs_to_offset(c, h, s);
         let total_bytes = count as usize * SECTOR_SIZE;
-        assert!(data.len() >= total_bytes);
+        if data.len() < total_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "data buffer too small",
+            ));
+        }
 
         match &mut self.storage {
             DiskStorage::FileBacked(file) => {
@@ -470,7 +475,7 @@ fn hd_geometry_from_size(size: u64) -> (u16, u8, u8) {
     let total_sectors = size / 512;
     let heads: u8 = 16;
     let spt: u8 = 63;
-    let cylinders = (total_sectors / (heads as u64 * spt as u64)) as u16;
+    let cylinders = (total_sectors / (heads as u64 * spt as u64)).min(1024) as u16;
     (cylinders.max(1), heads, spt)
 }
 
@@ -599,21 +604,44 @@ impl DiskController {
             .map(|(_, img)| img)
     }
 
+    /// Write disk status to the appropriate BDA location.
+    fn write_disk_status(cpu: &mut Cpu, drive: u8, status: u8) {
+        if drive < 0x80 {
+            cpu.memory.write_byte(0x0441, status); // BDA floppy status
+        } else {
+            cpu.memory.write_byte(0x0474, status); // BDA hard disk status
+        }
+    }
+
     fn handle_trap(&mut self, cpu: &mut Cpu) {
         let func = cpu.registers.ax.high();
         let drive = cpu.registers.dx.low();
+
+        // Fix 7: Update BDA hard disk count dynamically
+        let hd_count = self.drives.iter().filter(|(d, _)| *d >= 0x80).count() as u8;
+        cpu.memory.write_byte(0x0475, hd_count);
 
         match func {
             // AH=00: Reset
             0x00 => {
                 cpu.registers.ax.set_high(0x00);
                 cpu.unset_flag(Carry);
+                Self::write_disk_status(cpu, drive, 0x00);
             }
 
-            // AH=01: Get status
+            // AH=01: Get status (read from BDA)
             0x01 => {
-                cpu.registers.ax.set_high(0x00);
-                cpu.unset_flag(Carry);
+                let status = if drive < 0x80 {
+                    cpu.memory.read_byte(0x0441)
+                } else {
+                    cpu.memory.read_byte(0x0474)
+                };
+                cpu.registers.ax.set_high(status);
+                if status != 0 {
+                    cpu.set_flag(Carry);
+                } else {
+                    cpu.unset_flag(Carry);
+                }
             }
 
             // AH=02: Read sectors (with multi-track wrapping)
@@ -624,11 +652,20 @@ impl DiskController {
                 let mut cur_s = cpu.registers.cx.low() & 0x3F;
                 let mut cur_h = cpu.registers.dx.high();
 
+                // Fix 1: Validate sector is not 0 (CHS sectors are 1-based)
+                if cur_s == 0 {
+                    cpu.registers.ax.set_high(0x04); // sector not found
+                    cpu.set_flag(Carry);
+                    Self::write_disk_status(cpu, drive, 0x04);
+                    return;
+                }
+
                 let disk = match self.find_drive(drive) {
                     Some(d) => d,
                     None => {
                         cpu.registers.ax.set_high(0x80);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x80);
                         return;
                     }
                 };
@@ -637,6 +674,7 @@ impl DiskController {
                 let bx = cpu.registers.bx.word() as usize;
                 let mut dest = ((es << 4) + bx) & 0xFFFFF;
                 let mut remaining = count;
+                let total_requested = remaining; // Fix 5: save for partial count
                 let mut error = false;
 
                 while remaining > 0 {
@@ -653,7 +691,10 @@ impl DiskController {
                         Err(e) => {
                             debug!("Disk read error: {}", e);
                             cpu.registers.ax.set_high(0x04);
+                            // Fix 5: Report partial transfer count on error
+                            cpu.registers.ax.set_low((total_requested - remaining) as u8);
                             cpu.set_flag(Carry);
+                            Self::write_disk_status(cpu, drive, 0x04);
                             error = true;
                             break;
                         }
@@ -674,6 +715,7 @@ impl DiskController {
                     cpu.registers.ax.set_high(0x00);
                     cpu.registers.ax.set_low(count);
                     cpu.unset_flag(Carry);
+                    Self::write_disk_status(cpu, drive, 0x00);
                 }
             }
 
@@ -685,6 +727,14 @@ impl DiskController {
                 let mut cur_s = cpu.registers.cx.low() & 0x3F;
                 let mut cur_h = cpu.registers.dx.high();
 
+                // Fix 1: Validate sector is not 0 (CHS sectors are 1-based)
+                if cur_s == 0 {
+                    cpu.registers.ax.set_high(0x04); // sector not found
+                    cpu.set_flag(Carry);
+                    Self::write_disk_status(cpu, drive, 0x04);
+                    return;
+                }
+
                 let es = cpu.registers.es.reg().word() as usize;
                 let bx = cpu.registers.bx.word() as usize;
                 let mut src = ((es << 4) + bx) & 0xFFFFF;
@@ -694,11 +744,13 @@ impl DiskController {
                     None => {
                         cpu.registers.ax.set_high(0x80);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x80);
                         return;
                     }
                 };
 
                 let mut remaining = count;
+                let total_requested = remaining; // Fix 5: save for partial count
                 let mut error = false;
 
                 while remaining > 0 {
@@ -717,14 +769,20 @@ impl DiskController {
                         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                             debug!("Disk write error: {}", e);
                             cpu.registers.ax.set_high(0x03);
+                            // Fix 5: Report partial transfer count on error
+                            cpu.registers.ax.set_low((total_requested - remaining) as u8);
                             cpu.set_flag(Carry);
+                            Self::write_disk_status(cpu, drive, 0x03);
                             error = true;
                             break;
                         }
                         Err(e) => {
                             debug!("Disk write error: {}", e);
                             cpu.registers.ax.set_high(0x04);
+                            // Fix 5: Report partial transfer count on error
+                            cpu.registers.ax.set_low((total_requested - remaining) as u8);
                             cpu.set_flag(Carry);
+                            Self::write_disk_status(cpu, drive, 0x04);
                             error = true;
                             break;
                         }
@@ -745,6 +803,7 @@ impl DiskController {
                     cpu.registers.ax.set_high(0x00);
                     cpu.registers.ax.set_low(count);
                     cpu.unset_flag(Carry);
+                    Self::write_disk_status(cpu, drive, 0x00);
                 }
             }
 
@@ -760,14 +819,17 @@ impl DiskController {
                     Some(disk) if disk.verify_sectors(cylinder, head, sector, count) => {
                         cpu.registers.ax.set_high(0x00);
                         cpu.unset_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x00);
                     }
                     Some(_) => {
                         cpu.registers.ax.set_high(0x04);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x04);
                     }
                     None => {
                         cpu.registers.ax.set_high(0x80);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x80);
                     }
                 }
             }
@@ -783,6 +845,7 @@ impl DiskController {
                     None => {
                         cpu.registers.ax.set_high(0x80);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x80);
                         return;
                     }
                 };
@@ -791,16 +854,19 @@ impl DiskController {
                     Ok(()) => {
                         cpu.registers.ax.set_high(0x00);
                         cpu.unset_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x00);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                         debug!("Disk format error: {}", e);
                         cpu.registers.ax.set_high(0x03);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x03);
                     }
                     Err(e) => {
                         debug!("Disk format error: {}", e);
                         cpu.registers.ax.set_high(0x04);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x04);
                     }
                 }
             }
@@ -837,6 +903,11 @@ impl DiskController {
                                     .filter(|(d, _)| *d < 0x80)
                                     .count() as u8
                             );
+                            // Fix 8: Point ES:DI to disk parameter table at INT 1Eh vector
+                            let dpt_offset = cpu.memory.read_word(0x0078); // INT 1Eh offset
+                            let dpt_segment = cpu.memory.read_word(0x007A); // INT 1Eh segment
+                            cpu.registers.es.reg_mut().set(dpt_segment);
+                            cpu.registers.di.set(dpt_offset);
                         } else {
                             // Hard disk: BL unused, DL = number of hard disks
                             cpu.registers.bx.set_low(0x00);
@@ -847,10 +918,12 @@ impl DiskController {
                             );
                         }
                         cpu.unset_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x00);
                     }
                     None => {
                         cpu.registers.ax.set_high(0x07);
                         cpu.set_flag(Carry);
+                        Self::write_disk_status(cpu, drive, 0x07);
                     }
                 }
             }
@@ -863,14 +936,24 @@ impl DiskController {
 
             // AH=15: Get disk type
             0x15 => match self.find_drive(drive) {
-                Some(_) => {
-                    cpu.registers
-                        .ax
-                        .set_high(if drive < 0x80 { 0x01 } else { 0x03 });
+                Some(disk) => {
+                    if drive < 0x80 {
+                        // 3.5" drives (720K+) have change-line support
+                        let disk_type = if disk.total_bytes() >= 737_280 { 0x02 } else { 0x01 };
+                        cpu.registers.ax.set_high(disk_type);
+                    } else {
+                        cpu.registers.ax.set_high(0x03);
+                        // Set CX:DX to total sector count
+                        let total = disk.cylinders as u32
+                            * disk.heads as u32
+                            * disk.sectors_per_track as u32;
+                        cpu.registers.cx.set((total >> 16) as u16);
+                        cpu.registers.dx.set((total & 0xFFFF) as u16);
+                    }
                     cpu.unset_flag(Carry);
                 }
                 None => {
-                    cpu.registers.ax.set_high(0x00);
+                    cpu.registers.ax.set_high(0x00); // no such drive
                     cpu.unset_flag(Carry);
                 }
             },

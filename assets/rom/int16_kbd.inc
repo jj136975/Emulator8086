@@ -8,6 +8,12 @@ int16_handler:
     je .kb_status
     cmp ah, 0x02
     je .kb_flags
+    cmp ah, 0x10
+    je .kb_read
+    cmp ah, 0x11
+    je .kb_status
+    cmp ah, 0x12
+    je .kb_eflags
     iret
 
 .kb_read:
@@ -69,8 +75,23 @@ int16_handler:
 
 .kb_flags:
     push ds
+    push bx
     mov bx, 0x0040
     mov ds, bx
     mov al, [BDA_KBD_FLAGS1]
+    pop bx
+    pop ds
+    iret
+
+; --- AH=12h: Get enhanced shift flags ---
+; Returns AL = BDA_KBD_FLAGS1, AH = BDA_KBD_FLAGS2
+.kb_eflags:
+    push ds
+    push bx
+    mov bx, 0x0040
+    mov ds, bx
+    mov al, [BDA_KBD_FLAGS1]
+    mov ah, [BDA_KBD_FLAGS2]
+    pop bx
     pop ds
     iret

@@ -44,11 +44,13 @@ int09_handler:
     cmp al, 0x38
     je .k_alt_on
     cmp al, 0x3A
-    je .k_caps
+    je .k_capslock
     cmp al, 0x45
-    je .k_num
+    je .k_numlock
     cmp al, 0x46
-    je .k_scroll
+    je .k_scrolllock
+    cmp al, 0x52
+    je .k_ins_toggle
 
     ; --- Regular key ---
     mov cl, al               ; CL = scancode
@@ -203,14 +205,29 @@ int09_handler:
 .k_alt_on:
     or byte [BDA_KBD_FLAGS1], 0x08
     jmp .k_done
-.k_caps:
-    xor byte [BDA_KBD_FLAGS1], 0x40
+.k_capslock:
+    test byte [BDA_KBD_FLAGS2], 0x40  ; Already held?
+    jnz .k_done                        ; Yes, skip toggle
+    or byte [BDA_KBD_FLAGS2], 0x40    ; Set held bit
+    xor byte [BDA_KBD_FLAGS1], 0x40   ; Toggle Caps Lock
     jmp .k_done
-.k_num:
-    xor byte [BDA_KBD_FLAGS1], 0x20
+.k_numlock:
+    test byte [BDA_KBD_FLAGS2], 0x20  ; Already held?
+    jnz .k_done                        ; Yes, skip toggle
+    or byte [BDA_KBD_FLAGS2], 0x20    ; Set held bit
+    xor byte [BDA_KBD_FLAGS1], 0x20   ; Toggle Num Lock
     jmp .k_done
-.k_scroll:
-    xor byte [BDA_KBD_FLAGS1], 0x10
+.k_scrolllock:
+    test byte [BDA_KBD_FLAGS2], 0x10  ; Already held?
+    jnz .k_done                        ; Yes, skip toggle
+    or byte [BDA_KBD_FLAGS2], 0x10    ; Set held bit
+    xor byte [BDA_KBD_FLAGS1], 0x10   ; Toggle Scroll Lock
+    jmp .k_done
+.k_ins_toggle:
+    test byte [BDA_KBD_FLAGS2], 0x80  ; Already held?
+    jnz .k_done                        ; Yes, skip toggle
+    or byte [BDA_KBD_FLAGS2], 0x80    ; Set held bit
+    xor byte [BDA_KBD_FLAGS1], 0x80   ; Toggle Insert
     jmp .k_done
 
     ; --- Break code handling ---
@@ -224,6 +241,14 @@ int09_handler:
     je .k_ctrl_off
     cmp al, 0x38
     je .k_alt_off
+    cmp al, 0x3A
+    je .k_capslock_off
+    cmp al, 0x45
+    je .k_numlock_off
+    cmp al, 0x46
+    je .k_scrolllock_off
+    cmp al, 0x52
+    je .k_ins_toggle_off
     jmp .k_done
 
 .k_lshift_off:
@@ -237,6 +262,18 @@ int09_handler:
     jmp .k_done
 .k_alt_off:
     and byte [BDA_KBD_FLAGS1], 0xF7
+    jmp .k_done
+.k_capslock_off:
+    and byte [BDA_KBD_FLAGS2], ~0x40  ; Clear held bit
+    jmp .k_done
+.k_numlock_off:
+    and byte [BDA_KBD_FLAGS2], ~0x20  ; Clear held bit
+    jmp .k_done
+.k_scrolllock_off:
+    and byte [BDA_KBD_FLAGS2], ~0x10  ; Clear held bit
+    jmp .k_done
+.k_ins_toggle_off:
+    and byte [BDA_KBD_FLAGS2], ~0x80  ; Clear held bit
     jmp .k_done
 
 .k_done:

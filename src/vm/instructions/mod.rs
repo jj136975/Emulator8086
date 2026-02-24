@@ -703,8 +703,8 @@ pub fn process(vm: &mut Runtime) {
                 .read_word(address.wrapping_add(2));
             vm.cpu.registers.es.reg_mut().set(word);
         }
-        // LOCK
-        0xF0 => {
+        // LOCK (0xF1 is undocumented alias on 8086)
+        0xF0 | 0xF1 => {
             vm.prefix = Some(Queued(Box::new(Prefix::Lock)));
         }
         // LODS
@@ -1388,6 +1388,7 @@ pub fn process(vm: &mut Runtime) {
                 vm.cpu.registers.cs.reg().word(),
                 vm.cpu.registers.op_pc
             );
+            vm.dump_trace();
             vm.exit(1);
         }
     }

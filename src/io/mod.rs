@@ -1,7 +1,10 @@
 pub mod bus;
 pub mod pic;
 pub mod disk;
+pub mod dma;
 pub mod console;
+pub mod fdc;
+pub mod hdc;
 pub mod keyboard;
 pub mod vga;
 pub mod pit;

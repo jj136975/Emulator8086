@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use crossterm::{cursor::MoveTo, style::{Attribute, Color, SetAttribute, SetBackgroundColor, SetForegroundColor}, QueueableCommand};
+use crossterm::{cursor::MoveTo, style::{Color, SetBackgroundColor, SetForegroundColor}, QueueableCommand};
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
 use crate::vm::memory::Memory;
@@ -8,42 +8,59 @@ use crate::vm::memory::Memory;
 /// CGA/VGA text mode — handles CRTC ports and renders B800:0000 to terminal.
 ///
 /// Ports:
-///   0x3D4 — CRTC index register
-///   0x3D5 — CRTC data register
-///   0x3D8 — Mode control register (ignored)
-///   0x3D9 — Color select register (ignored)
-///   0x3DA — Status register (vertical retrace toggle)
+///   0x3D0/0x3D2/0x3D4 — CRTC index register (mirrors)
+///   0x3D1/0x3D3/0x3D5 — CRTC data register (mirrors)
+///   0x3D8 — Mode control register
+///   0x3D9 — Color select register
+///   0x3DA — Status register (cycle-based retrace timing)
 pub struct VgaTextMode {
     // CRTC state
     crtc_index: u8,
     crtc_regs: [u8; 256],
 
-    // Status register — counter for realistic retrace timing
-    read_counter: u8,
+    // Mode control register (port 0x3D8)
+    mode_register: u8,
+
+    // Color select register (port 0x3D9)
+    color_register: u8,
+
+    // Status register — cycle counter for realistic retrace timing
+    cycle_counter: u64,
 
     // Rendering state
-    prev_buffer: [u16; 2000],   // previous frame for dirty detection
-    cursor_prev: (u8, u8),       // previous cursor position (col, row)
+    prev_buffer: [u16; 80 * 25],   // max size buffer for dirty detection
+    cursor_prev: (u8, u8),          // previous cursor position (col, row)
     needs_full_redraw: bool,
     blink_mode: bool,
 }
 
 const VIDEO_BASE: usize = 0xB8000;
-const COLS: usize = 80;
 const ROWS: usize = 25;
-const CELLS: usize = COLS * ROWS;
 
 impl VgaTextMode {
     pub fn new() -> Self {
         Self {
             crtc_index: 0,
             crtc_regs: [0; 256],
-            read_counter: 0,
-            prev_buffer: [0xFFFF; CELLS], // force full draw on first frame
+            mode_register: 0x29, // 80-col text, display enabled, blink
+            color_register: 0,
+            cycle_counter: 0,
+            prev_buffer: [0xFFFF; 80 * 25], // force full draw on first frame
             cursor_prev: (0xFF, 0xFF),
             needs_full_redraw: true,
-            blink_mode: false,
+            blink_mode: true, // matches mode_register bit 5
         }
+    }
+
+    /// Advance the cycle counter externally (called from runtime).
+    pub fn tick(&mut self, cycles: u64) {
+        self.cycle_counter += cycles;
+    }
+
+    /// Dynamic column count from CRTC register 1 (Horizontal Displayed).
+    fn cols(&self) -> usize {
+        let crtc_r1 = self.crtc_regs[0x01] as usize;
+        if crtc_r1 > 0 && crtc_r1 <= 80 { crtc_r1 } else { 80 }
     }
 
     /// Get cursor position from CRTC registers 0x0E (high) and 0x0F (low).
@@ -58,13 +75,25 @@ impl VgaTextMode {
         addr as usize
     }
 
+    pub fn queue_full_redraw(&mut self) {
+        self.needs_full_redraw = true;
+    }
+
     /// Call periodically from main loop to render video RAM to terminal.
     /// Only redraws cells that changed since last call.
     pub fn render(&mut self, memory: &Memory) {
         let mut stdout = io::stdout();
-        let start = self.start_address();
 
-        for i in 0..CELLS {
+        // Note: MODE_ENABLE bit (bit 3 of port 0x3D8) is ignored for rendering.
+        // Programs like EDIT/QBasic disable the CGA display during video memory
+        // writes to prevent "snow" artifacts on real hardware. Since we render to
+        // a terminal, there is no snow — always render the video buffer contents.
+
+        let start = self.start_address();
+        let cols = self.cols();
+        let cells = cols * ROWS;
+
+        for i in 0..cells {
             // Apply start address offset — wraps within 16KB text page
             let cell_index = (start + i) & 0x1FFF; // wrap within 8K character cells (16KB bytes)
             let addr = VIDEO_BASE + cell_index * 2;
@@ -77,8 +106,8 @@ impl VgaTextMode {
             }
             self.prev_buffer[i] = cell;
 
-            let row = (i / COLS) as u16;
-            let col = (i % COLS) as u16;
+            let row = (i / cols) as u16;
+            let col = (i % cols) as u16;
 
             let (fg_index, bg_index) = if self.blink_mode {
                 (attr & 0x0F, (attr >> 4) & 0x07)  // 8 background colors, bit 7 = blink
@@ -87,7 +116,6 @@ impl VgaTextMode {
             };
             let fg = cga_to_color(fg_index);
             let bg = cga_to_color(bg_index);
-            let bright = attr & 0x08 != 0;
 
             let display_char = if ch >= 0x20 && ch < 0x7F {
                 ch as char
@@ -100,11 +128,6 @@ impl VgaTextMode {
             let _ = stdout.queue(MoveTo(col, row));
             let _ = stdout.queue(SetForegroundColor(fg));
             let _ = stdout.queue(SetBackgroundColor(bg));
-            if bright {
-                let _ = stdout.queue(SetAttribute(Attribute::Bold));
-            } else {
-                let _ = stdout.queue(SetAttribute(Attribute::NoBold));
-            }
             let _ = write!(stdout, "{}", display_char);
         }
 
@@ -113,8 +136,8 @@ impl VgaTextMode {
         // Update cursor position (clamped to visible area)
         let offset = self.cursor_offset();
         let cursor_rel = offset.wrapping_sub(start as u16);
-        let col = (cursor_rel % COLS as u16).min(COLS as u16 - 1);
-        let row = (cursor_rel / COLS as u16).min(ROWS as u16 - 1);
+        let col = (cursor_rel % cols as u16).min(cols as u16 - 1);
+        let row = (cursor_rel / cols as u16).min(ROWS as u16 - 1);
 
         if (col as u8, row as u8) != self.cursor_prev {
             self.cursor_prev = (col as u8, row as u8);
@@ -129,6 +152,7 @@ impl VgaTextMode {
     pub fn dump(&self, memory: &Memory, path: &str) {
         use std::fs::File;
         let start = self.start_address();
+        let cols = self.cols();
         let mut f = match File::create(path) {
             Ok(f) => f,
             Err(e) => {
@@ -139,7 +163,7 @@ impl VgaTextMode {
         let offset = self.cursor_offset();
         let _ = writeln!(f, "=== VGA Diagnostic Dump ===");
         let _ = writeln!(f, "CRTC start_address={} cursor_offset={} (row={}, col={})",
-            start, offset, offset / COLS as u16, offset % COLS as u16);
+            start, offset, offset / cols as u16, offset % cols as u16);
         let _ = writeln!(f, "CRTC regs: 0x0C={:02X} 0x0D={:02X} 0x0E={:02X} 0x0F={:02X}",
             self.crtc_regs[0x0C], self.crtc_regs[0x0D], self.crtc_regs[0x0E], self.crtc_regs[0x0F]);
         // BDA fields (segment 0x0040, physical 0x400+offset)
@@ -157,12 +181,59 @@ impl VgaTextMode {
                 memory.read_byte(addr), memory.read_byte(addr + 1));
         }
         let _ = writeln!(f);
+
+        // Mode register
+        let _ = writeln!(f, "Mode register: {:02X} (display {}abled, blink={})",
+            self.mode_register,
+            if self.mode_register & 0x08 != 0 { "en" } else { "dis" },
+            self.blink_mode);
+
+        // IVT entries (to detect if program replaced handlers)
+        let _ = writeln!(f, "IVT entries:");
+        for &(vec, name) in &[
+            (0x08u8, "INT 08h (Timer)"),
+            (0x09, "INT 09h (Keyboard)"),
+            (0x10, "INT 10h (Video)"),
+            (0x15, "INT 15h (System)"),
+            (0x16, "INT 16h (Kbd Svc)"),
+            (0x1C, "INT 1Ch (Timer Hook)"),
+        ] {
+            let addr = (vec as usize) * 4;
+            let off = memory.read_word(addr);
+            let seg = memory.read_word(addr + 2);
+            let _ = writeln!(f, "  {} = {:04X}:{:04X}", name, seg, off);
+        }
+
+        // BDA keyboard buffer state
+        let kbd_head = memory.read_word(0x041A);
+        let kbd_tail = memory.read_word(0x041C);
+        let kbd_start = memory.read_word(0x0480);
+        let kbd_end = memory.read_word(0x0482);
+        let kbd_flags1 = memory.read_byte(0x0417);
+        let kbd_flags2 = memory.read_byte(0x0418);
+        let _ = writeln!(f, "Keyboard buffer: head={:04X} tail={:04X} start={:04X} end={:04X}",
+            kbd_head, kbd_tail, kbd_start, kbd_end);
+        let _ = writeln!(f, "Keyboard flags: flags1={:02X} flags2={:02X}", kbd_flags1, kbd_flags2);
+        // Dump buffer contents
+        let _ = write!(f, "Buffer contents:");
+        let mut ptr = kbd_start;
+        while ptr < kbd_end {
+            let w = memory.read_word(0x0400 + ptr as usize);
+            if ptr == kbd_head { let _ = write!(f, " [H"); }
+            if ptr == kbd_tail { let _ = write!(f, " [T"); }
+            let _ = write!(f, " {:04X}", w);
+            if ptr == kbd_head || ptr == kbd_tail { let _ = write!(f, "]"); }
+            ptr += 2;
+        }
+        let _ = writeln!(f);
+
+        // PIC state from BDA (IMR from port 0x21 isn't stored in BDA, but we can show IRQ mask)
         let _ = writeln!(f);
         for row in 0..ROWS {
             // ASCII text line
             let _ = write!(f, "Row {:02}: |", row);
-            for col in 0..COLS {
-                let cell_index = (start + row * COLS + col) & 0x1FFF;
+            for col in 0..cols {
+                let cell_index = (start + row * cols + col) & 0x1FFF;
                 let ch = memory.read_byte(VIDEO_BASE + cell_index * 2);
                 if ch >= 0x20 && ch < 0x7F {
                     let _ = write!(f, "{}", ch as char);
@@ -173,8 +244,8 @@ impl VgaTextMode {
             let _ = writeln!(f, "|");
             // Hex dump line
             let _ = write!(f, "        ");
-            for col in 0..COLS {
-                let cell_index = (start + row * COLS + col) & 0x1FFF;
+            for col in 0..cols {
+                let cell_index = (start + row * cols + col) & 0x1FFF;
                 let addr = VIDEO_BASE + cell_index * 2;
                 let ch = memory.read_byte(addr);
                 let attr = memory.read_byte(addr + 1);
@@ -189,20 +260,40 @@ impl VgaTextMode {
 impl IoDevice for VgaTextMode {
     fn port_in_byte(&mut self, port: u16, _cpu: &mut Cpu) -> u8 {
         match port {
-            // CRTC index
-            0x3D4 => self.crtc_index,
+            // CRTC index (with mirrors)
+            0x3D0 | 0x3D2 | 0x3D4 => self.crtc_index,
 
-            // CRTC data
-            0x3D5 => self.crtc_regs[self.crtc_index as usize],
+            // CRTC data (with mirrors) — only readable for registers 0x0A-0x0F
+            0x3D1 | 0x3D3 | 0x3D5 => {
+                match self.crtc_index {
+                    0x0A..=0x0F => self.crtc_regs[self.crtc_index as usize],
+                    _ => 0x00,
+                }
+            }
+
+            // Mode control register
+            0x3D8 => self.mode_register,
+
+            // Color select register
+            0x3D9 => self.color_register,
 
             // Status register — programs poll this for retrace timing.
+            // Reading 0x3DA also resets the attribute controller address flip-flop
+            // (relevant for EGA/VGA, noted here for future compatibility).
             0x3DA => {
-                self.read_counter = self.read_counter.wrapping_add(1);
-                if self.read_counter & 0x01 == 0 {
-                    0x09 // retrace active: bit 0 (display) + bit 3 (vertical retrace)
-                } else {
-                    0x00 // display active
-                }
+                self.cycle_counter += 1;
+
+                // Simulate hblank: CGA has ~76 character clocks per scanline,
+                // display active for ~40 chars, blanking for ~36 chars.
+                let bit0 = (self.cycle_counter % 76) >= 40;
+
+                // Simulate vblank: ~262 scanlines per frame,
+                // vblank starts around scanline 225.
+                let scanline = (self.cycle_counter / 76) % 262;
+                let bit3 = scanline >= 225;
+
+                // Upper nibble = 0xF0 (floating bits on CGA hardware)
+                0xF0 | ((bit3 as u8) << 3) | (bit0 as u8)
             }
 
             _ => 0xFF,
@@ -211,20 +302,39 @@ impl IoDevice for VgaTextMode {
 
     fn port_out_byte(&mut self, port: u16, value: u8, _cpu: &mut Cpu) {
         match port {
-            // CRTC index register
-            0x3D4 => self.crtc_index = value,
+            // CRTC index register (with mirrors)
+            0x3D0 | 0x3D2 | 0x3D4 => self.crtc_index = value,
 
-            // CRTC data register
-            0x3D5 => {
-                self.crtc_regs[self.crtc_index as usize] = value;
+            // CRTC data register (with mirrors) — validated writes
+            0x3D1 | 0x3D3 | 0x3D5 => {
+                if self.crtc_index <= 17 {
+                    let masked = match self.crtc_index {
+                        0x04 => value & 0x7F,  // Vertical Total
+                        0x05 => value & 0x1F,  // VT Adjust
+                        0x06 => value & 0x7F,  // Vertical Displayed
+                        0x07 => value & 0x7F,  // Vertical Sync Position
+                        0x09 => value & 0x1F,  // Max Scan Line
+                        0x0A => value & 0x7F,  // Cursor Start
+                        0x0B => value & 0x1F,  // Cursor End
+                        0x0C => value & 0x3F,  // Start Address High
+                        _ => value,
+                    };
+                    self.crtc_regs[self.crtc_index as usize] = masked;
+                }
             }
 
+            // Mode control register
             0x3D8 => {
+                self.mode_register = value;
                 self.blink_mode = value & 0x20 != 0;
+                // Bit 3 (MODE_ENABLE) is checked in render()
+                // Bit 0 (HIRES_TEXT) affects 80 vs 40 column mode
             }
 
-            // Color select register — ignore
-            0x3D9 => {}
+            // Color select register
+            0x3D9 => {
+                self.color_register = value;
+            }
 
             _ => {}
         }

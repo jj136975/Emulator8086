@@ -59,6 +59,8 @@ bios_entry:
     mov word [0x0066], 0xF000
     mov word [0x0068], int1a_handler
     mov word [0x006A], 0xF000
+    mov word [0x0078], floppy_dpt   ; INT 1Eh offset (0x1E * 4 = 0x78)
+    mov word [0x007A], 0xF000       ; INT 1Eh segment
 
     ; Fill remaining IVT
     xor si, si
@@ -92,6 +94,7 @@ bios_entry:
     mov word [BDA_TIMER_HIGH], 0
     mov byte [BDA_TIMER_OFLOW], 0
     mov byte [BDA_KBD_FLAGS1], 0
+    mov byte [BDA_KBD_FLAGS2], 0
 
     ; BDA offset 0x0075 = number of hard disks
     ; The disk trap will set this correctly, but set a default
@@ -195,11 +198,31 @@ int15_handler:
 
 
 ; =============================================================================
-; Pad + reset vector
+; Floppy Disk Parameter Table (INT 1Eh)
+; =============================================================================
+floppy_dpt:
+    db 0xDF   ; Step rate / head unload (SRT=13, HUT=15)
+    db 0x02   ; Head load time / DMA mode
+    db 0x25   ; Motor off delay (ticks)
+    db 0x02   ; Bytes per sector (0=128, 1=256, 2=512)
+    db 18     ; Sectors per track (1.44M default)
+    db 0x1B   ; Gap length
+    db 0xFF   ; Data length
+    db 0x54   ; Format gap length
+    db 0xF6   ; Format fill byte
+    db 0x0F   ; Head settle time (ms)
+    db 0x08   ; Motor start time (1/8 seconds)
+
+
+; =============================================================================
+; Pad + reset vector + BIOS identification
 ; =============================================================================
 times (0xFFF0 - ($ - $$)) db 0xFF
 
 reset_vector:
-    jmp 0xF000:bios_entry
+    jmp 0xF000:bios_entry       ; Reset vector at F000:FFF0 (5 bytes)
 
-times (0x10000 - ($ - $$)) db 0xFF
+    db '02/24/26'               ; BIOS date at F000:FFF5 (8 bytes)
+    db 0xFF                     ; Submodel byte at F000:FFFD
+    db 0xFE                     ; Model byte at F000:FFFE (0xFE = IBM PC/XT)
+    db 0x00                     ; Checksum at F000:FFFF

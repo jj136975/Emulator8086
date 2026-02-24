@@ -1,6 +1,9 @@
 use crate::io::bus::IoBus;
-use crate::io::console::{DebugConsole, PitStub};
+use crate::io::console::DebugConsole;
 use crate::io::disk::{DiskController, DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
+use crate::io::dma::{DmaController, DmaPageRegisters};
+use crate::io::fdc::FdcStub;
+use crate::io::hdc::HdcStub;
 use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
 use crate::io::vga::VgaTextMode;
@@ -63,6 +66,34 @@ pub enum Prefix {
 }
 
 const RENDER_INTERVAL: u64 = 50_000; // every ~50K instructions
+const TRACE_RING_SIZE: usize = 32;
+const CS_CHANGE_RING_SIZE: usize = 16;
+
+#[derive(Clone, Copy, Default)]
+pub struct TraceEntry {
+    pub cs: u16,
+    pub ip: u16,
+    pub bytes: [u8; 8],
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct CsChangeEntry {
+    pub instr_count: u64,
+    pub old_cs: u16,
+    pub old_ip: u16,
+    pub new_cs: u16,
+    pub new_ip: u16,
+    pub ax: u16,
+    pub bx: u16,
+    pub cx: u16,
+    pub dx: u16,
+    pub sp: u16,
+    pub ss: u16,
+    pub ds: u16,
+    pub es: u16,
+    pub flags: u16,
+    pub bytes_at_old: [u8; 8],
+}
 
 pub struct Runtime {
     pub(crate) cpu: Cpu,
@@ -74,6 +105,11 @@ pub struct Runtime {
     pub instruction_count: u64,
     pub trace: bool,
     pub interrupt_inhibit: bool,
+    pub trace_ring: [TraceEntry; TRACE_RING_SIZE],
+    pub trace_ring_pos: usize,
+    pub cs_change_ring: [CsChangeEntry; CS_CHANGE_RING_SIZE],
+    pub cs_change_ring_pos: usize,
+    pub last_cs: u16,
 
     // Devices
     io_bus: IoBus,
@@ -108,46 +144,11 @@ impl Runtime {
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
-
-            disks: Rc::new(RefCell::new(DiskController::new())),
-            keyboard: None,
-            vga: None,
-            pit: Rc::new(RefCell::new(Pit::new())),
-        }
-    }
-
-    /// Test constructor with PIC, IoBus, and keyboard shared state.
-    /// Does NOT start input thread, raw mode, or BIOS init.
-    #[cfg(test)]
-    pub fn new_bios_test() -> Self {
-        use std::ops::DerefMut;
-        let mut memory = Box::new(Memory::new());
-        let registers = Registers::new(memory.deref_mut());
-
-        // let keyboard = crate::io::keyboard::Keyboard::new();
-        // let kb_data_avail = keyboard.shared_data_available();
-
-        let mut io_bus = IoBus::new();
-        io_bus.register(0x20, 0x21, Box::new(PicDevice));
-
-        Self {
-            cpu: Cpu {
-                cpu_type: CpuType::Intel8086,
-                registers,
-                memory,
-                flags: 0,
-                halted: false,
-                pic: Pic::new(),
-            },
-            running: true,
-            status: 0,
-            prefix: None,
-            segment_override: None,
-            io_bus,
-            boot_order: Vec::new(),
-            instruction_count: 0,
-            trace: false,
-            interrupt_inhibit: false,
+            trace_ring: [TraceEntry::default(); TRACE_RING_SIZE],
+            trace_ring_pos: 0,
+            cs_change_ring: [CsChangeEntry::default(); CS_CHANGE_RING_SIZE],
+            cs_change_ring_pos: 0,
+            last_cs: 0,
 
             disks: Rc::new(RefCell::new(DiskController::new())),
             keyboard: None,
@@ -174,7 +175,7 @@ impl Runtime {
                         // Boot drive: must exist
                         DiskImage::open(path, spec.readonly).expect("Failed to open disk image")
                     } else {
-                        // Non-boot drive: create if doesn't exist
+                        // Non-boot drive: create if it doesn't exist
                         DiskImage::open_or_create(path, spec.readonly)
                             .expect("Failed to open/create disk image")
                     }
@@ -211,13 +212,16 @@ impl Runtime {
 
         keyboard.borrow_mut().set_pit(Rc::clone(&pit));
 
+        io_bus.register(0x00, 0x0F, Box::new(DmaController::new()));
         io_bus.register(0x20, 0x21, Box::new(PicDevice));
         io_bus.register(0x40, 0x43, Box::new(Rc::clone(&pit)));
-        io_bus.register(0x60, 0x61, Box::new(Rc::clone(&keyboard)));
-        io_bus.register(0x64, 0x64, Box::new(Rc::clone(&keyboard)));
+        io_bus.register(0x60, 0x63, Box::new(Rc::clone(&keyboard)));
+        io_bus.register(0x81, 0x87, Box::new(DmaPageRegisters::new()));
         io_bus.register(0xB0, 0xB0, Box::new(Rc::clone(&disk_ctrl)));
         io_bus.register(0xE9, 0xE9, Box::new(DebugConsole));
-        io_bus.register(0x3D4, 0x3DA, Box::new(Rc::clone(&vga)));
+        io_bus.register(0x320, 0x323, Box::new(HdcStub::new()));
+        io_bus.register(0x3D0, 0x3DA, Box::new(Rc::clone(&vga)));
+        io_bus.register(0x3F0, 0x3F7, Box::new(FdcStub::new()));
 
         let mut vm = Self {
             cpu: Cpu {
@@ -237,6 +241,11 @@ impl Runtime {
             instruction_count: 0,
             trace,
             interrupt_inhibit: false,
+            trace_ring: [TraceEntry::default(); TRACE_RING_SIZE],
+            trace_ring_pos: 0,
+            cs_change_ring: [CsChangeEntry::default(); CS_CHANGE_RING_SIZE],
+            cs_change_ring_pos: 0,
+            last_cs: 0xF000,
 
             disks: disk_ctrl,
             keyboard: Some(keyboard),
@@ -245,13 +254,83 @@ impl Runtime {
         };
 
         vm.cpu.set_flag(Interrupt);
-        // crate::bios::init::init_bios(&mut vm);
         vm
     }
 
     pub fn exit(&mut self, status: u16) {
         self.running = false;
         self.status = status;
+    }
+
+    pub fn record_trace(&mut self) {
+        let cs = self.cpu.registers.cs.reg().word();
+        let ip = self.cpu.registers.pc.word();
+        let mut bytes = [0u8; 8];
+        for i in 0..8 {
+            bytes[i] = self.cpu.registers.cs.read_byte(ip.wrapping_add(i as u16));
+        }
+        self.trace_ring[self.trace_ring_pos] = TraceEntry { cs, ip, bytes };
+        self.trace_ring_pos = (self.trace_ring_pos + 1) % TRACE_RING_SIZE;
+
+        // Detect CS changes
+        if cs != self.last_cs {
+            let old_cs = self.last_cs;
+            // Read bytes at old CS:IP (from previous trace entry)
+            let prev_idx = (self.trace_ring_pos + TRACE_RING_SIZE - 2) % TRACE_RING_SIZE;
+            let old_entry = &self.trace_ring[prev_idx];
+            self.cs_change_ring[self.cs_change_ring_pos] = CsChangeEntry {
+                instr_count: self.instruction_count,
+                old_cs,
+                old_ip: old_entry.ip,
+                new_cs: cs,
+                new_ip: ip,
+                ax: self.cpu.registers.ax.word(),
+                bx: self.cpu.registers.bx.word(),
+                cx: self.cpu.registers.cx.word(),
+                dx: self.cpu.registers.dx.word(),
+                sp: self.cpu.registers.sp.word(),
+                ss: self.cpu.registers.ss.reg().word(),
+                ds: self.cpu.registers.ds.reg().word(),
+                es: self.cpu.registers.es.reg().word(),
+                flags: self.cpu.flags,
+                bytes_at_old: old_entry.bytes,
+            };
+            self.cs_change_ring_pos = (self.cs_change_ring_pos + 1) % CS_CHANGE_RING_SIZE;
+            self.last_cs = cs;
+        }
+    }
+
+    pub fn dump_trace(&self) {
+        eprintln!("=== Last {} CS changes ===", CS_CHANGE_RING_SIZE);
+        for i in 0..CS_CHANGE_RING_SIZE {
+            let idx = (self.cs_change_ring_pos + i) % CS_CHANGE_RING_SIZE;
+            let e = &self.cs_change_ring[idx];
+            if e.old_cs == 0 && e.new_cs == 0 && e.instr_count == 0 {
+                continue;
+            }
+            eprintln!(
+                "  #{:<10} {:04X}:{:04X} -> {:04X}:{:04X}  AX={:04X} BX={:04X} CX={:04X} DX={:04X} SP={:04X} SS={:04X} DS={:04X} ES={:04X} F={:04X}  [{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}]",
+                e.instr_count, e.old_cs, e.old_ip, e.new_cs, e.new_ip,
+                e.ax, e.bx, e.cx, e.dx, e.sp, e.ss, e.ds, e.es, e.flags,
+                e.bytes_at_old[0], e.bytes_at_old[1], e.bytes_at_old[2], e.bytes_at_old[3],
+                e.bytes_at_old[4], e.bytes_at_old[5], e.bytes_at_old[6], e.bytes_at_old[7],
+            );
+        }
+        eprintln!("=== Last {} instructions before crash ===", TRACE_RING_SIZE);
+        for i in 0..TRACE_RING_SIZE {
+            let idx = (self.trace_ring_pos + i) % TRACE_RING_SIZE;
+            let entry = &self.trace_ring[idx];
+            if entry.cs == 0 && entry.ip == 0 && entry.bytes == [0; 8] {
+                continue;
+            }
+            eprintln!(
+                "  {:04X}:{:04X}  {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                entry.cs, entry.ip,
+                entry.bytes[0], entry.bytes[1], entry.bytes[2], entry.bytes[3],
+                entry.bytes[4], entry.bytes[5], entry.bytes[6], entry.bytes[7],
+            );
+        }
+        eprintln!("=========================================");
     }
 
     pub(crate) fn load_rom(&mut self, path: PathBuf) {
@@ -262,8 +341,9 @@ impl Runtime {
 
         let load_address = 0xF0000;
         for (i, byte) in rom_data.iter().enumerate() {
-            self.cpu.memory.write_byte(load_address + i, *byte);
+            self.cpu.memory.write_byte_unchecked(load_address + i, *byte);
         }
+        self.cpu.memory.enable_rom_protection();
     }
 
     pub fn run(&mut self) {
@@ -288,23 +368,30 @@ impl Runtime {
             }
 
             if !self.cpu.halted {
+                self.record_trace();
                 process(self);
                 self.instruction_count += 1;
             }
 
             let now = Instant::now();
             let elapsed = now.duration_since(last_pit_tick).as_secs_f64();
-            let pit_ticks = (elapsed * PIT_CLOCK_HZ) as u16;
+            let pit_ticks = ((elapsed * PIT_CLOCK_HZ) as u64).min(65535) as u16;
             if pit_ticks > 0 {
                 last_pit_tick = now;
-                if self.pit.borrow_mut().tick(pit_ticks) {
-                    self.cpu.pic.raise_irq(0);
+                let pit_result = self.pit.borrow_mut().tick(pit_ticks);
+                if pit_result.ch0_rising_edge {
+                    self.cpu.pic.request_interrupt(0);
+                }
+                if pit_result.ch0_falling_edge {
+                    self.cpu.pic.clear_interrupt(0);
                 }
             }
 
             if self.instruction_count % RENDER_INTERVAL == 0 || self.cpu.halted {
                 if let Some(vga) = &self.vga {
-                    vga.borrow_mut().render(&self.cpu.memory);
+                    let mut vga = vga.borrow_mut();
+                    vga.tick(RENDER_INTERVAL);
+                    vga.render(&self.cpu.memory);
                 }
             }
 
@@ -314,7 +401,11 @@ impl Runtime {
                     match kb.borrow_mut().poll(&mut self.cpu.pic) {
                         Some(crate::io::keyboard::EmulatorEvent::Quit) => self.running = false, // Ctrl+C
                         Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
-                            enter_monitor(&mut *self.disks.borrow_mut())
+                            enter_monitor(&mut *self.disks.borrow_mut());
+                            if let Some(vga) = &self.vga {
+                                vga.borrow_mut().queue_full_redraw();
+                            }
+                            last_pit_tick = Instant::now();
                         }
                         Some(crate::io::keyboard::EmulatorEvent::DumpVga) => {
                             if let Some(vga) = &self.vga {
@@ -326,9 +417,9 @@ impl Runtime {
                 }
             }
 
-            if self.interrupt_inhibit {
+            if self.interrupt_inhibit || self.prefix.is_some() {
                 self.interrupt_inhibit = false; // one-shot, cleared after next instruction
-            } else if self.cpu.pic.has_interrupt() {
+            } else if self.cpu.check_flag(Interrupt) && self.cpu.pic.has_interrupt() {
                 let vector = self.cpu.pic.acknowledge();
                 self.cpu.halted = false;
                 self.handle_interrupt(vector);
@@ -385,34 +476,6 @@ impl Runtime {
             .reg_mut()
             .set(self.cpu.memory.read_word(addr + 2));
     }
-
-    /// Check if the F12 monitor flag is set.
-    // pub fn check_monitor_flag(&self) -> bool {
-    //     self.monitor_flag
-    //         .as_ref()
-    //         .map_or(false, |f| f.load(Ordering::SeqCst))
-    // }
-
-    /// Look up a disk by BIOS drive number (DL < 0x80 = floppy, DL >= 0x80 = hard disk).
-    // pub fn get_disk(&self, dl: u8) -> Option<&DiskImage> {
-    //     if dl >= 0x80 {
-    //         self.hard_disks
-    //             .get((dl - 0x80) as usize)
-    //             .and_then(|d| d.as_ref())
-    //     } else {
-    //         self.disks.get(dl as usize).and_then(|d| d.as_ref())
-    //     }
-    // }
-    //
-    // pub fn get_disk_mut(&mut self, dl: u8) -> Option<&mut DiskImage> {
-    //     if dl >= 0x80 {
-    //         self.hard_disks
-    //             .get_mut((dl - 0x80) as usize)
-    //             .and_then(|d| d.as_mut())
-    //     } else {
-    //         self.disks.get_mut(dl as usize).and_then(|d| d.as_mut())
-    //     }
-    // }
 
     pub fn push_word(&mut self, word: u16) {
         let address = self.cpu.registers.sp.operation(2, u16::wrapping_sub);

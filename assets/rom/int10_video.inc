@@ -52,6 +52,11 @@ int10_handler:
     mov ax, 0x0720
     cld
     rep stosw
+    ; Program mode control register (port 0x3D8)
+    ; Bit 0=1 (80-col), bit 3=1 (enable), bit 5=1 (blink) = 0x29
+    mov al, 0x29
+    mov dx, 0x03D8
+    out dx, al
     pop ax
     pop cx
     pop di
@@ -63,9 +68,24 @@ int10_handler:
 .set_cursor_shape:
     push ds
     push ax
+    push dx
     mov ax, 0x0040
     mov ds, ax
     mov [BDA_CURSOR_SHAPE], cx
+    ; Program CRTC cursor start (R10) and end (R11)
+    mov dx, [BDA_CRTC_BASE]   ; Read CRTC port from BDA
+    mov al, 0x0A               ; Register 10: Cursor Start
+    out dx, al
+    inc dx
+    mov al, ch                 ; Start scanline
+    out dx, al
+    dec dx
+    mov al, 0x0B               ; Register 11: Cursor End
+    out dx, al
+    inc dx
+    mov al, cl                 ; End scanline
+    out dx, al
+    pop dx
     pop ax
     pop ds
     iret
@@ -95,16 +115,16 @@ int10_handler:
     xor dh, dh
     add ax, dx
     mov bx, ax
-    mov dx, 0x03D4
+    mov dx, [BDA_CRTC_BASE]   ; Read from BDA instead of hardcoding
     mov al, 0x0E
     out dx, al
-    mov dx, 0x03D5
+    inc dx
     mov al, bh
     out dx, al
-    mov dx, 0x03D4
+    dec dx
     mov al, 0x0F
     out dx, al
-    mov dx, 0x03D5
+    inc dx
     mov al, bl
     out dx, al
 .scp_done:
@@ -136,11 +156,37 @@ int10_handler:
 ; --- AH=05: Set active display page ---
 .set_active_page:
     push ds
+    push ax
     push bx
+    push dx
     mov bx, 0x0040
     mov ds, bx
     mov [BDA_ACTIVE_PAGE], al
+    ; Calculate start address = page * (page_size / 2)
+    ; page_size is in BDA_VIDEO_PGSZ (bytes), CRTC uses character cells (2 bytes each)
+    xor ah, ah
+    mov bx, [BDA_VIDEO_PGSZ]
+    shr bx, 1                  ; Convert bytes to character cells
+    mul bx                     ; AX = page * (page_size / 2)
+    ; Write to CRTC R12 (high) and R13 (low)
+    mov dx, [BDA_CRTC_BASE]
+    push ax
+    mov al, 0x0C               ; Register 12: Start Address High
+    out dx, al
+    inc dx
+    pop ax
+    push ax
+    mov al, ah                 ; High byte of start address
+    out dx, al
+    dec dx
+    mov al, 0x0D               ; Register 13: Start Address Low
+    out dx, al
+    inc dx
+    pop ax
+    out dx, al                 ; Low byte of start address
+    pop dx
     pop bx
+    pop ax
     pop ds
     iret
 
@@ -160,9 +206,20 @@ int10_handler:
     mov bp, sp
     ; [bp+8]=AX [bp+6]=BX [bp+4]=CX [bp+2]=DX
 
-    mov ax, 0xB800
+    ; Calculate video segment with active page offset
+    push ax
+    mov ax, 0x0040
+    mov ds, ax
+    mov al, [BDA_ACTIVE_PAGE]
+    xor ah, ah
+    mov bx, [BDA_VIDEO_PGSZ]
+    mul bx                      ; AX = page * page_size (bytes)
+    mov cl, 4
+    shr ax, cl                  ; AX = page offset in paragraphs
+    add ax, 0xB800
     mov ds, ax
     mov es, ax
+    pop ax
 
     ; Window height
     mov al, [bp+3]          ; DH (bottom row)
@@ -304,9 +361,20 @@ int10_handler:
     push bp
     mov bp, sp
 
-    mov ax, 0xB800
+    ; Calculate video segment with active page offset
+    push ax
+    mov ax, 0x0040
+    mov ds, ax
+    mov al, [BDA_ACTIVE_PAGE]
+    xor ah, ah
+    mov bx, [BDA_VIDEO_PGSZ]
+    mul bx                      ; AX = page * page_size (bytes)
+    mov cl, 4
+    shr ax, cl                  ; AX = page offset in paragraphs
+    add ax, 0xB800
     mov ds, ax
     mov es, ax
+    pop ax
 
     ; Window height
     mov al, [bp+3]          ; DH (bottom row)
@@ -456,24 +524,36 @@ int10_handler:
 .read_char_attr:
     push ds
     push si
-    push bx
-    mov bx, 0x0040
-    mov ds, bx
-    mov al, byte [BDA_CURSOR_POS+1]
-    mov bl, 80
-    mul bl
-    xor bh, bh
-    mov bl, byte [BDA_CURSOR_POS]
-    add ax, bx
+    push cx
+    push dx
+    mov cx, 0x0040
+    mov ds, cx
+    ; Save page number
+    mov dl, bh
+    ; Get cursor position for page BH
+    mov al, bh
+    xor ah, ah
+    shl ax, 1
+    mov si, ax
+    mov al, byte [BDA_CURSOR_POS+1+si]  ; Row for page BH
+    mov cl, 80
+    mul cl
+    xor ch, ch
+    mov cl, byte [BDA_CURSOR_POS+si]    ; Col for page BH
+    add ax, cx
     mov si, ax
     add si, si
-    mov bx, 0xB800
-    mov ds, bx
-    lodsw
-    mov bx, ax
-    mov al, bl
-    mov ah, bh
-    pop bx
+    ; Calculate page offset: page * BDA_VIDEO_PGSZ
+    mov al, dl                  ; Page number saved earlier
+    xor ah, ah
+    mov cx, [BDA_VIDEO_PGSZ]
+    mul cx                      ; AX = page * page_size
+    add si, ax                  ; Add page offset to cursor offset
+    mov cx, 0xB800
+    mov ds, cx
+    lodsw                       ; AL = char, AH = attr
+    pop dx
+    pop cx
     pop si
     pop ds
     iret
@@ -486,22 +566,38 @@ int10_handler:
     push ds
     push cx
     push ax
+    push bx
     mov dx, 0x0040
     mov ds, dx
-    mov dh, byte [BDA_CURSOR_POS+1]
-    mov dl, byte [BDA_CURSOR_POS]
-    pop ax
-    push ax
-    mov al, dh
+    ; Get cursor position for page BH
+    mov al, bh
     xor ah, ah
-    mov di, 80
-    push dx
-    mul di
-    pop dx
-    xor dh, dh
-    add ax, dx
+    shl ax, 1
     mov di, ax
-    add di, di
+    mov dh, byte [BDA_CURSOR_POS+1+di]
+    mov dl, byte [BDA_CURSOR_POS+di]
+    ; Save cursor pos, compute page offset
+    push dx                     ; Save cursor (DH=row, DL=col)
+    mov al, bh
+    xor ah, ah
+    mov di, [BDA_VIDEO_PGSZ]
+    mul di                      ; AX = page * page_size (clobbers DX)
+    mov di, ax                  ; DI = page offset
+    pop dx                      ; Restore cursor (DH=row, DL=col)
+    ; Calculate cursor offset within page
+    mov al, dh                  ; AL = row
+    xor ah, ah
+    push dx
+    push cx                     ; Save count for loop
+    mov cx, 80
+    mul cx                      ; AX = row * 80
+    pop cx                      ; Restore count
+    pop dx
+    xor dh, dh                  ; DX = col only
+    add ax, dx
+    add ax, ax                  ; Convert to byte offset
+    add di, ax                  ; DI = page offset + cursor offset
+    pop bx
     pop ax
     mov dx, 0xB800
     mov es, dx
@@ -525,22 +621,38 @@ int10_handler:
     push ds
     push cx
     push ax
+    push bx
     mov dx, 0x0040
     mov ds, dx
-    mov dh, byte [BDA_CURSOR_POS+1]
-    mov dl, byte [BDA_CURSOR_POS]
-    pop ax
-    push ax
-    push dx
-    mov al, dh
+    ; Get cursor position for page BH
+    mov al, bh
     xor ah, ah
-    mov di, 80
-    mul di
-    pop dx
-    xor dh, dh
-    add ax, dx
+    shl ax, 1
     mov di, ax
-    add di, di
+    mov dh, byte [BDA_CURSOR_POS+1+di]
+    mov dl, byte [BDA_CURSOR_POS+di]
+    ; Save cursor pos, compute page offset
+    push dx                     ; Save cursor (DH=row, DL=col)
+    mov al, bh
+    xor ah, ah
+    mov di, [BDA_VIDEO_PGSZ]
+    mul di                      ; AX = page * page_size (clobbers DX)
+    mov di, ax                  ; DI = page offset
+    pop dx                      ; Restore cursor (DH=row, DL=col)
+    ; Calculate cursor offset within page
+    mov al, dh                  ; AL = row
+    xor ah, ah
+    push dx
+    push cx                     ; Save count for loop
+    mov cx, 80
+    mul cx                      ; AX = row * 80
+    pop cx                      ; Restore count
+    pop dx
+    xor dh, dh                  ; DX = col only
+    add ax, dx
+    add ax, ax                  ; Convert to byte offset
+    add di, ax                  ; DI = page offset + cursor offset
+    pop bx
     pop ax
     mov dx, 0xB800
     mov es, dx

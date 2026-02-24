@@ -20,3 +20,7 @@ BDA_MOTOR_STATUS  equ 0x003F
 BDA_MOTOR_TIMEOUT equ 0x0040
 BDA_KBD_BUF_START equ 0x0080
 BDA_KBD_BUF_END   equ 0x0082
+BDA_KBD_FLAGS2    equ 0x0018   ; Keyboard flags byte 2 (held state of toggle keys)
+BDA_FLOPPY_STATUS equ 0x0041   ; Floppy disk last status
+BDA_HD_STATUS     equ 0x0074   ; Hard disk last status
+BDA_HD_COUNT      equ 0x0075   ; Number of hard disks

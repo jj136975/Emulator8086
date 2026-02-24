@@ -17,10 +17,12 @@ int1a_handler:
     push ds
     mov ax, 0x0040
     mov ds, ax
-    mov cx, [BDA_TIMER_HIGH]
+    cli
     mov dx, [BDA_TIMER_LOW]
+    mov cx, [BDA_TIMER_HIGH]
     mov al, [BDA_TIMER_OFLOW]
     mov byte [BDA_TIMER_OFLOW], 0
+    sti
     pop ds
     iret
 

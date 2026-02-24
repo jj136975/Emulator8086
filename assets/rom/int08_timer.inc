@@ -38,12 +38,13 @@ int08_handler:
     mov byte [BDA_MOTOR_STATUS], 0
 .no_motor:
 
+    ; Send EOI to PIC (before INT 1Ch so other IRQs aren't blocked)
+    mov al, 0x20
+    out 0x20, al
+
     ; Call user timer hook (INT 1Ch)
     int 0x1C
 
-    ; Send EOI to PIC
-    mov al, 0x20
-    out 0x20, al
     pop ax
     pop ds
     iret
