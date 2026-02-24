@@ -19,13 +19,6 @@ pub enum EmulatorEvent {
     Quit,
 }
 
-/// Returns true if the given scancode is for a modifier key (shift, ctrl, alt,
-/// caps lock, num lock, scroll lock). These keys should NOT have automatic
-/// break codes sent because the BIOS expects them to be held.
-fn is_modifier_scancode(sc: u8) -> bool {
-    matches!(sc, 0x1D | 0x2A | 0x36 | 0x38 | 0x3A | 0x45 | 0x46)
-}
-
 /// IBM PC/XT 8255 PPI keyboard controller.
 ///
 /// Models the 8255 Programmable Peripheral Interface as used in the original
@@ -69,56 +62,78 @@ impl KeyboardController {
         let (tx, rx) = mpsc::channel();
 
         thread::spawn(move || {
+            // Track modifier state so we can sync from crossterm's key.modifiers
+            // on every press event. This ensures modifiers are released even when
+            // the terminal doesn't report KeyEventKind::Release events.
+            let mut active_shift = false;
+            let mut active_ctrl = false;
+            let mut active_alt = false;
+
             loop {
                 if let Ok(Event::Key(key)) = event::read() {
-                    if key.kind == event::KeyEventKind::Press {
-                        // F12: enter CLI
-                        if key.code == KeyCode::F(12) {
-                            let _ = tx.send(EmulatorEvent::EnterCLI);
-                            continue;
-                        }
+                    if key.kind != event::KeyEventKind::Press {
+                        continue;
+                    }
 
-                        // F11: dump VGA
-                        if key.code == KeyCode::F(11) {
-                            let _ = tx.send(EmulatorEvent::DumpVga);
-                            continue;
-                        }
+                    // F12: enter CLI
+                    if key.code == KeyCode::F(12) {
+                        let _ = tx.send(EmulatorEvent::EnterCLI);
+                        continue;
+                    }
 
-                        // Ctrl+C: quit
-                        if key.modifiers.contains(KeyModifiers::CONTROL)
-                            && key.code == KeyCode::Char('c')
-                        {
-                            let _ = tx.send(EmulatorEvent::Quit);
-                            break;
-                        }
+                    // F11: dump VGA
+                    if key.code == KeyCode::F(11) {
+                        let _ = tx.send(EmulatorEvent::DumpVga);
+                        continue;
+                    }
 
-                        if let Some(scancode) = key_to_scancode(&key) {
-                            // Send make code
-                            let _ = tx.send(EmulatorEvent::Scancode(scancode));
+                    // Ctrl+C: quit
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
+                        let _ = tx.send(EmulatorEvent::Quit);
+                        break;
+                    }
 
-                            // For non-modifier keys, also send break code
-                            // immediately. Terminals generally don't reliably
-                            // report key release events, so we simulate a
-                            // quick press-and-release for regular keys. Modifier
-                            // keys (shift, ctrl, alt, caps/num/scroll lock) only
-                            // get the make code — the BIOS sets flags on make and
-                            // clears them on break, and we never send break for
-                            // modifiers to keep them "held".
-                            if !is_modifier_scancode(scancode) {
-                                let _ =
-                                    tx.send(EmulatorEvent::ScanRelease(scancode | 0x80));
-                            }
-                        }
-                    } else if key.kind == event::KeyEventKind::Release {
-                        // If the terminal supports release events, send break
-                        // codes for modifier keys here. Non-modifiers already
-                        // had their break code sent above on press.
-                        if let Some(scancode) = key_to_scancode(&key) {
-                            if is_modifier_scancode(scancode) {
-                                let _ =
-                                    tx.send(EmulatorEvent::ScanRelease(scancode | 0x80));
-                            }
-                        }
+                    // Sync modifier state from crossterm's key.modifiers.
+                    // Send make/break codes to match the actual modifier state.
+                    let want_shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                    if want_shift && !active_shift {
+                        let _ = tx.send(EmulatorEvent::Scancode(0x2A));
+                        active_shift = true;
+                    } else if !want_shift && active_shift {
+                        let _ = tx.send(EmulatorEvent::ScanRelease(0xAA));
+                        active_shift = false;
+                    }
+
+                    let want_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    if want_ctrl && !active_ctrl {
+                        let _ = tx.send(EmulatorEvent::Scancode(0x1D));
+                        active_ctrl = true;
+                    } else if !want_ctrl && active_ctrl {
+                        let _ = tx.send(EmulatorEvent::ScanRelease(0x9D));
+                        active_ctrl = false;
+                    }
+
+                    let want_alt = key.modifiers.contains(KeyModifiers::ALT);
+                    if want_alt && !active_alt {
+                        let _ = tx.send(EmulatorEvent::Scancode(0x38));
+                        active_alt = true;
+                    } else if !want_alt && active_alt {
+                        let _ = tx.send(EmulatorEvent::ScanRelease(0xB8));
+                        active_alt = false;
+                    }
+
+                    // Standalone modifier key events are fully handled by sync above
+                    if matches!(key.code, KeyCode::Modifier(_)) {
+                        continue;
+                    }
+
+                    if let Some(scancode) = key_to_scancode(&key) {
+                        let _ = tx.send(EmulatorEvent::Scancode(scancode));
+                        // Immediate break for all non-modifier keys (including
+                        // toggle keys like CapsLock — BIOS toggles on make)
+                        let _ = tx.send(EmulatorEvent::ScanRelease(scancode | 0x80));
                     }
                 }
             }
