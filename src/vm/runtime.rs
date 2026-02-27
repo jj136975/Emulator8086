@@ -6,7 +6,7 @@ use crate::io::fdc::FdcStub;
 use crate::io::hdc::HdcStub;
 use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
-use crate::io::vga::VgaTextMode;
+use crate::io::vga::VgaDevice;
 use crate::vm::cli::enter_monitor;
 use crate::vm::cpu::{Cpu, CpuType};
 use crate::vm::instructions::process;
@@ -115,8 +115,11 @@ pub struct Runtime {
     io_bus: IoBus,
     pub disks: Rc<RefCell<DiskController>>,
     keyboard: Option<Rc<RefCell<KeyboardController>>>,
-    vga: Option<Rc<RefCell<VgaTextMode>>>,
+    pub vga: Option<Rc<RefCell<VgaDevice>>>,
     pit: Rc<RefCell<Pit>>,
+
+    // Timing
+    last_pit_tick: Instant,
 }
 
 impl Runtime {
@@ -154,6 +157,7 @@ impl Runtime {
             keyboard: None,
             vga: None,
             pit: Rc::new(RefCell::new(Pit::new())),
+            last_pit_tick: Instant::now(),
         }
     }
 
@@ -206,7 +210,7 @@ impl Runtime {
         // Create I/O bus and register devices
         let mut io_bus = IoBus::new();
         let keyboard = Rc::new(RefCell::new(KeyboardController::new()));
-        let vga = Rc::new(RefCell::new(VgaTextMode::new()));
+        let vga = Rc::new(RefCell::new(VgaDevice::new()));
         let disk_ctrl = Rc::new(RefCell::new(disk_ctrl));
         let pit = Rc::new(RefCell::new(Pit::new()));
 
@@ -220,7 +224,7 @@ impl Runtime {
         io_bus.register(0xB0, 0xB0, Box::new(Rc::clone(&disk_ctrl)));
         io_bus.register(0xE9, 0xE9, Box::new(DebugConsole));
         io_bus.register(0x320, 0x323, Box::new(HdcStub::new()));
-        io_bus.register(0x3D0, 0x3DA, Box::new(Rc::clone(&vga)));
+        io_bus.register(0x3C0, 0x3DA, Box::new(Rc::clone(&vga)));
         io_bus.register(0x3F0, 0x3F7, Box::new(FdcStub::new()));
 
         let mut vm = Self {
@@ -251,6 +255,7 @@ impl Runtime {
             keyboard: Some(keyboard),
             vga: Some(vga),
             pit,
+            last_pit_tick: Instant::now(),
         };
 
         vm.cpu.set_flag(Interrupt);
@@ -346,23 +351,17 @@ impl Runtime {
         self.cpu.memory.enable_rom_protection();
     }
 
-    pub fn run(&mut self) {
-        debug!(
-            "Starting emulator with boot order: {:02X?}",
-            self.boot_order
-        );
-        if self.trace {
-            debug!("Tracing Enabled");
-        }
-
-        let mut last_pit_tick = Instant::now();
+    /// Execute one batch of CPU instructions, tick PIT, poll keyboard, and
+    /// handle interrupts. Returns `false` when the emulator should stop.
+    /// Called from the terminal `run()` loop and the GUI event loop.
+    pub fn step_frame(&mut self) -> bool {
         const PIT_CLOCK_HZ: f64 = 1_193_182.0;
 
-        let _ = crossterm::terminal::enable_raw_mode();
-        let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
-        let _ = std::io::stdout().flush();
+        for _ in 0..RENDER_INTERVAL {
+            if !self.running {
+                return false;
+            }
 
-        while self.running {
             if self.trace {
                 debug!("{:#?}", self);
             }
@@ -373,11 +372,12 @@ impl Runtime {
                 self.instruction_count += 1;
             }
 
+            // PIT timing
             let now = Instant::now();
-            let elapsed = now.duration_since(last_pit_tick).as_secs_f64();
+            let elapsed = now.duration_since(self.last_pit_tick).as_secs_f64();
             let pit_ticks = ((elapsed * PIT_CLOCK_HZ) as u64).min(65535) as u16;
             if pit_ticks > 0 {
-                last_pit_tick = now;
+                self.last_pit_tick = now;
                 let pit_result = self.pit.borrow_mut().tick(pit_ticks);
                 if pit_result.ch0_rising_edge {
                     self.cpu.pic.request_interrupt(0);
@@ -387,44 +387,72 @@ impl Runtime {
                 }
             }
 
-            if self.instruction_count % RENDER_INTERVAL == 0 || self.cpu.halted {
-                if let Some(vga) = &self.vga {
-                    let mut vga = vga.borrow_mut();
-                    vga.tick(RENDER_INTERVAL);
-                    vga.render(&self.cpu.memory);
-                }
-            }
-
-            // Poll keyboard every 1000 instructions
+            // Keyboard polling
             if self.instruction_count % 1000 == 0 || self.cpu.halted {
                 if let Some(kb) = &self.keyboard {
                     match kb.borrow_mut().poll(&mut self.cpu.pic) {
-                        Some(crate::io::keyboard::EmulatorEvent::Quit) => self.running = false, // Ctrl+C
+                        Some(crate::io::keyboard::EmulatorEvent::Quit) => {
+                            self.running = false;
+                            return false;
+                        }
                         Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
                             enter_monitor(&mut *self.disks.borrow_mut());
                             if let Some(vga) = &self.vga {
                                 vga.borrow_mut().queue_full_redraw();
                             }
-                            last_pit_tick = Instant::now();
+                            self.last_pit_tick = Instant::now();
                         }
                         Some(crate::io::keyboard::EmulatorEvent::DumpVga) => {
                             if let Some(vga) = &self.vga {
                                 vga.borrow().dump(&self.cpu.memory, "vga_dump.txt");
                             }
                         }
-                        _ => { /* no event */ }
+                        _ => {}
                     }
                 }
             }
 
+            // Interrupt handling
             if self.interrupt_inhibit || self.prefix.is_some() {
-                self.interrupt_inhibit = false; // one-shot, cleared after next instruction
+                self.interrupt_inhibit = false;
             } else if self.cpu.check_flag(Interrupt) && self.cpu.pic.has_interrupt() {
                 let vector = self.cpu.pic.acknowledge();
                 self.cpu.halted = false;
                 self.handle_interrupt(vector);
             } else if self.cpu.halted {
-                // If halted and no interrupts, just wait (don't burn CPU cycles)
+                break; // exit batch early when halted
+            }
+        }
+
+        self.running
+    }
+
+    /// Terminal-mode main loop. Uses crossterm for display and keyboard.
+    pub fn run(&mut self) {
+        debug!(
+            "Starting emulator with boot order: {:02X?}",
+            self.boot_order
+        );
+        if self.trace {
+            debug!("Tracing Enabled");
+        }
+
+        let _ = crossterm::terminal::enable_raw_mode();
+        let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
+        let _ = std::io::stdout().flush();
+
+        while self.running {
+            self.step_frame();
+
+            // Render VGA
+            if let Some(vga) = &self.vga {
+                let mut vga = vga.borrow_mut();
+                vga.tick(RENDER_INTERVAL);
+                vga.render(&self.cpu.memory);
+            }
+
+            // Sleep when halted to avoid busy-waiting
+            if self.cpu.halted {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
@@ -453,6 +481,20 @@ impl Runtime {
 
     pub fn port_out_word(&mut self, port: u16, value: u16) {
         self.io_bus.port_out_word(port, value, &mut self.cpu);
+    }
+
+    /// Get a reference to the PIT (for keyboard controller setup).
+    #[cfg(feature = "gui")]
+    pub fn pit_ref(&self) -> &Rc<RefCell<crate::io::pit::Pit>> {
+        &self.pit
+    }
+
+    /// Replace the keyboard controller (used by GUI mode to swap in a
+    /// winit-driven controller). Also re-registers ports 0x60-0x63.
+    #[cfg(feature = "gui")]
+    pub fn replace_keyboard(&mut self, kb: Rc<RefCell<KeyboardController>>) {
+        self.io_bus.replace(0x60, 0x63, Box::new(Rc::clone(&kb)));
+        self.keyboard = Some(kb);
     }
 
     pub(crate) fn handle_interrupt(&mut self, vector: u8) {

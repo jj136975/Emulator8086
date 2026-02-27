@@ -39,6 +39,12 @@ int10_handler:
     push di
     push cx
     push ax
+    push dx
+
+    cmp al, 0x13
+    je .set_mode_13h
+
+    ; --- Text modes (0x00-0x03) ---
     mov bx, 0x0040
     mov ds, bx
     mov byte [BDA_VIDEO_MODE], al
@@ -57,6 +63,64 @@ int10_handler:
     mov al, 0x29
     mov dx, 0x03D8
     out dx, al
+    ; Reset GC mode register to text mode (clears 256-color bit)
+    mov dx, 0x03CE
+    mov al, 0x05
+    out dx, al
+    inc dx
+    mov al, 0x00
+    out dx, al
+    jmp .set_mode_done
+
+.set_mode_13h:
+    ; --- Mode 13h: 320x200x256 (chain-4, linear at A000:0000) ---
+    mov bx, 0x0040
+    mov ds, bx
+    mov byte [BDA_VIDEO_MODE], 0x13
+    mov word [BDA_VIDEO_COLS], 40
+    mov word [BDA_CURSOR_POS], 0x0000
+    mov byte [BDA_ACTIVE_PAGE], 0
+
+    ; Clear graphics VRAM (A000:0000, 64000 bytes = 32000 words)
+    mov bx, 0xA000
+    mov es, bx
+    xor di, di
+    mov cx, 32000
+    xor ax, ax
+    cld
+    rep stosw
+
+    ; Miscellaneous Output Register: color mode, 25.175MHz clock
+    mov dx, 0x03C2
+    mov al, 0x63
+    out dx, al
+
+    ; Sequencer: Memory Mode = chain-4
+    mov dx, 0x03C4
+    mov al, 0x04
+    out dx, al
+    inc dx
+    mov al, 0x0E
+    out dx, al
+
+    ; Graphics Controller: Mode register = 256-color shift
+    mov dx, 0x03CE
+    mov al, 0x05
+    out dx, al
+    inc dx
+    mov al, 0x40
+    out dx, al
+
+    ; Graphics Controller: Miscellaneous register = A0000, graphics mode
+    dec dx
+    mov al, 0x06
+    out dx, al
+    inc dx
+    mov al, 0x05
+    out dx, al
+
+.set_mode_done:
+    pop dx
     pop ax
     pop cx
     pop di

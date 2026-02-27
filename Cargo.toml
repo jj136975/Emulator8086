@@ -5,6 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+gui = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck"]
+
 [dependencies]
 clap = "4.5.58"
 clap_derive = "4.5.55"
@@ -15,6 +19,12 @@ num-derive = "0.4.2"
 num-traits = "0.2.19"
 crossterm = "0.29.0"
 fatfs = "0.3"
+
+# GUI-only dependencies
+wgpu = { version = "24", optional = true }
+winit = { version = "0.30", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

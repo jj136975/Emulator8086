@@ -58,6 +58,25 @@ pub struct KeyboardController {
 }
 
 impl KeyboardController {
+    /// Create with an externally-provided event channel.
+    /// The caller is responsible for sending `EmulatorEvent` values.
+    /// Used by the GUI backend where winit provides keyboard events.
+    pub fn with_receiver(rx: mpsc::Receiver<EmulatorEvent>) -> Self {
+        Self {
+            kb_byte: 0,
+            kb_enabled: true,
+            ksr_cleared: true,
+            kb_clear_pending: false,
+            port_b: 0,
+            rx,
+            pending: VecDeque::new(),
+            pit: None,
+            kb_clock_low: false,
+            kb_reset_pending: false,
+        }
+    }
+
+    /// Create with built-in crossterm keyboard thread (terminal mode).
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
 
@@ -139,18 +158,7 @@ impl KeyboardController {
             }
         });
 
-        Self {
-            kb_byte: 0,
-            kb_enabled: true,
-            ksr_cleared: true,
-            kb_clear_pending: false,
-            port_b: 0,
-            rx,
-            pending: VecDeque::new(),
-            pit: None,
-            kb_clock_low: false,
-            kb_reset_pending: false,
-        }
+        Self::with_receiver(rx)
     }
 
     pub fn set_pit(&mut self, pit: Rc<RefCell<Pit>>) {

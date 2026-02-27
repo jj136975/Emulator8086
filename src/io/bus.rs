@@ -81,6 +81,18 @@ impl IoBus {
         self.last_port = end;
     }
 
+    /// Replace the device for an existing port range mapping.
+    pub fn replace(&mut self, start: u16, end: u16, device: Box<dyn IoDevice>) {
+        for mapping in &self.mappings {
+            if mapping.start == start && mapping.end == end {
+                let idx = mapping.device_idx;
+                self.devices[idx] = device;
+                return;
+            }
+        }
+        panic!("No existing mapping for port range {:04X}-{:04X}", start, end);
+    }
+
     pub fn port_in_byte(&mut self, port: u16, cpu: &mut Cpu) -> u8 {
         if port < self.first_port || port > self.last_port {
             return 0xFF; // Unmapped ports read as 0xFF

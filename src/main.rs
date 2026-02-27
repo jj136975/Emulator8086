@@ -139,5 +139,13 @@ fn main() {
 
     let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace);
     runtime.load_rom(args.rom);
-    runtime.run();
+
+    #[cfg(feature = "gui")]
+    {
+        runtime.run_gui();
+    }
+    #[cfg(not(feature = "gui"))]
+    {
+        runtime.run();
+    }
 }
