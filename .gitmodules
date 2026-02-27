@@ -1,0 +1,3 @@
+[submodule "8086"]
+	path = 8086
+	url = https://github.com/SingleStepTests/8086.git
