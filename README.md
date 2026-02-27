@@ -2,6 +2,17 @@
 
 A bare-metal Intel 8086 emulator written in Rust that boots real operating systems. It runs MS-DOS, plays DOOM, and renders VGA graphics — all on an emulated 4.77 MHz 8086 with a custom BIOS written in x86 assembly.
 
+## Features
+
+- Boots MS-DOS 6.22, runs real DOS programs and games
+- Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
+- Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
+- VGA text mode (80x25) with ANSI terminal rendering
+- VGA Mode 13h (320x200, 256 colors) with wgpu hardware-accelerated rendering
+- Floppy and hard disk support with file-backed or in-memory images
+- F12 menu for swapping floppy disks at runtime
+- Hardware emulation: 8259 PIC, 8253 PIT, 8042 keyboard, VGA, DMA, FDC
+
 ## Screenshots
 
 ### MS-DOS 6.22
@@ -24,17 +35,6 @@ Copy files to FAT16 drives with the F12 disk menu:
 
 Running DOOM in GUI mode with hardware-accelerated Mode 13h graphics:
 ![DOOM running on the emulator](assets/gif/msdos_doom.gif)
-
-## Features
-
-- Boots MS-DOS 6.22, runs real DOS programs and games
-- Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
-- Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
-- VGA text mode (80x25) with ANSI terminal rendering
-- VGA Mode 13h (320x200, 256 colors) with wgpu hardware-accelerated rendering
-- Floppy and hard disk support with file-backed or in-memory images
-- F12 menu for swapping floppy disks at runtime
-- Hardware emulation: 8259 PIC, 8253 PIT, 8042 keyboard, VGA, DMA, FDC
 
 ## Installation
 
