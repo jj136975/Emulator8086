@@ -6,21 +6,24 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 
 ### MS-DOS 6.22
 
-Terminal mode (ANSI rendering) and GUI mode (wgpu):
+Terminal mode (ANSI rendering):
+![MS-DOS running in terminal mode](assets/gif/msdos_edit.gif)
 
-![MS-DOS running in terminal and GUI mode](assets/msdos.gif)
+GUI mode (wgpu + winit window):
+![MS-DOS running in GUI mode](assets/gif/msdos_edit_gui.gif)
 
-### MS-DOS Installation
+### F12 Disk Menu (terminal mode)
 
-Installing from floppy images with the F12 disk-swap menu:
+Installing MS-DOS 6.22 from floppy images with the F12 disk menu:
+![MS-DOS installation with floppy commands](assets/gif/msdos_install.gif)
 
-![MS-DOS installation with floppy swap](assets/msdos_install.gif)
+Copy files to FAT16 drives with the F12 disk menu:
+![Copy files to MS-DOS](assets/gif/msdos_put_files.gif)
 
 ### DOOM (8088 port)
 
-Copying DOOM to the hard drive and running it — in text mode and Mode 13h:
-
-![DOOM running on the emulator](assets/doom.gif)
+Running DOOM in GUI mode with hardware-accelerated Mode 13h graphics:
+![DOOM running on the emulator](assets/gif/msdos_doom.gif)
 
 ## Features
 
