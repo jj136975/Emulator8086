@@ -3,6 +3,23 @@ use crate::utils::number::SpecialOps;
 use crate::vm::runtime::CpuFlag::*;
 use crate::vm::runtime::{Prefix, Runtime};
 
+/// Rewind PC to the start of the current REP-string instruction (the first
+/// prefix byte) and clear prefix state so the main loop can service a
+/// pending interrupt. After IRET the CPU re-enters through the REP prefix
+/// with CX at its decremented value, resuming the string op.
+#[inline]
+fn break_for_interrupt(vm: &mut Runtime) {
+    vm.cpu.registers.pc.set(vm.cpu.registers.op_start_pc);
+    vm.prefix = None;
+    vm.segment_override = None;
+}
+
+/// Check whether we should suspend a REP-string op for a pending interrupt.
+#[inline]
+fn interrupt_pending(vm: &Runtime) -> bool {
+    vm.cpu.check_flag(Interrupt) && vm.cpu.pic.has_interrupt()
+}
+
 pub(super) fn movs(vm: &mut Runtime, is_word: bool) {
     let rep = matches!(&vm.prefix, Some(Prefix::Rep(_)));
     let step: u16 = if is_word { 2 } else { 1 };
@@ -34,6 +51,12 @@ pub(super) fn movs(vm: &mut Runtime, is_word: bool) {
             break;
         }
         vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
+
+        // Yield mid-REP so a pending, unmasked IRQ can be serviced.
+        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
+            break_for_interrupt(vm);
+            return;
+        }
     }
     if rep {
         vm.prefix = None;
@@ -84,6 +107,10 @@ pub(super) fn cmps(vm: &mut Runtime, is_word: bool) {
         if vm.cpu.check_flag(Zero) != rep.unwrap() {
             break;
         }
+        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
+            break_for_interrupt(vm);
+            return;
+        }
     }
     if rep.is_some() {
         vm.prefix = None;
@@ -119,6 +146,10 @@ pub(super) fn stos(vm: &mut Runtime, is_word: bool) {
             break;
         }
         vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
+        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
+            break_for_interrupt(vm);
+            return;
+        }
     }
     if rep {
         vm.prefix = None;
@@ -154,6 +185,10 @@ pub(super) fn lods(vm: &mut Runtime, is_word: bool) {
             break;
         }
         vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
+        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
+            break_for_interrupt(vm);
+            return;
+        }
     }
     if rep {
         vm.prefix = None;
@@ -191,6 +226,10 @@ pub(super) fn ins(vm: &mut Runtime, is_word: bool) {
             break;
         }
         vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
+        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
+            break_for_interrupt(vm);
+            return;
+        }
     }
     if rep {
         vm.prefix = None;
@@ -227,6 +266,10 @@ pub(super) fn outs(vm: &mut Runtime, is_word: bool) {
             break;
         }
         vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
+        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
+            break_for_interrupt(vm);
+            return;
+        }
     }
     if rep {
         vm.prefix = None;
@@ -272,6 +315,10 @@ pub(super) fn scas(vm: &mut Runtime, is_word: bool) {
         vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
         if vm.cpu.check_flag(Zero) != rep.unwrap() {
             break;
+        }
+        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
+            break_for_interrupt(vm);
+            return;
         }
     }
     if rep.is_some() {

@@ -200,6 +200,10 @@ pub struct Registers {
     pub ss: Segment,
     pub pc: Register,
     pub op_pc: u16,
+    /// IP of the first byte of the current instruction sequence, including
+    /// any prefix bytes. Used by interruptible REP-string ops to rewind the
+    /// PC when breaking out for a pending IRQ.
+    pub op_start_pc: u16,
 }
 
 impl Registers {
@@ -223,6 +227,7 @@ impl Registers {
             ss: Segment::new(0x0000, memory),
             pc: Register::default(),          // IP = 0x0000
             op_pc: 0,
+            op_start_pc: 0,
         }
     }
 

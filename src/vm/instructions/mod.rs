@@ -62,6 +62,12 @@ fn update_logical_flags_byte(vm: &mut Runtime, res: u8) {
 
 pub fn process(vm: &mut Runtime) {
     vm.cpu.registers.op_pc = vm.cpu.registers.pc.word();
+    // Track the start of the full instruction (first prefix byte). When
+    // no prefix is carried over from the previous `process` call, this IS
+    // a new instruction and its start is the current PC.
+    if !matches!(vm.prefix, Some(Queued(_))) {
+        vm.cpu.registers.op_start_pc = vm.cpu.registers.pc.word();
+    }
 
     let opcode = vm.cpu.fetch_byte();
     let is_word: bool = opcode & WORD_MASK != 0;

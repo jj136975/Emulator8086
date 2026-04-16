@@ -646,15 +646,17 @@ impl DiskController {
 
             // AH=02: Read sectors (with multi-track wrapping)
             0x02 => {
-                let count = cpu.registers.ax.low();
+                // AL=0 is the IBM PC BIOS convention for "transfer 256 sectors".
+                let raw_count = cpu.registers.ax.low();
+                let count: u16 = if raw_count == 0 { 256 } else { raw_count as u16 };
                 let mut cur_c = cpu.registers.cx.high() as u16
                     | (((cpu.registers.cx.low() as u16) & 0xC0) << 2);
                 let mut cur_s = cpu.registers.cx.low() & 0x3F;
                 let mut cur_h = cpu.registers.dx.high();
 
-                // Fix 1: Validate sector is not 0 (CHS sectors are 1-based)
+                // CHS sector is 1-based; 0 is invalid.
                 if cur_s == 0 {
-                    cpu.registers.ax.set_high(0x04); // sector not found
+                    cpu.registers.ax.set_high(0x04);
                     cpu.set_flag(Carry);
                     Self::write_disk_status(cpu, drive, 0x04);
                     return;
@@ -670,16 +672,25 @@ impl DiskController {
                     }
                 };
 
+                // Sector number must fit within the disk's track geometry.
+                if cur_s > disk.sectors_per_track {
+                    cpu.registers.ax.set_high(0x04);
+                    cpu.set_flag(Carry);
+                    Self::write_disk_status(cpu, drive, 0x04);
+                    return;
+                }
+
                 let es = cpu.registers.es.reg().word() as usize;
                 let bx = cpu.registers.bx.word() as usize;
                 let mut dest = ((es << 4) + bx) & 0xFFFFF;
-                let mut remaining = count;
-                let total_requested = remaining; // Fix 5: save for partial count
+                let mut remaining: u16 = count;
+                let total_requested = remaining;
                 let mut error = false;
 
                 while remaining > 0 {
-                    let on_track = (disk.sectors_per_track - cur_s + 1) as u8;
-                    let batch = remaining.min(on_track);
+                    let on_track = (disk.sectors_per_track - cur_s + 1) as u16;
+                    // read_sectors takes u8; cap per-call batch at 255.
+                    let batch = remaining.min(on_track).min(255) as u8;
 
                     match disk.read_sectors(cur_c, cur_h, cur_s, batch) {
                         Ok(buf) => {
@@ -691,7 +702,6 @@ impl DiskController {
                         Err(e) => {
                             debug!("Disk read error: {}", e);
                             cpu.registers.ax.set_high(0x04);
-                            // Fix 5: Report partial transfer count on error
                             cpu.registers.ax.set_low((total_requested - remaining) as u8);
                             cpu.set_flag(Carry);
                             Self::write_disk_status(cpu, drive, 0x04);
@@ -700,7 +710,7 @@ impl DiskController {
                         }
                     }
 
-                    remaining -= batch;
+                    remaining -= batch as u16;
                     if remaining > 0 {
                         cur_s = 1;
                         cur_h += 1;
@@ -713,7 +723,8 @@ impl DiskController {
 
                 if !error {
                     cpu.registers.ax.set_high(0x00);
-                    cpu.registers.ax.set_low(count);
+                    // AL reports count transferred; 256 wraps to 0 per BIOS convention.
+                    cpu.registers.ax.set_low(count as u8);
                     cpu.unset_flag(Carry);
                     Self::write_disk_status(cpu, drive, 0x00);
                 }
@@ -721,15 +732,16 @@ impl DiskController {
 
             // AH=03: Write sectors (with multi-track wrapping)
             0x03 => {
-                let count = cpu.registers.ax.low();
+                // AL=0 is the IBM PC BIOS convention for "transfer 256 sectors".
+                let raw_count = cpu.registers.ax.low();
+                let count: u16 = if raw_count == 0 { 256 } else { raw_count as u16 };
                 let mut cur_c = cpu.registers.cx.high() as u16
                     | (((cpu.registers.cx.low() as u16) & 0xC0) << 2);
                 let mut cur_s = cpu.registers.cx.low() & 0x3F;
                 let mut cur_h = cpu.registers.dx.high();
 
-                // Fix 1: Validate sector is not 0 (CHS sectors are 1-based)
                 if cur_s == 0 {
-                    cpu.registers.ax.set_high(0x04); // sector not found
+                    cpu.registers.ax.set_high(0x04);
                     cpu.set_flag(Carry);
                     Self::write_disk_status(cpu, drive, 0x04);
                     return;
@@ -749,13 +761,20 @@ impl DiskController {
                     }
                 };
 
-                let mut remaining = count;
-                let total_requested = remaining; // Fix 5: save for partial count
+                if cur_s > disk.sectors_per_track {
+                    cpu.registers.ax.set_high(0x04);
+                    cpu.set_flag(Carry);
+                    Self::write_disk_status(cpu, drive, 0x04);
+                    return;
+                }
+
+                let mut remaining: u16 = count;
+                let total_requested = remaining;
                 let mut error = false;
 
                 while remaining > 0 {
-                    let on_track = (disk.sectors_per_track - cur_s + 1) as u8;
-                    let batch = remaining.min(on_track);
+                    let on_track = (disk.sectors_per_track - cur_s + 1) as u16;
+                    let batch = remaining.min(on_track).min(255) as u8;
                     let byte_count = batch as usize * SECTOR_SIZE;
 
                     let mut buf = vec![0u8; byte_count];
@@ -769,7 +788,6 @@ impl DiskController {
                         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                             debug!("Disk write error: {}", e);
                             cpu.registers.ax.set_high(0x03);
-                            // Fix 5: Report partial transfer count on error
                             cpu.registers.ax.set_low((total_requested - remaining) as u8);
                             cpu.set_flag(Carry);
                             Self::write_disk_status(cpu, drive, 0x03);
@@ -779,7 +797,6 @@ impl DiskController {
                         Err(e) => {
                             debug!("Disk write error: {}", e);
                             cpu.registers.ax.set_high(0x04);
-                            // Fix 5: Report partial transfer count on error
                             cpu.registers.ax.set_low((total_requested - remaining) as u8);
                             cpu.set_flag(Carry);
                             Self::write_disk_status(cpu, drive, 0x04);
@@ -788,7 +805,7 @@ impl DiskController {
                         }
                     }
 
-                    remaining -= batch;
+                    remaining -= batch as u16;
                     if remaining > 0 {
                         cur_s = 1;
                         cur_h += 1;
@@ -801,7 +818,8 @@ impl DiskController {
 
                 if !error {
                     cpu.registers.ax.set_high(0x00);
-                    cpu.registers.ax.set_low(count);
+                    // AL reports count transferred; 256 wraps to 0 per BIOS convention.
+                    cpu.registers.ax.set_low(count as u8);
                     cpu.unset_flag(Carry);
                     Self::write_disk_status(cpu, drive, 0x00);
                 }
@@ -1164,5 +1182,187 @@ impl IoDevice for DiskController {
 
     fn name(&self) -> &'static str {
         "BIOS Disk Trap"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inspection tests — demonstrate real bugs in the disk I/O subsystem.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+    use crate::vm::runtime::{CpuFlag, Runtime};
+
+    /// BUG: `handle_trap` AH=02 at disk.rs:649,676 reads AL directly as the
+    /// sector count. Real IBM PC BIOS interprets AL=0 as "transfer 256
+    /// sectors". Consequence: programs that request a 256-sector batch
+    /// (common in DOS utilities and diskcopy) silently transfer zero
+    /// sectors and report success, causing silent data loss.
+    #[test]
+    fn int13h_al_zero_should_mean_256_sectors() {
+        let mut rt = Runtime::new_test();
+
+        // Pick a disk big enough for 256 sectors at CHS(0,0,1).
+        // 10 MB hard disk: geometry is (cyl, 16, 63) — far more than 256 sectors.
+        let mut img = DiskImage::new_in_memory_hard_disk(10);
+
+        // Seed the first 256 sectors with a per-sector marker byte so we
+        // can tell a real read from a silent no-op.
+        for sector in 0..256u16 {
+            let heads = img.heads as u16;
+            let spt = img.sectors_per_track as u16;
+            let c = sector / (heads * spt);
+            let h = ((sector / spt) % heads) as u8;
+            let s = ((sector % spt) + 1) as u8;
+            let marker = sector as u8;
+            let data: Vec<u8> = vec![marker; 512];
+            img.write_sectors(c, h, s, 1, &data).expect("seed write");
+        }
+
+        let mut disk_ctrl = DiskController::new();
+        disk_ctrl.attach(0x80, img);
+
+        // INT 13h AH=02, AL=0 (=>256), CHS=(0,0,1), ES:BX=0x1000:0000, DL=0x80
+        rt.cpu.registers.ax.set_high(0x02);
+        rt.cpu.registers.ax.set_low(0x00);
+        rt.cpu.registers.cx.set_high(0x00);
+        rt.cpu.registers.cx.set_low(0x01);
+        rt.cpu.registers.dx.set_high(0x00);
+        rt.cpu.registers.dx.set_low(0x80);
+        rt.cpu.registers.es.reg_mut().set(0x1000);
+        rt.cpu.registers.bx.set(0x0000);
+
+        disk_ctrl.port_out_byte(0xB0, 0x00, &mut rt.cpu);
+
+        // Real BIOS would have placed 256 * 512 = 131_072 bytes at 0x10000
+        // with markers 0, 1, 2, ..., 255. Check the first byte of sector 0
+        // and the first byte of sector 255.
+        let sector_0_byte = rt.cpu.memory.read_byte(0x10000);
+        let sector_255_byte = rt.cpu.memory.read_byte(0x10000 + 255 * 512);
+
+        assert_eq!(
+            sector_0_byte, 0,
+            "Sector 0 marker missing — AL=0 was treated as 0 sectors rather \
+             than 256"
+        );
+        assert_eq!(
+            sector_255_byte, 255,
+            "Sector 255 marker missing — AL=0 only transferred a partial \
+             range (or nothing)"
+        );
+    }
+
+    /// FINDING (Phase 4): AH=08 Get drive params CX encoding:
+    /// CH = cyl_low, CL bits 6-7 = cyl_hi, CL bits 0-5 = SPT, DH = max_head.
+    /// For a 1.44MB floppy: cylinders=80 (max_cyl=79), heads=2, SPT=18.
+    /// STATUS: PASSES → retracted as a bug. The encoding is correct.
+    #[test]
+    fn int13h_get_drive_params_floppy_returns_correct_geometry() {
+        let mut rt = Runtime::new_test();
+        let img = DiskImage::new_in_memory_sized(1_474_560, false);
+        let mut disk_ctrl = DiskController::new();
+        disk_ctrl.attach(0x00, img);
+
+        rt.cpu.registers.ax.set_high(0x08);
+        rt.cpu.registers.dx.set_low(0x00); // drive A
+        disk_ctrl.port_out_byte(0xB0, 0x00, &mut rt.cpu);
+
+        let ch = rt.cpu.registers.cx.high();
+        let cl = rt.cpu.registers.cx.low();
+        let dh = rt.cpu.registers.dx.high();
+
+        let max_cyl = (ch as u16) | (((cl as u16) & 0xC0) << 2);
+        let spt = cl & 0x3F;
+        assert_eq!(max_cyl, 79, "max_cyl for 80-cylinder floppy should be 79");
+        assert_eq!(spt, 18, "SPT=18 for 1.44M floppy");
+        assert_eq!(dh, 1, "max_head for 2-head floppy should be 1");
+        assert_eq!(
+            rt.cpu.registers.ax.high(),
+            0x00,
+            "AH=0 on success"
+        );
+    }
+
+    /// FINDING (Phase 4): Readonly disks must reject writes with AH=0x03
+    /// (write protected). The write_sectors path returns PermissionDenied,
+    /// which disk.rs:769-778 maps to 0x03. Verify round-trip.
+    /// STATUS: PASSES → retracted. The enforcement is correct.
+    #[test]
+    fn int13h_write_to_readonly_disk_returns_0x03() {
+        let mut rt = Runtime::new_test();
+        // 1.44 MB floppy, readonly
+        let img = DiskImage::new_in_memory_sized(1_474_560, true);
+        let mut disk_ctrl = DiskController::new();
+        disk_ctrl.attach(0x00, img);
+
+        // INT 13h AH=03 (write), AL=1, CHS=(0,0,1), drive=0
+        rt.cpu.registers.ax.set_high(0x03);
+        rt.cpu.registers.ax.set_low(0x01);
+        rt.cpu.registers.cx.set_high(0x00);
+        rt.cpu.registers.cx.set_low(0x01);
+        rt.cpu.registers.dx.set_high(0x00);
+        rt.cpu.registers.dx.set_low(0x00);
+        rt.cpu.registers.es.reg_mut().set(0x1000);
+        rt.cpu.registers.bx.set(0x0000);
+
+        disk_ctrl.port_out_byte(0xB0, 0x00, &mut rt.cpu);
+
+        assert!(
+            rt.cpu.check_flag(CpuFlag::Carry),
+            "CF should be set for write-protect error"
+        );
+        assert_eq!(
+            rt.cpu.registers.ax.high(),
+            0x03,
+            "AH should be 0x03 (write protected), got 0x{:02X}",
+            rt.cpu.registers.ax.high()
+        );
+    }
+
+    /// BUG: `handle_trap` at disk.rs:681 computes
+    ///     `on_track = (disk.sectors_per_track - cur_s + 1) as u8`
+    /// without checking `cur_s <= sectors_per_track`. CHS sector is a
+    /// 6-bit field (1..=63) but software can pass any value in that
+    /// range. A request for S=20 on a 1.44 MB floppy (SPT=18) causes a
+    /// u8 underflow: in debug builds this panics; in release builds it
+    /// wraps to 255 and the controller attempts a 255-sector read at an
+    /// invalid CHS. Expected behaviour: return AH=0x04 (sector not
+    /// found) with CF set.
+    #[test]
+    fn int13h_sector_above_spt_should_return_error_not_underflow() {
+        let mut rt = Runtime::new_test();
+
+        // 1.44 MB floppy: (80, 2, 18). SPT = 18.
+        let img = DiskImage::new_in_memory_sized(1_474_560, false);
+        let mut disk_ctrl = DiskController::new();
+        disk_ctrl.attach(0x00, img);
+
+        // INT 13h AH=02, AL=1, CHS=(0, 0, 20). S=20 > SPT=18 → should error.
+        rt.cpu.registers.ax.set_high(0x02);
+        rt.cpu.registers.ax.set_low(0x01);
+        rt.cpu.registers.cx.set_high(0x00);
+        rt.cpu.registers.cx.set_low(20); // S=20, cyl_hi=0
+        rt.cpu.registers.dx.set_high(0x00);
+        rt.cpu.registers.dx.set_low(0x00);
+        rt.cpu.registers.es.reg_mut().set(0x1000);
+        rt.cpu.registers.bx.set(0x0000);
+
+        // In debug builds this call panics on the `sectors_per_track - cur_s`
+        // u8 underflow. That panic IS the bug — the handler should return a
+        // clean 0x04 error instead.
+        disk_ctrl.port_out_byte(0xB0, 0x00, &mut rt.cpu);
+
+        assert!(
+            rt.cpu.check_flag(CpuFlag::Carry),
+            "Carry should be set on invalid sector — instead we survived \
+             the call (release mode) or panicked before getting here \
+             (debug mode)"
+        );
+        assert_eq!(
+            rt.cpu.registers.ax.high(),
+            0x04,
+            "AH should be 0x04 (sector not found); got 0x{:02X}",
+            rt.cpu.registers.ax.high()
+        );
     }
 }

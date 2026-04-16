@@ -42,6 +42,10 @@ int08_handler:
     mov al, 0x20
     out 0x20, al
 
+    ; Re-enable interrupts so the user timer hook can be pre-empted by
+    ; higher-priority IRQs (keyboard, etc.). Matches IBM PC BIOS behaviour.
+    sti
+
     ; Call user timer hook (INT 1Ch)
     int 0x1C
 

@@ -42,14 +42,21 @@ impl Memory {
 
     #[inline]
     pub fn ref_word(&mut self, address: usize) -> WordWrapper {
-        // NOTE: Does NOT wrap at 1MB boundary. Only use when address < 0xFFFFF.
-        // For wrapping access, use read_word/write_word instead.
         let addr = address & 0xFFFFF;
-        let slice: &mut [u8; 2] = {
-            let x = &mut self.mem[addr..=addr + 1];
-            x.try_into()
-                .unwrap_or_else(|_| panic!("Invalid Memory address: {}", addr))
-        };
+        if addr == 0xFFFFF {
+            // Word straddles the 1MB wrap: low byte at 0xFFFFF, high byte
+            // wraps to 0x00000. Route through boundary_buf so the caller
+            // gets a usable WordWrapper. Writes through the wrapper land
+            // in boundary_buf (consistent with Segment::ref_word at offset
+            // 0xFFFF) — callers needing write-through at the wrap must use
+            // byte-by-byte access via write_word.
+            self.boundary_buf[0] = self.mem[0xFFFFF];
+            self.boundary_buf[1] = self.mem[0x00000];
+            return WordWrapper::from_slice(&mut self.boundary_buf);
+        }
+        let slice: &mut [u8; 2] = (&mut self.mem[addr..=addr + 1])
+            .try_into()
+            .expect("slice length 2 by construction");
         WordWrapper::from_slice(slice)
     }
 
@@ -166,5 +173,95 @@ impl Segment {
     #[inline]
     pub fn reg_mut(&mut self) -> &mut Register {
         &mut self.offset
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inspection tests — Memory & Segment invariants flagged by the code review.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+
+    /// Regression: `ref_word(0xFFFFF)` must not panic. The word straddles
+    /// the 1MB wrap, so the low byte comes from 0xFFFFF and the high byte
+    /// wraps to 0x00000. The wrapper routes through `boundary_buf` so
+    /// reads are correct; writes to the wrap slot are dropped (documented).
+    #[test]
+    fn ref_word_at_last_physical_address_does_not_panic_and_wraps_read() {
+        let mut mem = Memory::new();
+        mem.write_byte_unchecked(0xFFFFF, 0x11);
+        mem.write_byte_unchecked(0x00000, 0x22);
+        let w = mem.ref_word(0xFFFFF);
+        assert_eq!(w.word(), 0x2211, "low from 0xFFFFF, high wraps to 0x00000");
+    }
+
+    /// FINDING (Phase 2): Segment::read_word at offset 0xFFFF must wrap
+    /// within the segment (low byte from offset 0xFFFF, high byte from 0x0000
+    /// of the SAME segment). Real 8086 does this.
+    /// STATUS: PASSES → retracted. `Segment::read_word` uses byte-by-byte
+    /// access with `address.wrapping_add(1)`.
+    #[test]
+    fn segment_read_word_wraps_within_segment_at_offset_ffff() {
+        let mut mem = Box::new(Memory::new());
+        // Pick segment 0x1000. Physical 0x10000..0x1FFFF.
+        // Write 0xAA at segment:0xFFFF (physical 0x1FFFF)
+        // Write 0xBB at segment:0x0000 (physical 0x10000)
+        Memory::copy_data(&mut mem, 0x1FFFF, &[0xAA]);
+        Memory::copy_data(&mut mem, 0x10000, &[0xBB]);
+        let mut seg = Segment::new(0x1000, &mut *mem as *mut Memory);
+        let word = seg.read_word(0xFFFF);
+        assert_eq!(
+            word, 0xBBAA,
+            "At offset 0xFFFF, low byte should come from segment:FFFF (0xAA) \
+             and high byte should wrap to segment:0000 (0xBB), giving 0xBBAA"
+        );
+    }
+
+    /// FINDING (Phase 2): Memory::read_word at physical 0xFFFFF must wrap
+    /// to read the high byte from physical 0. This is the real 8086 20-bit
+    /// address bus wrap (no A20 line).
+    /// STATUS: PASSES → retracted. `Memory::read_word` masks both addresses.
+    #[test]
+    fn memory_read_word_wraps_at_1mb_boundary() {
+        let mut mem = Memory::new();
+        mem.write_byte_unchecked(0xFFFFF, 0x11);
+        mem.write_byte_unchecked(0x00000, 0x22);
+        let word = mem.read_word(0xFFFFF);
+        assert_eq!(
+            word, 0x2211,
+            "At physical 0xFFFFF, low byte is 0x11, high byte wraps to 0x00000 (0x22)"
+        );
+    }
+
+    /// FINDING (Phase 2): ROM write protection must block writes above
+    /// rom_start when enabled.
+    /// STATUS: PASSES → retracted. `write_byte` / `write_word` check
+    /// `addr >= self.rom_start`.
+    #[test]
+    fn rom_write_protection_blocks_writes() {
+        let mut mem = Memory::new();
+        // Seed a known byte via unchecked write
+        mem.write_byte_unchecked(0xF1234, 0xAB);
+        mem.enable_rom_protection();
+        // Try to overwrite through the protected API
+        mem.write_byte(0xF1234, 0xCD);
+        assert_eq!(
+            mem.read_byte(0xF1234),
+            0xAB,
+            "ROM write should have been dropped; value changed"
+        );
+        // write_byte_unchecked should still bypass
+        mem.write_byte_unchecked(0xF1234, 0xCD);
+        assert_eq!(mem.read_byte(0xF1234), 0xCD);
+    }
+
+    /// Sanity: writes below rom_start still succeed.
+    #[test]
+    fn writes_below_rom_start_still_work() {
+        let mut mem = Memory::new();
+        mem.enable_rom_protection();
+        mem.write_byte(0x00100, 0xEF);
+        assert_eq!(mem.read_byte(0x00100), 0xEF);
     }
 }

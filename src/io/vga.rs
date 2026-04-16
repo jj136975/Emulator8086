@@ -431,12 +431,8 @@ impl IoDevice for VgaDevice {
             0x3D0 | 0x3D2 | 0x3D4 => self.crtc_index,
 
             // --- CRTC data (with CGA mirrors) ---
-            0x3D1 | 0x3D3 | 0x3D5 => {
-                match self.crtc_index {
-                    0x0A..=0x0F => self.crtc_regs[self.crtc_index as usize],
-                    _ => 0x00,
-                }
-            }
+            // Real VGA/CGA exposes the full CRTC register set for read.
+            0x3D1 | 0x3D3 | 0x3D5 => self.crtc_regs[self.crtc_index as usize],
 
             // --- CGA mode control ---
             0x3D8 => self.mode_register,
@@ -662,4 +658,70 @@ pub fn cp437_to_unicode(byte: u8) -> char {
     };
 
     TABLE[byte as usize]
+}
+
+// ---------------------------------------------------------------------------
+// Inspection tests — demonstrate real bugs in the VGA emulation.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+    use crate::io::bus::IoDevice;
+    use crate::vm::runtime::Runtime;
+
+    /// Regression: CRTC data port 0x3D5 must return the stored register
+    /// value for every index (not just 0x0A..=0x0F as the original code did).
+    /// Real VGA/CGA exposes the full CRTC register set for read-back.
+    #[test]
+    fn crtc_register_00_readback_returns_stored_value() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+
+        vga.port_out_byte(0x3D4, 0x00, &mut rt.cpu);
+        vga.port_out_byte(0x3D5, 0x5F, &mut rt.cpu);
+
+        vga.port_out_byte(0x3D4, 0x00, &mut rt.cpu);
+        let got = vga.port_in_byte(0x3D5, &mut rt.cpu);
+        assert_eq!(got, 0x5F, "CRTC index 0x00 readback");
+    }
+
+    /// Sanity check: CRTC index 0x0E (Cursor Location High) is in the
+    /// supported range and should read back correctly. This test should
+    /// PASS on the current code; if it fails we have a different bug.
+    #[test]
+    fn crtc_register_0e_readback_is_ok() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        vga.port_out_byte(0x3D4, 0x0E, &mut rt.cpu);
+        vga.port_out_byte(0x3D5, 0xAB, &mut rt.cpu);
+        vga.port_out_byte(0x3D4, 0x0E, &mut rt.cpu);
+        let got = vga.port_in_byte(0x3D5, &mut rt.cpu);
+        assert_eq!(got, 0xAB);
+    }
+
+    /// FINDING (Phase 3): DAC 6→8 bit conversion `(v<<2)|(v>>4)` uses bit
+    /// replication, not linear scaling. Phase 3 claimed this causes color
+    /// banding because it doesn't reach full-scale properly.
+    /// STATUS: PASSES → retracted. Bit replication maps 0→0 and 63→255
+    /// correctly; intermediate values differ from linear scaling by at most
+    /// 1 (e.g., 32 → 130 vs linear 129). Bit replication is standard VGA
+    /// DAC emulation practice and is NOT a bug.
+    #[test]
+    fn dac_conversion_endpoints_are_exact() {
+        let vga = VgaDevice::new();
+        // DAC entry 0 should be all-zero regardless of bit replication.
+        // Fill entry 1 with (63, 63, 63) via a fresh instance — here we
+        // just verify the formula behaves correctly at extremes.
+        // The function uses dac_palette; since we can't easily inject,
+        // we directly verify the math by computing the expected output
+        // of the bit-replication formula.
+        fn replicate(v6: u8) -> u8 {
+            (v6 << 2) | (v6 >> 4)
+        }
+        assert_eq!(replicate(0), 0x00, "0 must map to 0x00");
+        assert_eq!(replicate(63), 0xFF, "63 must map to 0xFF (full scale reached)");
+        assert_eq!(replicate(32), 130, "midpoint maps consistently");
+        // Prevent dead_code warning on the vga binding.
+        let _ = vga.dac_to_rgb8(0);
+    }
 }

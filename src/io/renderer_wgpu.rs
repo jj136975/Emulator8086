@@ -13,6 +13,93 @@ const TEXT_HEIGHT: u32 = 400; // 25 * 16
 const GFX_WIDTH: u32 = 320;
 const GFX_HEIGHT: u32 = 200;
 
+#[cfg(test)]
+mod inspection_tests {
+    use super::compute_viewport_math;
+
+    /// Regression: when the window is at least as large as the framebuffer,
+    /// the viewport is integer-scaled and centered.
+    #[test]
+    fn viewport_integer_scales_and_centers() {
+        // 960x600 window, 320x200 framebuffer (mode 13h). Integer scale = 3.
+        let (ox, oy, w, h) = compute_viewport_math(960, 600, 320, 200);
+        assert_eq!(w, 960.0); // 320 * 3
+        assert_eq!(h, 600.0); // 200 * 3
+        assert_eq!(ox, 0.0);
+        assert_eq!(oy, 0.0);
+    }
+
+    /// Regression: asymmetric windows letterbox on the limiting axis.
+    #[test]
+    fn viewport_letterboxes_on_constrained_axis() {
+        // Window is much wider than tall; scale limited by height.
+        let (ox, oy, w, h) = compute_viewport_math(2000, 400, 320, 200);
+        // height allows scale 2, width would allow 6 — min is 2.
+        assert_eq!(w, 640.0);
+        assert_eq!(h, 400.0);
+        assert_eq!(ox, (2000.0 - 640.0) / 2.0);
+        assert_eq!(oy, 0.0);
+    }
+
+    /// FIX: when the window is smaller than the framebuffer, the previous
+    /// implementation computed `win_width - scaled_w` as u32, which
+    /// underflowed to ~4 billion and placed the viewport off-screen.
+    /// The fix uses i32 arithmetic so the offset is a plain negative number.
+    #[test]
+    fn viewport_underflow_when_window_smaller_than_framebuffer() {
+        // 200x150 window, 320x200 framebuffer.
+        let (ox, oy, w, h) = compute_viewport_math(200, 150, 320, 200);
+        // scale clamped to 1; framebuffer drawn at native size, centered
+        // with negative offsets (visible part is clipped by the window).
+        assert_eq!(w, 320.0);
+        assert_eq!(h, 200.0);
+        assert_eq!(ox, (200.0 - 320.0) / 2.0); // -60.0
+        assert_eq!(oy, (150.0 - 200.0) / 2.0); // -25.0
+        assert!(ox < 0.0, "offset_x should be negative, got {}", ox);
+        assert!(oy < 0.0, "offset_y should be negative, got {}", oy);
+    }
+
+    /// Regression: degenerate zero-sized framebuffer doesn't divide by zero.
+    #[test]
+    fn viewport_handles_zero_framebuffer_dimensions() {
+        let (_, _, w, h) = compute_viewport_math(960, 600, 0, 0);
+        // With fb clamped to 1, the scale saturates huge but we still get
+        // finite numbers out instead of a panic.
+        assert!(w.is_finite());
+        assert!(h.is_finite());
+    }
+}
+
+/// Compute an integer-scaled viewport centered in the window.
+///
+/// Returns (offset_x, offset_y, scaled_w, scaled_h) in pixels as f32.
+///
+/// Scale is at least 1 — when the window is smaller than the framebuffer we
+/// still draw at 1:1 and let the window clip. Offsets use signed arithmetic
+/// so that sub-framebuffer windows produce a negative offset (centered
+/// overflow) rather than a u32 underflow.
+pub(crate) fn compute_viewport_math(
+    win_width: u32,
+    win_height: u32,
+    fb_width: u32,
+    fb_height: u32,
+) -> (f32, f32, f32, f32) {
+    let fb_w = fb_width.max(1);
+    let fb_h = fb_height.max(1);
+    let scale_x = win_width / fb_w;
+    let scale_y = win_height / fb_h;
+    let scale = scale_x.min(scale_y).max(1);
+
+    let scaled_w = fb_w * scale;
+    let scaled_h = fb_h * scale;
+    // Signed math so that win < scaled produces a negative offset instead
+    // of a u32 wrap to ~4 billion pixels.
+    let offset_x = (win_width as i32 - scaled_w as i32) / 2;
+    let offset_y = (win_height as i32 - scaled_h as i32) / 2;
+
+    (offset_x as f32, offset_y as f32, scaled_w as f32, scaled_h as f32)
+}
+
 /// Uniform buffer for the fullscreen blit shader.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -330,16 +417,7 @@ impl WgpuRenderer {
 
     /// Compute integer-scaled viewport centered in window.
     fn compute_viewport(&self) -> (f32, f32, f32, f32) {
-        let scale_x = self.win_width / self.fb_width;
-        let scale_y = self.win_height / self.fb_height;
-        let scale = scale_x.min(scale_y).max(1);
-
-        let scaled_w = self.fb_width * scale;
-        let scaled_h = self.fb_height * scale;
-        let offset_x = (self.win_width - scaled_w) / 2;
-        let offset_y = (self.win_height - scaled_h) / 2;
-
-        (offset_x as f32, offset_y as f32, scaled_w as f32, scaled_h as f32)
+        compute_viewport_math(self.win_width, self.win_height, self.fb_width, self.fb_height)
     }
 
     /// Recreate the framebuffer texture when mode changes.

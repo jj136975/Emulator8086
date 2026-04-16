@@ -145,3 +145,53 @@ impl IoBus {
         debug!("Write to unmapped port {:04X}: {:04X}", port, value);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Inspection tests — IoBus registration and dispatch invariants.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+
+    struct DummyDevice;
+    impl IoDevice for DummyDevice {
+        fn port_in_byte(&mut self, _port: u16, _cpu: &mut Cpu) -> u8 { 0 }
+        fn port_out_byte(&mut self, _port: u16, _value: u8, _cpu: &mut Cpu) {}
+        fn name(&self) -> &'static str { "dummy" }
+    }
+
+    /// FINDING (Phase 3): `register()` rejects back-to-back adjacent ranges
+    /// because of `start <= self.last_port`.
+    /// STATUS: PASSES → retracted. `start > last_port` is the required
+    /// condition, and adjacency (e.g., 0..=15 followed by 16..=31) satisfies
+    /// that: 16 > 15 → registration succeeds.
+    #[test]
+    fn adjacent_nonoverlapping_port_ranges_register_cleanly() {
+        let mut bus = IoBus::new();
+        bus.register(0x00, 0x0F, Box::new(DummyDevice));
+        bus.register(0x10, 0x1F, Box::new(DummyDevice));
+        bus.register(0x20, 0x2F, Box::new(DummyDevice));
+        // If we made it here, no panic. Good.
+        assert_eq!(bus.first_port, 0x00);
+        assert_eq!(bus.last_port, 0x2F);
+    }
+
+    /// Sanity: overlapping ranges must panic to prevent silent collisions.
+    #[test]
+    #[should_panic(expected = "increasing order without overlap")]
+    fn overlapping_port_range_panics() {
+        let mut bus = IoBus::new();
+        bus.register(0x00, 0x1F, Box::new(DummyDevice));
+        // Overlaps the previous range (0x10 <= 0x1F)
+        bus.register(0x10, 0x2F, Box::new(DummyDevice));
+    }
+
+    /// Out-of-increasing-order registration also panics (start < last_port).
+    #[test]
+    #[should_panic(expected = "increasing order without overlap")]
+    fn out_of_order_registration_panics() {
+        let mut bus = IoBus::new();
+        bus.register(0x20, 0x2F, Box::new(DummyDevice));
+        bus.register(0x00, 0x0F, Box::new(DummyDevice));
+    }
+}

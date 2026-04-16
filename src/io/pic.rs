@@ -407,3 +407,55 @@ impl IoDevice for PicDevice {
         "8259A PIC"
     }
 }
+
+// ---------------------------------------------------------------------------
+// Inspection tests — 8259A state-machine invariants.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+    use crate::vm::runtime::Runtime;
+
+    /// FINDING (Phase 3): ICW1 bit 1 (SNGL) interpretation was claimed to be
+    /// "reversed." Per Intel 8259A datasheet: SNGL=1 means single PIC (no
+    /// ICW3), SNGL=0 means cascade (ICW3 required).
+    /// STATUS: PASSES → retracted. `pic.rs:262` has `single_pic = value & 0x02 != 0`
+    /// which is correct. We verify the ICW state-machine progression.
+    #[test]
+    fn icw1_sngl_bit_means_single_pic_no_icw3_needed() {
+        let mut rt = Runtime::new_test();
+        let mut dev = PicDevice;
+        // ICW1 with SNGL=1, ICW4 expected: 0x10 | 0x02 | 0x01 = 0x13
+        dev.port_out_byte(0x20, 0x13, &mut rt.cpu);
+        // ICW2: vector base 0x08
+        dev.port_out_byte(0x21, 0x08, &mut rt.cpu);
+        // Because SNGL=1, ICW3 is skipped. Next data write is ICW4 directly.
+        // If interpretation were reversed, ICW3 would still be expected here
+        // and the init sequence would not complete until a 4th write.
+        dev.port_out_byte(0x21, 0x01, &mut rt.cpu); // ICW4: 8086 mode
+        assert!(
+            rt.cpu.pic.initialized,
+            "After ICW1(SNGL=1)+ICW2+ICW4 (3 writes), PIC should be initialized. \
+             If single_pic semantics were reversed, the PIC would be waiting for ICW3."
+        );
+    }
+
+    /// FINDING (Phase 3): Single-PIC emulation handles IRQ0 and IRQ1 (timer
+    /// + keyboard) but IRQ8-15 would need a slave PIC. Document this.
+    /// STATUS: acceptable limitation for 8086 MS-DOS — this test just
+    /// confirms IRQ0 path works end-to-end.
+    #[test]
+    fn irq0_routes_to_vector_0x08_after_init() {
+        let mut rt = Runtime::new_test();
+        let mut dev = PicDevice;
+        dev.port_out_byte(0x20, 0x13, &mut rt.cpu);
+        dev.port_out_byte(0x21, 0x08, &mut rt.cpu);
+        dev.port_out_byte(0x21, 0x01, &mut rt.cpu);
+        dev.port_out_byte(0x21, 0x00, &mut rt.cpu); // unmask all
+
+        rt.cpu.pic.request_interrupt(0);
+        assert!(rt.cpu.pic.has_interrupt());
+        let vector = rt.cpu.pic.acknowledge();
+        assert_eq!(vector, 0x08, "IRQ0 with vector_base=0x08 → INT 08h");
+    }
+}

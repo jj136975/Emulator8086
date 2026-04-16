@@ -1639,3 +1639,169 @@ fn dec_rm_word() {
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ds.read_word(0x200), 0x00FF);
 }
+
+// ===========================================================================
+// INSPECTION TESTS — verify claimed bugs from the code review.
+//
+// For each finding the inspection flagged as a "bug," we either:
+//   - write a test that FAILS on current code (bug confirmed), or
+//   - write a test that PASSES (finding retracted as false positive).
+// ===========================================================================
+
+use crate::io::pic::PicDevice;
+use crate::io::bus::IoDevice;
+
+/// FINDING (Phase 1): INC/DEC must NOT touch CF.
+/// Intel SDM: INC/DEC affect OF, SF, ZF, AF, PF — CF is preserved.
+/// STATUS: PASSES on current code → retracted as false positive.
+#[test]
+fn inc_preserves_carry_flag_set() {
+    // STC; INC AX  →  F9 40
+    let mut vm = setup(&[0xF9, 0x40]);
+    vm.cpu.registers.ax.set(0x0001);
+    exec_n(&mut vm, 2);
+    assert!(
+        vm.cpu.check_flag(Carry),
+        "INC must preserve CF; it was set before, should still be set"
+    );
+    assert_eq!(vm.cpu.registers.ax.word(), 0x0002);
+}
+
+#[test]
+fn inc_preserves_carry_flag_clear() {
+    // CLC; MOV AX, 0x7FFF; INC AX  (wraps to 0x8000, OF should set; CF untouched)
+    // CLC = F8;  MOV AX,imm16 = B8 FF 7F;  INC AX = 40
+    let mut vm = setup(&[0xF8, 0xB8, 0xFF, 0x7F, 0x40]);
+    exec_n(&mut vm, 3);
+    assert!(
+        !vm.cpu.check_flag(Carry),
+        "INC must preserve CF; was clear before, should stay clear"
+    );
+    assert!(
+        vm.cpu.check_flag(Overflow),
+        "INC 0x7FFF → 0x8000 should set OF (signed overflow)"
+    );
+    assert_eq!(vm.cpu.registers.ax.word(), 0x8000);
+}
+
+/// FINDING (Phase 1): TEST must clear CF and OF per Intel SDM.
+/// STATUS: PASSES → retracted.
+#[test]
+fn test_clears_carry_and_overflow() {
+    // STC; MOV AX,0xFFFF; TEST AX, 0x1
+    // F9; B8 FF FF; A9 01 00
+    let mut vm = setup(&[0xF9, 0xB8, 0xFF, 0xFF, 0xA9, 0x01, 0x00]);
+    // Pre-seed OF
+    vm.cpu.set_flag(Overflow);
+    exec_n(&mut vm, 3);
+    assert!(!vm.cpu.check_flag(Carry), "TEST must clear CF");
+    assert!(!vm.cpu.check_flag(Overflow), "TEST must clear OF");
+}
+
+/// FINDING (Phase 1): 8086 PUSH SP quirk — pushes the DECREMENTED SP value.
+/// STATUS: PASSES → retracted. Confirmed correct at mod.rs:1072-1076.
+#[test]
+fn push_sp_8086_quirk_pushes_decremented_value() {
+    // MOV SP, 0x100; PUSH SP
+    // BC 00 01; 54
+    let mut vm = setup(&[0xBC, 0x00, 0x01, 0x54]);
+    exec_n(&mut vm, 2);
+    // After PUSH SP on 8086: SP=0xFE, memory at SS:0xFE should contain 0xFE
+    assert_eq!(vm.cpu.registers.sp.word(), 0x00FE);
+    assert_eq!(
+        vm.cpu.registers.ss.read_word(0x00FE),
+        0x00FE,
+        "8086 PUSH SP pushes the decremented value (0xFE), not the pre-decrement value (0x100)"
+    );
+}
+
+/// FINDING (Phase 1): POP SS must set interrupt_inhibit for one instruction.
+/// STATUS: PASSES → retracted. Confirmed at mod.rs:1059-1061.
+#[test]
+fn pop_ss_sets_interrupt_inhibit() {
+    // PUSH imm16 is 286+ so use PUSH DS; POP SS   (1E 17)
+    // Set DS=0x1234 first so we push something, then pop into SS.
+    let mut vm = setup(&[0x1E, 0x17]);
+    vm.cpu.registers.ds.reg_mut().set(0x1234);
+    assert!(!vm.interrupt_inhibit, "baseline");
+    exec_n(&mut vm, 2);
+    assert!(
+        vm.interrupt_inhibit,
+        "POP SS must set interrupt_inhibit to block interrupts for next instruction"
+    );
+}
+
+/// FINDING (Phase 1): DIV quotient overflow must raise INT 0.
+/// STATUS: PASSES → retracted. Confirmed via alu.rs:291 / control.rs:87-94.
+#[test]
+fn div_byte_quotient_overflow_raises_int0() {
+    // Set IVT entry 0 to CS=0x1000, IP=0x5000
+    // Then DIV BL where AX/BL overflows.
+    // MOV AX,0x1000; MOV BL,1; DIV BL → quotient=0x1000 does not fit in AL.
+    // Opcodes: B8 00 10; B3 01; F6 F3
+    let mut vm = setup(&[0xB8, 0x00, 0x10, 0xB3, 0x01, 0xF6, 0xF3]);
+    // Install INT 0 vector
+    vm.cpu.memory.write_word(0x0000, 0x5000); // IP
+    vm.cpu.memory.write_word(0x0002, 0x1000); // CS
+    exec_n(&mut vm, 3);
+    assert_eq!(
+        vm.cpu.registers.cs.reg().word(),
+        0x1000,
+        "DIV overflow should vector through IVT[0], loading CS=0x1000"
+    );
+    assert_eq!(
+        vm.cpu.registers.pc.word(),
+        0x5000,
+        "IP should come from IVT[0], 0x5000"
+    );
+}
+
+/// FINDING (Phase 1 / Phase 7): REP string instructions run to completion
+/// without checking pending interrupts. A long REP MOVS blocks IRQ0.
+/// STATUS: CONFIRMED BUG. This test runs REP MOVSB with CX=100 and a pending
+/// IRQ0, and expects REP to break out after one iteration (CX=99) so the
+/// CPU can service the interrupt. The current code finishes all 100
+/// iterations (CX=0), demonstrating the bug.
+#[test]
+fn rep_movsb_should_break_on_pending_interrupt() {
+    // CLD        FC                (clear DF → forward)
+    // REP MOVSB  F3 A4
+    let mut vm = setup(&[0xFC, 0xF3, 0xA4]);
+
+    // Place source data at DS:0x200
+    for i in 0..100u16 {
+        vm.cpu.registers.ds.write_byte(0x200 + i, (i as u8).wrapping_add(1));
+    }
+
+    vm.cpu.registers.cx.set(100);
+    vm.cpu.registers.si.set(0x200);
+    vm.cpu.registers.di.set(0x400);
+    vm.cpu.registers.es.reg_mut().set(0);
+
+    // Initialize the PIC via ICW sequence so an IRQ can actually become pending.
+    let mut pic_dev = PicDevice;
+    pic_dev.port_out_byte(0x20, 0x11, &mut vm.cpu); // ICW1: edge, cascade, ICW4 needed
+    pic_dev.port_out_byte(0x21, 0x08, &mut vm.cpu); // ICW2: vector base 0x08
+    pic_dev.port_out_byte(0x21, 0x00, &mut vm.cpu); // ICW3: cascade config
+    pic_dev.port_out_byte(0x21, 0x01, &mut vm.cpu); // ICW4: 8086 mode
+    pic_dev.port_out_byte(0x21, 0x00, &mut vm.cpu); // OCW1: unmask all
+
+    // Enable interrupts (IF=1) and raise IRQ0
+    vm.cpu.set_flag(Interrupt);
+    vm.cpu.pic.request_interrupt(0);
+    assert!(
+        vm.cpu.pic.has_interrupt(),
+        "sanity: PIC must report a pending interrupt before the REP runs"
+    );
+
+    // Execute: CLD, then REP prefix, then MOVSB (which internally loops).
+    exec_n(&mut vm, 3);
+
+    assert!(
+        vm.cpu.registers.cx.word() > 0,
+        "REP MOVSB ran all 100 iterations (CX=0) despite a pending IRQ0. \
+         Real 8086 interrupts REP between iterations so long string ops \
+         don't block the timer/keyboard. string.rs:6-42 has no PIC check \
+         inside the loop."
+    );
+}

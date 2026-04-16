@@ -13,6 +13,9 @@ mod vm;
 #[cfg(test)]
 mod cpu_tests;
 
+#[cfg(test)]
+mod bios_inspection_tests;
+
 #[derive(Parser, Debug)]
 #[command(name = "emulator8086", about = "Intel 8086 emulator")]
 struct CLI {
