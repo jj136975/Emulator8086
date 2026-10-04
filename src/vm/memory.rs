@@ -4,7 +4,9 @@ pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
 
 
 pub struct Memory {
-    mem: Box<[u8]>,
+    // A fixed-size array rather than a slice: every index is masked to 20
+    // bits, so with the length known at compile time no bounds checks remain.
+    mem: Box<[u8; MEMORY_SIZE]>,
     /// Scratch bytes that operand references into ROM point at, so stores
     /// through them are dropped like any other write to ROM.
     rom_sink: [u8; 2],
@@ -14,7 +16,10 @@ pub struct Memory {
 impl Memory {
     pub fn new() -> Self {
         Self {
-            mem: vec![0u8; MEMORY_SIZE].into_boxed_slice(),
+            mem: vec![0u8; MEMORY_SIZE]
+                .into_boxed_slice()
+                .try_into()
+                .expect("MEMORY_SIZE bytes were allocated"),
             rom_sink: [0; 2],
             rom_start: MEMORY_SIZE, // above 1MB -- protection disabled until explicitly enabled
         }
@@ -32,11 +37,11 @@ impl Memory {
         memory.mem[offset..offset+data.len()].copy_from_slice(data);
     }
 
-    /// The byte an operand reference to `addr` (already wrapped to 20 bits)
-    /// reads and writes. A ROM byte is copied to scratch slot `slot` first,
+    /// The byte an operand reference to `addr` reads and writes. A ROM byte is copied to scratch slot `slot` first,
     /// so the operand reads it normally but cannot change it.
     #[inline]
     fn operand_byte(&mut self, addr: usize, slot: usize) -> &mut u8 {
+        let addr = addr & 0xFFFFF;
         if addr >= self.rom_start {
             self.rom_sink[slot] = self.mem[addr];
             &mut self.rom_sink[slot]
