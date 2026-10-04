@@ -1,7 +1,8 @@
 //! The viewport and texture format helpers and the shader, which naga
 //! parses and validates, are tested without a GPU. The last test runs the
-//! pipeline on a real one: it asks for an adapter without a surface, draws
-//! `FrameBlit` into a texture and reads the pixels back.
+//! pipeline on a real one: it asks for an adapter without a surface, records
+//! a frame into a texture as the window records one into its surface
+//! (`record_frame`) and reads the pixels back.
 //!
 //! The invariant: no test needs a window, and none fails for want of a GPU.
 //! On a machine without an adapter the GPU test says so and passes.
@@ -247,8 +248,9 @@ fn draw_and_read_back(
         mapped_at_creation: false,
     });
 
+    // The frame as the window records it, then the copy that reads it back.
+    let frame = record_frame(device, blit, &view);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    blit.draw(&mut encoder, &view);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -266,7 +268,7 @@ fn draw_and_read_back(
         },
         size,
     );
-    queue.submit([encoder.finish()]);
+    queue.submit([frame, encoder.finish()]);
 
     let (mapped, was_mapped) = std::sync::mpsc::channel();
     buffer.map_async(wgpu::MapMode::Read, .., move |result| {

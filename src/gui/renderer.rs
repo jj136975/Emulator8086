@@ -219,8 +219,9 @@ fn fs_main(in: VsOutput) -> @location(0) vec4<f32> {
 
 /// The emulator's frame on the GPU: the texture the rasterised frame is
 /// uploaded to and the pipeline that draws it into a target of one format
-/// and one size. It never sees the surface: `draw` takes any texture view,
-/// which is what lets a test draw into a texture and read it back.
+/// and one size. It never sees the surface: `record_frame` draws it into
+/// any texture view, which is what lets a test draw into a texture and read
+/// it back.
 struct FrameBlit {
     pipeline: wgpu::RenderPipeline,
     texture: wgpu::Texture,
@@ -470,11 +471,28 @@ impl FrameBlit {
         );
     }
 
-    /// Records the pass that draws the uploaded frame into `target`, a view
-    /// of the format and the size the blit was told.
-    fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    /// Draws the uploaded frame over the whole of `pass`, whose target is of
+    /// the format and the size the blit was told.
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+/// Records one frame into `target`: a single render pass that starts from
+/// black and holds the emulator's picture.
+fn record_frame(
+    device: &wgpu::Device,
+    blit: &FrameBlit,
+    target: &wgpu::TextureView,
+) -> wgpu::CommandBuffer {
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Frame Encoder"),
+    });
+    {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Blit Pass"),
+            label: Some("Frame Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -487,10 +505,9 @@ impl FrameBlit {
             depth_stencil_attachment: None,
             ..Default::default()
         });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        blit.draw(&mut pass);
     }
+    encoder.finish()
 }
 
 pub struct Renderer {
@@ -581,10 +598,6 @@ impl Renderer {
 
     /// Render current VGA state to the window.
     pub fn render(&mut self, vga: &VgaDevice, memory: &Memory) {
-        let phase = BlinkPhase::at(self.started.elapsed());
-        self.blit
-            .upload(&self.device, &self.queue, vga, memory, phase);
-
         let output = match self.surface.get_current_texture() {
             // A suboptimal frame is drawn all the same: the resize that
             // made it so configures the surface again.
@@ -603,18 +616,18 @@ impl Renderer {
             }
         };
 
+        // Only now that there is a frame to draw on: what is written to the
+        // queue stays queued until a submit, which a frame that is not
+        // drawn never makes.
+        let phase = BlinkPhase::at(self.started.elapsed());
+        self.blit
+            .upload(&self.device, &self.queue, vga, memory, phase);
+
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blit Encoder"),
-            });
-        self.blit.draw(&mut encoder, &view);
-
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let frame = record_frame(&self.device, &self.blit, &view);
+        self.queue.submit(std::iter::once(frame));
         self.queue.present(output);
     }
 }
