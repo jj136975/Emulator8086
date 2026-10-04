@@ -13,7 +13,7 @@ use crate::io::disk::{
     BOOT_ORDER_END, DiskController, DiskImage, DiskSource, DiskSpec, FLOPPY_144_SIZE,
     HD_DEFAULT_SIZE_MB,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Sizes, in KB, of the floppy formats an in-memory disk can have.
 pub const FLOPPY_SIZES_KB: [u64; 8] = [160, 180, 320, 360, 720, 1200, 1440, 2880];
@@ -44,6 +44,20 @@ pub fn drive_label(drive: u8) -> String {
         format!("{}:", (b'A' + drive) as char)
     } else {
         format!("HD{}", drive - 0x80)
+    }
+}
+
+/// One image file is one disk in one drive: two drives on the same file
+/// would each cache and write it without knowing of the other. `drive` is
+/// the drive the file is about to go into, which may hold it already.
+pub fn require_unshared(controller: &DiskController, path: &Path, drive: u8) -> Result<(), String> {
+    match controller.drive_backed_by(path) {
+        Some(other) if other != drive => Err(format!(
+            "'{}' is already the disk in {}: one image file cannot be in two drives",
+            path.display(),
+            drive_label(other)
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -191,6 +205,7 @@ pub fn open_drives(
                 image
             }
             DiskSource::FilePath(path) if spec.drive == 0x00 || path.exists() => {
+                require_unshared(&controller, &path, spec.drive)?;
                 DiskImage::open(&path, spec.readonly).map_err(|error| {
                     format!(
                         "cannot open disk image '{}' for drive {}: {}",
@@ -230,6 +245,7 @@ pub fn open_drives(
         let mut image = match source {
             DiskSource::Memory(_) => DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB),
             DiskSource::FilePath(path) if path.exists() => {
+                require_unshared(&controller, &path, drive)?;
                 let image = DiskImage::open_hard_disk(&path, readonly).map_err(|error| {
                     format!(
                         "cannot open hard disk image '{}' for {}: {}",

@@ -248,6 +248,30 @@ fn images_for_other_drives_are_created_when_missing() {
     assert!(controller.find_drive(0x80).unwrap().readonly);
 }
 
+/// One image file is one disk in one drive: a second drive on the same file
+/// would cache and write it without knowing of the first.
+#[test]
+fn one_image_file_cannot_be_given_to_two_drives() {
+    let dir = ScratchDir::new("shared");
+    std::fs::write(dir.path("one.img"), vec![0u8; 737_280]).unwrap();
+
+    let specs = vec![dir.spec("a", "one.img"), dir.spec("b", "one.img")];
+    let error = open_drives(specs, &[]).err().unwrap();
+    assert!(
+        error.contains("one.img") && error.contains("A:"),
+        "{}",
+        error
+    );
+
+    let hd = dir.path("one.vhd").display().to_string();
+    let error = open_drives(Vec::new(), &[hd.clone(), hd]).err().unwrap();
+    assert!(
+        error.contains("one.vhd") && error.contains("HD0"),
+        "{}",
+        error
+    );
+}
+
 #[test]
 fn a_directory_given_as_an_image_is_an_error_not_a_panic() {
     let dir = ScratchDir::new("dir-as-image");

@@ -13,7 +13,9 @@
 use crate::io::disk::{
     DiskController, DiskImage, DiskSource, FLOPPY_144_SIZE, HD_DEFAULT_SIZE_MB, SaveOutcome,
 };
-use crate::io::disk_spec::{drive_label, parse_drive, parse_hd_source, parse_source};
+use crate::io::disk_spec::{
+    drive_label, parse_drive, parse_hd_source, parse_source, require_unshared,
+};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -312,6 +314,7 @@ fn swap(
             }
             DiskSource::FilePath(path) => {
                 require_existing(&path)?;
+                require_unshared(disk_ctrl, &path, drive)?;
                 let image = DiskImage::open_hard_disk(&path, readonly)
                     .map_err(|error| cannot_open(&path, error))?;
                 let note = image.capacity_note();
@@ -341,6 +344,7 @@ fn swap(
             }
             DiskSource::FilePath(path) => {
                 require_existing(&path)?;
+                require_unshared(disk_ctrl, &path, drive)?;
                 let image =
                     DiskImage::open(&path, readonly).map_err(|error| cannot_open(&path, error))?;
                 disk_ctrl.attach(drive, image);

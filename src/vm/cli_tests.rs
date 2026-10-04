@@ -198,7 +198,6 @@ fn swap_does_not_create_a_missing_image() {
 #[test]
 fn swap_inserts_an_existing_image() {
     let image = HostFile::new("two words.img", &vec![0u8; 737_280]);
-    let mut disk_ctrl = DiskController::new();
 
     // Unquoted as the last argument, quoted, and with the suffix.
     for (drive, source) in [
@@ -207,6 +206,7 @@ fn swap_inserts_an_existing_image() {
         (0x02, format!("{}:RO", image.quoted())),
         (0x03, format!("{}:rw", image.0.display())),
     ] {
+        let mut disk_ctrl = DiskController::new();
         let letter = (b'a' + drive) as char;
         let replies = monitor(&mut disk_ctrl, &format!("swap {}  {}\n", letter, source));
         assert!(replies.contains("now holds"), "{}", replies);
@@ -214,6 +214,24 @@ fn swap_inserts_an_existing_image() {
         assert_eq!(disk.total_bytes(), 737_280);
         assert_eq!(disk.readonly, drive == 0x02);
     }
+}
+
+/// One image file is one disk in one drive: a second drive on the same file
+/// would cache and write it without knowing of the first. Putting the file
+/// back into the drive that holds it is a disk change like any other.
+#[test]
+fn swap_refuses_an_image_that_is_in_another_drive() {
+    let image = HostFile::new("shared.img", &vec![0u8; 737_280]);
+    let mut disk_ctrl = DiskController::new();
+
+    let replies = monitor(
+        &mut disk_ctrl,
+        &format!("swap a {0}\nswap b {0}\nswap a {0}\n", image.quoted()),
+    );
+
+    assert_eq!(replies.matches("now holds").count(), 2, "{}", replies);
+    assert!(replies.contains("already the disk in A:"), "{}", replies);
+    assert!(disk_ctrl.find_drive(0x01).is_none(), "B: stays empty");
 }
 
 /// CHS addresses end at 1024 cylinders, which is 504 MB of a hard disk.
