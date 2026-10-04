@@ -11,23 +11,27 @@
 //! assembler writes to a scratch file; if the assembly fails, the build
 //! stops and the previous ROM stays in place. Without `nasm` the reassembly
 //! is skipped with a warning, unless there is no image to fall back on.
+//!
+//! `assets/rom` is at the root of the repository, two levels above this
+//! package. Cargo runs a build script in the directory of its package, so
+//! the script names the ROM directory relative to that.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
-const ROM_DIR: &str = "assets/rom";
+const ROM_DIR: &str = "../../assets/rom";
 const ROM_SIZE: usize = 0x10000;
 
 fn main() {
-    let asm = Path::new("assets/rom/bios.asm");
-    let bin = Path::new("assets/rom/bios.bin");
+    let asm = Path::new(ROM_DIR).join("bios.asm");
+    let bin = Path::new(ROM_DIR).join("bios.bin");
 
     // Watch the assembly sources; cargo will re-run this script when any of
     // them change. Do NOT watch bios.bin itself — we write to it below and
     // watching it would loop.
-    let sources = rom_sources(Path::new(ROM_DIR)).unwrap_or_else(|_| vec![asm.to_path_buf()]);
+    let sources = rom_sources(Path::new(ROM_DIR)).unwrap_or_else(|_| vec![asm.clone()]);
     for source in &sources {
         println!("cargo:rerun-if-changed={}", source.display());
     }
@@ -35,7 +39,7 @@ fn main() {
 
     let out_dir = std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR for build scripts");
     let scratch = Path::new(&out_dir).join("bios.bin");
-    match rebuild_rom(&sources, asm, bin, &scratch, run_nasm) {
+    match rebuild_rom(&sources, &asm, &bin, &scratch, run_nasm) {
         Ok(Rebuild::UpToDate | Rebuild::Assembled) => {}
         Ok(Rebuild::Skipped(reason)) => {
             println!("cargo:warning=ROM reassembly skipped: {}", reason);
@@ -48,7 +52,7 @@ fn main() {
         }
     }
 
-    match patch_checksum(bin) {
+    match patch_checksum(&bin) {
         Ok(Some((old, new))) => {
             println!(
                 "cargo:warning=BIOS checksum auto-patched 0x{:02X} -> 0x{:02X}",

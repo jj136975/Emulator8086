@@ -12,11 +12,10 @@
 
 use std::sync::mpsc::Sender;
 
+use crate::BIOS_ROM;
 use crate::io::disk::{DiskController, DiskImage, FLOPPY_144_SIZE};
 use crate::io::keyboard::{EmulatorEvent, KeyboardController};
 use crate::vm::runtime::{CpuFlag, Prefixes, Runtime};
-
-const BIOS_BIN: &[u8] = include_bytes!("../assets/rom/bios.bin");
 
 /// Segment where guest stubs are loaded.
 const STUB_SEG: u16 = 0x1000;
@@ -42,7 +41,7 @@ impl Machine {
     /// its first instruction.
     fn power_on(disks: DiskController) -> Self {
         let (mut rt, keys) = Runtime::new_test_machine(disks);
-        rt.load_rom_image(BIOS_BIN);
+        rt.load_rom_image(BIOS_ROM);
         Self { rt, keys }
     }
 
@@ -312,7 +311,7 @@ fn machine_uses_the_keyboard_supplied_by_the_frontend() {
     let (keys, key_events) = std::sync::mpsc::channel();
     let keyboard = KeyboardController::with_receiver(key_events);
     let mut rt = Runtime::new(vec![], vec![], None, false, keyboard).unwrap();
-    rt.load_rom_image(BIOS_BIN);
+    rt.load_rom_image(BIOS_ROM);
     let mut machine = Machine { rt, keys };
     machine.run_until(|rt| rt.cpu.halted);
 

@@ -59,7 +59,7 @@ pub struct Pic {
 }
 
 impl Pic {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             irr: 0,
             isr: 0,

@@ -26,7 +26,7 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             mem: vec![0u8; MEMORY_SIZE]
                 .into_boxed_slice()

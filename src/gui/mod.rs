@@ -21,8 +21,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
-use crate::io::keyboard::EmulatorEvent;
-use crate::vm::runtime::Runtime;
+use emu8086_core::io::keyboard::EmulatorEvent;
+use emu8086_core::vm::runtime::Runtime;
 use keys::physical_key_to_scancode;
 use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
 

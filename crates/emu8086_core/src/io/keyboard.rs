@@ -80,7 +80,7 @@ impl KeyboardController {
         }
     }
 
-    pub fn set_pit(&mut self, pit: Rc<RefCell<Pit>>) {
+    pub(crate) fn set_pit(&mut self, pit: Rc<RefCell<Pit>>) {
         self.pit = Some(pit);
     }
 

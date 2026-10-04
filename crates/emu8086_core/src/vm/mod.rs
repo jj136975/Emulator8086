@@ -8,12 +8,13 @@
 //! permanent. The segment registers hold raw pointers to that allocation,
 //! and the operand references of an instruction point into it or into the
 //! register file (`registers` has the rules), so the box is never replaced
-//! and a `Runtime` never crosses threads.
+//! and a `Runtime` never crosses threads. The app reads the CPU state
+//! through `Runtime::cpu` and is bound by the same rule.
 
 #[cfg(test)]
 pub mod cli;
 pub mod cpu;
-pub mod instructions;
+pub(crate) mod instructions;
 pub mod memory;
 mod modrm;
 pub mod registers;

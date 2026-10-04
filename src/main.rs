@@ -1,9 +1,8 @@
-//! The command line and start-up: `Cli` (its doc comments are the `--help`
-//! text), `machine`, which builds the machine the options describe and
-//! loads its ROM, and `run`, which hands that machine to the window. The
-//! BIOS image is embedded here, for a command line that names no ROM. The
-//! crate's modules are declared here, the crate-level test modules and the
-//! build script's tests among them.
+//! The app: the command line and start-up around the machine, which is the
+//! `emu8086_core` crate. `Cli` (its doc comments are the `--help` text),
+//! `machine`, which builds the machine the options describe and loads its
+//! ROM (the image the command line names, or the core's built-in BIOS), and
+//! `run`, which hands that machine to the window (`gui`).
 //!
 //! The invariant: whatever the user can fix (a bad option value, a disk
 //! image or ROM that cannot be used) is an `Err` from `run` carrying a
@@ -15,35 +14,12 @@ use std::sync::mpsc::Sender;
 
 use clap::Parser;
 
-use crate::io::disk_spec::{parse_boot_order, parse_disk_specs};
-use crate::io::keyboard::{EmulatorEvent, KeyboardController};
-use crate::vm::runtime::Runtime;
+use emu8086_core::BIOS_ROM;
+use emu8086_core::io::disk_spec::{parse_boot_order, parse_disk_specs};
+use emu8086_core::io::keyboard::{EmulatorEvent, KeyboardController};
+use emu8086_core::vm::runtime::Runtime;
 
 mod gui;
-mod io;
-mod utils;
-mod vm;
-
-#[cfg(test)]
-mod cpu_tests;
-
-#[cfg(test)]
-mod bios_inspection_tests;
-
-#[cfg(test)]
-mod bios_tests;
-
-/// The build script, compiled into the test binary so that its tests run
-/// with the others.
-#[cfg(test)]
-#[allow(dead_code)]
-#[path = "../build.rs"]
-mod build_script;
-
-/// The BIOS built into the binary: the image `build.rs` brings up to date
-/// with its sources before the crate compiles. The machine runs it unless
-/// the command line names another ROM.
-const BIOS_ROM: &[u8] = include_bytes!("../assets/rom/bios.bin");
 
 #[derive(Parser, Debug)]
 #[command(name = "emulator8086", about = "Intel 8086 emulator")]

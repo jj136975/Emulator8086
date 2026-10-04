@@ -26,12 +26,7 @@ mod tests;
 
 pub use controller::{BOOT_ORDER_END, BOOT_ORDER_PORT, DISK_TRAP_PORT, DiskController};
 pub use geometry::{FLOPPY_144_SIZE, HD_DEFAULT_SIZE_MB};
-pub use image::DiskImage;
-#[cfg_attr(
-    not(test),
-    expect(unused_imports, reason = "only the test-only monitor reads it")
-)]
-pub use image::SaveOutcome;
+pub use image::{DiskImage, SaveOutcome};
 
 use std::path::PathBuf;
 

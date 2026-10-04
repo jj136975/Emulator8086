@@ -111,7 +111,10 @@ const PIT_MAX_DEBT: u64 = PIT_CLOCK_HZ / 4;
 const IDLE_POLL: Duration = Duration::from_millis(1);
 
 pub struct Runtime {
-    pub(crate) cpu: Cpu,
+    /// The CPU state. The app reads it (the frame is drawn from
+    /// `cpu.memory`); whoever writes to it keeps the rule of `vm`: the
+    /// `Memory` box is never replaced.
+    pub cpu: Cpu,
     pub prefixes: Prefixes,
     pub instruction_count: u64,
     pub trace: bool,
@@ -259,7 +262,7 @@ impl Runtime {
 
     /// Loads the ROM image in the file `path`. Fails, with a message for the
     /// user, if the file cannot be read or is not a ROM of at most 64 KB.
-    pub(crate) fn load_rom(&mut self, path: PathBuf) -> Result<(), String> {
+    pub fn load_rom(&mut self, path: PathBuf) -> Result<(), String> {
         let rom_data = std::fs::read(&path)
             .map_err(|error| format!("cannot read ROM image '{}': {}", path.display(), error))?;
         if rom_data.is_empty() || rom_data.len() > ROM_MAX_SIZE {
@@ -276,7 +279,7 @@ impl Runtime {
     /// Copies a ROM image to the top of the first megabyte, so that it ends
     /// at F000:FFFF and contains the reset vector, and write-protects the
     /// ROM region.
-    pub(crate) fn load_rom_image(&mut self, rom_data: &[u8]) {
+    pub fn load_rom_image(&mut self, rom_data: &[u8]) {
         assert!(rom_data.len() <= ROM_MAX_SIZE, "ROM image larger than 64KB");
 
         let load_address = 0x100000 - rom_data.len();
@@ -370,10 +373,6 @@ impl Runtime {
     /// Reboots the guest: the CPU continues at the reset vector in its
     /// power-on state. Memory and devices are left as they are; the BIOS
     /// initialises what it uses.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the overlay's reset control will call it")
-    )]
     pub fn reset(&mut self) {
         let registers = &mut self.cpu.registers;
         registers.cs.reg_mut().set(0xFFFF);

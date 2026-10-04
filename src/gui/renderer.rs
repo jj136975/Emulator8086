@@ -15,9 +15,9 @@ use wgpu::util::DeviceExt;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
-use crate::io::raster::{self, BlinkPhase};
-use crate::io::vga::{VgaDevice, VideoMode};
-use crate::vm::memory::Memory;
+use emu8086_core::io::raster::{self, BlinkPhase};
+use emu8086_core::io::vga::{VgaDevice, VideoMode};
+use emu8086_core::vm::memory::Memory;
 
 const TEXT_WIDTH: u32 = raster::TEXT_WIDTH as u32;
 const TEXT_HEIGHT: u32 = raster::TEXT_HEIGHT as u32;

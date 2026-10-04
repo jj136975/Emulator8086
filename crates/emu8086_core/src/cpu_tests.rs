@@ -1,11 +1,12 @@
 //! CPU validation tests against real 8086 hardware captures.
 //!
-//! Test data lives in `8086/v1/*.json.gz` — 2,000 tests per file (one file
-//! per opcode, or per ModR/M `reg` value for group opcodes) captured from a
-//! physical Intel P80C86A-2 CPU. The tests are ignored by default:
-//!     cargo test cpu_tests -- --ignored                   (all of them)
-//!     cargo test cpu_tests::test_opcode_00 -- --ignored   (one opcode)
-//!     cargo test cpu_tests::test_opcode_0 -- --ignored    (00–0e)
+//! Test data lives in `8086/v1/*.json.gz` at the root of the repository —
+//! 2,000 tests per file (one file per opcode, or per ModR/M `reg` value for
+//! group opcodes) captured from a physical Intel P80C86A-2 CPU. The tests
+//! are ignored by default:
+//!     cargo test -p emu8086_core cpu_tests -- --ignored                   (all of them)
+//!     cargo test -p emu8086_core cpu_tests::test_opcode_00 -- --ignored   (one opcode)
+//!     cargo test -p emu8086_core cpu_tests::test_opcode_0 -- --ignored    (00–0e)
 //!
 //! The invariant: the hardware is the reference. A test compares every
 //! register and every RAM byte the capture records, leaving out only the
@@ -82,10 +83,18 @@ struct OpcodeInfo {
 
 static METADATA: OnceLock<Metadata> = OnceLock::new();
 
+/// The directory of the vectors: `8086/v1` at the root of the repository,
+/// two levels above this crate. It is found from the crate's own location,
+/// so the tests run from whatever directory cargo starts them in.
+fn vectors_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../8086/v1")
+}
+
 fn metadata() -> &'static Metadata {
     METADATA.get_or_init(|| {
-        let data = std::fs::read_to_string("8086/v1/metadata.json")
-            .expect("Failed to read 8086/v1/metadata.json");
+        let path = vectors_dir().join("metadata.json");
+        let data = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
         serde_json::from_str(&data).expect("Failed to parse metadata.json")
     })
 }
@@ -138,11 +147,11 @@ fn get_flags_mask(opcode_str: &str) -> u16 {
 /// Panics if the vector directory is missing, so the tests cannot pass
 /// without running anything.
 fn find_test_files(opcode_hex: &str) -> Vec<(PathBuf, String)> {
-    let dir = Path::new("8086/v1");
+    let dir = vectors_dir();
     let target = opcode_hex.to_lowercase();
 
     let mut files = Vec::new();
-    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
         panic!(
             "cannot read the CPU test vectors in {} ({}): the 8086 submodule \
              is missing, run `git submodule update --init`",

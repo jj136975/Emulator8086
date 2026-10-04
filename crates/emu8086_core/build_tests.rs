@@ -1,5 +1,5 @@
 //! Cargo never compiles a build script with `cfg(test)`: these tests run in
-//! the crate's test binary, where `src/main.rs` includes build.rs as the
+//! the crate's test binary, where `src/lib.rs` includes build.rs as the
 //! module `build_script`.
 
 use super::*;

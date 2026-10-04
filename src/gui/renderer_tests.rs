@@ -6,11 +6,12 @@
 //! The invariant: no test needs a window, and none fails for want of a GPU.
 //! On a machine without an adapter the GPU test says so and passes.
 
+use std::cell::Ref;
 use std::time::Duration;
 
 use super::*;
-use crate::io::bus::IoDevice;
-use crate::vm::runtime::Runtime;
+use emu8086_core::io::keyboard::KeyboardController;
+use emu8086_core::vm::runtime::Runtime;
 
 /// The default window is a whole multiple of both frame sizes, so the text
 /// frame and the mode 13h frame each fill it without a border.
@@ -160,10 +161,14 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     }
 }
 
-/// A text screen that shows every character and every attribute, with the
-/// cursor on it.
-fn text_screen() -> (Runtime, VgaDevice) {
-    let mut rt = Runtime::new_test();
+/// A machine without disks or ROM, whose text screen shows every character
+/// and every attribute, with the cursor on it. The screen is programmed as
+/// a guest would: through the machine's ports.
+fn text_screen() -> Runtime {
+    let (_keys, key_events) = std::sync::mpsc::channel();
+    let keyboard = KeyboardController::with_receiver(key_events);
+    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard)
+        .expect("a machine without disks has nothing to open");
     for cell in 0..80 * 25 {
         rt.cpu.memory.write_byte(0xB8000 + cell * 2, cell as u8);
         // 7 has no factor in common with 256: every attribute comes up.
@@ -171,24 +176,28 @@ fn text_screen() -> (Runtime, VgaDevice) {
             .memory
             .write_byte(0xB8000 + cell * 2 + 1, (cell * 7) as u8);
     }
-    let mut vga = VgaDevice::new();
     let cursor: u16 = 12 * 80 + 40;
-    vga.port_out_byte(0x3D4, 0x0E, &mut rt.cpu);
-    vga.port_out_byte(0x3D5, (cursor >> 8) as u8, &mut rt.cpu);
-    vga.port_out_byte(0x3D4, 0x0F, &mut rt.cpu);
-    vga.port_out_byte(0x3D5, cursor as u8, &mut rt.cpu);
-    (rt, vga)
+    rt.port_out_byte(0x3D4, 0x0E);
+    rt.port_out_byte(0x3D5, (cursor >> 8) as u8);
+    rt.port_out_byte(0x3D4, 0x0F);
+    rt.port_out_byte(0x3D5, cursor as u8);
+    rt
+}
+
+/// The machine's VGA, as the window borrows it to draw a frame.
+fn vga(rt: &Runtime) -> Ref<'_, VgaDevice> {
+    rt.vga.as_ref().expect("the machine has a VGA").borrow()
 }
 
 /// Switches to mode 13h, gives every DAC entry a colour of its own and
 /// paints stripes of all 256 that no flip or mirror maps onto themselves.
-fn show_mode_13h_stripes(rt: &mut Runtime, vga: &mut VgaDevice) {
-    vga.port_out_byte(0x3CE, 0x05, &mut rt.cpu);
-    vga.port_out_byte(0x3CF, 0x40, &mut rt.cpu); // 256-colour shift mode
-    vga.port_out_byte(0x3C8, 0, &mut rt.cpu);
+fn show_mode_13h_stripes(rt: &mut Runtime) {
+    rt.port_out_byte(0x3CE, 0x05);
+    rt.port_out_byte(0x3CF, 0x40); // 256-colour shift mode
+    rt.port_out_byte(0x3C8, 0);
     for index in 0..=255u8 {
         for component in [index & 0x3F, index >> 2, 0x3F - (index & 0x3F)] {
-            vga.port_out_byte(0x3C9, component, &mut rt.cpu);
+            rt.port_out_byte(0x3C9, component);
         }
     }
     for y in 0..raster::GFX_HEIGHT {
@@ -345,15 +354,15 @@ fn blit_draws_the_rasterised_frame_scaled_and_centred() {
         wgpu::TextureFormat::Rgba8UnormSrgb,
         wgpu::TextureFormat::Rgba8Unorm,
     ] {
-        let (mut rt, mut vga) = text_screen();
+        let mut rt = text_screen();
         let mut text_frame = vec![0; TEXT.0 * TEXT.1 * 4];
-        raster::rasterize_text(&mut text_frame, &vga, &rt.cpu.memory, ALL_ON);
+        raster::rasterize_text(&mut text_frame, &vga(&rt), &rt.cpu.memory, ALL_ON);
 
         // Twice the text frame, with a border of 10 pixels left and right
         // and of 15 above and below.
         let target = (1300, 830);
         let mut blit = FrameBlit::new(&device, format, target.0, target.1);
-        blit.upload(&device, &queue, &vga, &rt.cpu.memory, ALL_ON);
+        blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
         assert_same_pixels(
             &draw_and_read_back(&device, &queue, &blit, format, target),
             &frame_on_target(&text_frame, TEXT, target, 2, (10, 15)),
@@ -374,12 +383,12 @@ fn blit_draws_the_rasterised_frame_scaled_and_centred() {
         // Mode 13h at three times its size. The borders are odd numbers of
         // pixels (41 and 101), so the picture sits half a pixel off centre:
         // 20 pixels from the left, 50 from the top.
-        show_mode_13h_stripes(&mut rt, &mut vga);
+        show_mode_13h_stripes(&mut rt);
         let mut gfx_frame = vec![0; GFX.0 * GFX.1 * 4];
-        raster::rasterize_mode13h(&mut gfx_frame, &vga, &rt.cpu.memory);
+        raster::rasterize_mode13h(&mut gfx_frame, &vga(&rt), &rt.cpu.memory);
         let target = (1001, 701);
         blit.resize(&queue, target.0, target.1);
-        blit.upload(&device, &queue, &vga, &rt.cpu.memory, ALL_ON);
+        blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
         assert_same_pixels(
             &draw_and_read_back(&device, &queue, &blit, format, target),
             &frame_on_target(&gfx_frame, GFX, target, 3, (20, 50)),

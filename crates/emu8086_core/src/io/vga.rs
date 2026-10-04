@@ -129,7 +129,7 @@ const CGA_DAC: [[u8; 3]; 16] = [
 ];
 
 impl VgaDevice {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         // Power-on contents, until a BIOS mode set loads the mode's own
         // palette: the CGA colours, then a grey ramp.
         let mut dac_palette = [[0u8; 3]; 256];

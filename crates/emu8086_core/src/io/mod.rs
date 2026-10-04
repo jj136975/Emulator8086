@@ -5,19 +5,23 @@
 //!
 //! The invariant: nothing here knows of a window or a GPU. Keys arrive as
 //! scancodes down a channel and the picture leaves as a frame in memory;
-//! what shows the one and sends the other is `crate::gui`. That is what
-//! lets the tests cover every device and every pixel.
+//! what shows the one and sends the other is the app. That is what lets
+//! the tests cover every device and every pixel.
+//!
+//! A module is public when the app reaches into it: for the disks, the
+//! keyboard, the picture, and the interrupt controller the `Cpu` holds. The
+//! port bus and the devices only it talks to stay inside the crate.
 
-pub mod bus;
-pub mod console;
+pub(crate) mod bus;
+pub(crate) mod console;
 pub mod disk;
 pub mod disk_spec;
-pub mod dma;
-pub mod fdc;
-pub mod font_cp437;
-pub mod hdc;
+pub(crate) mod dma;
+pub(crate) mod fdc;
+pub(crate) mod font_cp437;
+pub(crate) mod hdc;
 pub mod keyboard;
 pub mod pic;
-pub mod pit;
+pub(crate) mod pit;
 pub mod raster;
 pub mod vga;

@@ -43,7 +43,7 @@ pub struct DiskController {
 }
 
 impl DiskController {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             drives: Vec::new(),
             boot_order: vec![0x00, 0x80], // floppy A:, then hard disk 0
@@ -83,10 +83,6 @@ impl DiskController {
 
     /// Copies a host file into the FAT volume on the disk in `drive` and
     /// returns the path under which DOS sees it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only the test-only monitor calls it")
-    )]
     pub fn put_file(&mut self, drive: u8, data: &[u8], dos_path: &str) -> std::io::Result<String> {
         let result = self.disk_in(drive)?.copy_file_to_fat(data, dos_path);
         self.mark_changed(drive);
@@ -95,10 +91,6 @@ impl DiskController {
 
     /// Copies a host directory into the FAT volume on the disk in `drive`
     /// and returns the number of files copied.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only the test-only monitor calls it")
-    )]
     pub fn put_dir(&mut self, drive: u8, host_dir: &Path) -> std::io::Result<usize> {
         let result = self.disk_in(drive)?.copy_dir_to_fat(host_dir);
         self.mark_changed(drive);
@@ -157,10 +149,6 @@ impl DiskController {
     }
 
     /// Remove a drive and return its image.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only the test-only monitor calls it")
-    )]
     pub fn detach(&mut self, drive: u8) -> Option<DiskImage> {
         if let Some(pos) = self.drives.iter().position(|(d, _)| *d == drive) {
             self.mark_changed(drive);
