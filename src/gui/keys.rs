@@ -1,14 +1,84 @@
-//! The window's key map: a winit physical key to the make code of the key
-//! in the same place on the PC/XT keyboard. The guest's keyboard driver
-//! turns that code into a character, so the host's keyboard layout plays no
-//! part.
+//! The guest's keyboard as the window presses it. `physical_key_to_scancode`
+//! is the key map: a winit physical key to the make code of the key in the
+//! same place on the PC/XT keyboard. The guest's keyboard driver turns that
+//! code into a character, so the host's keyboard layout plays no part.
+//! `GuestKeys` sends the codes to the machine and remembers which keys the
+//! guest holds.
 //!
-//! The invariant: a key maps to one make code below 80h, or to nothing.
-//! The window loop sends the break as the make with bit 7 set, and an XT
-//! keyboard knows no E0 prefix: a key that later keyboards added beside an
-//! XT key (right Ctrl, the cursor block, keypad Enter) shares its code.
+//! The invariants: a key maps to one make code below 80h, or to nothing.
+//! The break is the make with bit 7 set, and an XT keyboard knows no E0
+//! prefix: a key that later keyboards added beside an XT key (right Ctrl,
+//! the cursor block, keypad Enter) shares its code. And the guest gets the
+//! break of a key if and only if it got its make: a key it holds is let go
+//! when the host releases it or by `release_all`, whichever comes first, and
+//! a release of a key it does not hold is not passed on.
 
+use std::sync::mpsc::Sender;
+
+use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
+
+use emu8086_core::io::keyboard::EmulatorEvent;
+
+/// Sends the guest its key presses and releases, down the channel the
+/// machine's keyboard controller reads.
+pub struct GuestKeys {
+    events: Sender<EmulatorEvent>,
+    /// The host keys the guest holds, each with the make code it was sent.
+    /// Two of them can share a code (the two Ctrl keys): each is pressed
+    /// and released for itself, as on the host.
+    held: Vec<(PhysicalKey, u8)>,
+}
+
+impl GuestKeys {
+    /// `events` is the sender of the channel the machine was built with.
+    pub fn new(events: Sender<EmulatorEvent>) -> Self {
+        Self {
+            events,
+            held: Vec::new(),
+        }
+    }
+
+    /// A key of the host went down or came up. A key without a place on
+    /// the XT keyboard is not the guest's. A key held down arrives pressed
+    /// again and again, and is sent again: an XT keyboard repeats the same
+    /// way.
+    pub fn key(&mut self, key: PhysicalKey, state: ElementState) {
+        let held = self.held.iter().position(|(held, _)| *held == key);
+        match state {
+            ElementState::Pressed => {
+                let Some(scancode) = physical_key_to_scancode(key) else {
+                    return;
+                };
+                if held.is_none() {
+                    self.held.push((key, scancode));
+                }
+                self.send(EmulatorEvent::Scancode(scancode));
+            }
+            ElementState::Released => {
+                if let Some(held) = held {
+                    let (_, scancode) = self.held.remove(held);
+                    self.send(EmulatorEvent::ScanRelease(scancode | 0x80));
+                }
+            }
+        }
+    }
+
+    /// Lets go of every key the guest holds. For when the releases of the
+    /// host's keys will not reach the guest anymore, as when the window
+    /// loses the keyboard: a key held then would stay down in the guest.
+    pub fn release_all(&mut self) {
+        for (_, scancode) in std::mem::take(&mut self.held) {
+            self.send(EmulatorEvent::ScanRelease(scancode | 0x80));
+        }
+    }
+
+    fn send(&self, event: EmulatorEvent) {
+        // The other end is the machine's keyboard, which lives as long as
+        // the window does: there is nobody to tell of a failure.
+        let _ = self.events.send(event);
+    }
+}
 
 /// Map a winit `PhysicalKey` to an IBM PC/XT scancode.
 /// Returns `None` for unmapped keys.
@@ -113,57 +183,5 @@ fn keycode_to_scancode(code: KeyCode) -> Option<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn scancode(code: KeyCode) -> Option<u8> {
-        physical_key_to_scancode(PhysicalKey::Code(code))
-    }
-
-    /// Every key of the numeric keypad, Enter and `/` included, sends its XT
-    /// scancode, and so does the 102nd key of ISO keyboards.
-    #[test]
-    fn keypad_and_102nd_key_send_their_scancodes() {
-        let expected = [
-            (KeyCode::Numpad7, 0x47),
-            (KeyCode::Numpad8, 0x48),
-            (KeyCode::Numpad9, 0x49),
-            (KeyCode::NumpadSubtract, 0x4A),
-            (KeyCode::Numpad4, 0x4B),
-            (KeyCode::Numpad5, 0x4C),
-            (KeyCode::Numpad6, 0x4D),
-            (KeyCode::NumpadAdd, 0x4E),
-            (KeyCode::Numpad1, 0x4F),
-            (KeyCode::Numpad2, 0x50),
-            (KeyCode::Numpad3, 0x51),
-            (KeyCode::Numpad0, 0x52),
-            (KeyCode::NumpadDecimal, 0x53),
-            (KeyCode::NumpadMultiply, 0x37),
-            (KeyCode::NumpadEnter, 0x1C),
-            (KeyCode::NumpadDivide, 0x35),
-            (KeyCode::IntlBackslash, 0x56),
-        ];
-        for (code, xt) in expected {
-            assert_eq!(scancode(code), Some(xt), "{code:?}");
-        }
-    }
-
-    #[test]
-    fn cursor_keys_share_the_keypad_scancodes() {
-        assert_eq!(scancode(KeyCode::ArrowUp), scancode(KeyCode::Numpad8));
-        assert_eq!(scancode(KeyCode::Home), scancode(KeyCode::Numpad7));
-        assert_eq!(scancode(KeyCode::Delete), scancode(KeyCode::NumpadDecimal));
-    }
-
-    #[test]
-    fn keys_the_83_key_keyboard_lacks_send_nothing() {
-        for code in [
-            KeyCode::F11,
-            KeyCode::F12,
-            KeyCode::PrintScreen,
-            KeyCode::Pause,
-        ] {
-            assert_eq!(scancode(code), None, "{code:?}");
-        }
-    }
-}
+#[path = "keys_tests.rs"]
+mod tests;

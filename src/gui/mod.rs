@@ -1,8 +1,8 @@
 //! The window: a winit application that owns the machine. Each redraw runs
 //! the guest for `CPU_SLICE` of host time (`pacer`), draws the frame
 //! (`renderer`) and asks for the next redraw; key presses and releases go
-//! to the keyboard controller as scancodes (`keys`), and F12 asks for a VGA
-//! dump.
+//! to the keyboard controller as scancodes (`keys`), which are all released
+//! when the window loses the keyboard, and F12 asks for a VGA dump.
 //!
 //! The invariant: the guest runs only inside `RedrawRequested`, so a redraw
 //! must always be pending. The loop asks for one after every frame and
@@ -25,7 +25,7 @@ use winit::window::{Window, WindowId};
 
 use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
-use keys::physical_key_to_scancode;
+use keys::GuestKeys;
 use pacer::Pacer;
 use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
 
@@ -41,7 +41,7 @@ struct EmulatorApp {
     pacer: Pacer,
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
-    kbd_tx: mpsc::Sender<EmulatorEvent>,
+    keys: GuestKeys,
 }
 
 impl EmulatorApp {
@@ -109,19 +109,12 @@ impl ApplicationHandler for EmulatorApp {
                     return;
                 }
 
-                if let Some(scancode) = physical_key_to_scancode(event.physical_key) {
-                    match event.state {
-                        ElementState::Pressed => {
-                            let _ = self.kbd_tx.send(EmulatorEvent::Scancode(scancode));
-                        }
-                        ElementState::Released => {
-                            let _ = self
-                                .kbd_tx
-                                .send(EmulatorEvent::ScanRelease(scancode | 0x80));
-                        }
-                    }
-                }
+                self.keys.key(event.physical_key, event.state);
             }
+
+            // The releases of the keys held now go to whoever has the
+            // keyboard next, not to this window.
+            WindowEvent::Focused(false) => self.keys.release_all(),
 
             WindowEvent::RedrawRequested => {
                 self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
@@ -163,7 +156,7 @@ pub fn run(runtime: Runtime, kbd_tx: mpsc::Sender<EmulatorEvent>) {
         pacer: Pacer::new(),
         renderer: None,
         window: None,
-        kbd_tx,
+        keys: GuestKeys::new(kbd_tx),
     };
 
     event_loop.run_app(&mut app).expect("Event loop failed");
