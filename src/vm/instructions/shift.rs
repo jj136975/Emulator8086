@@ -1,3 +1,12 @@
+//! The shift and rotate instructions: ROL, ROR, RCL, RCR, SHL, SHR, SAR and
+//! the undocumented SETMO, by 1 or by CL (D0h-D3h) and, from the 80186, by
+//! an immediate (C0h, C1h).
+//!
+//! The invariant: a count taken from CL is not masked. All eight bits count,
+//! as on the 8086; the 80186 and later reduce the count to five bits, and
+//! only the immediate form, which is theirs, does so here. A count of zero
+//! changes nothing, flags included.
+
 use super::update_arithmetic_flags;
 use crate::utils::number::SpecialOps;
 use crate::vm::modrm::ModRM;
@@ -5,8 +14,9 @@ use crate::vm::registers::OperandRef;
 use crate::vm::runtime::CpuFlag::*;
 use crate::vm::runtime::Runtime;
 
-/// 0xC0/0xC1: shift/rotate r/m8 or r/m16 by immediate byte count.
-/// Used by MS-DOS 6.22 IO.SYS (186+ but required for compatibility).
+/// Opcodes C0h and C1h (80186+): shift or rotate an r/m operand by an
+/// immediate count, of which five bits are used. MS-DOS 6.22's IO.SYS needs
+/// them.
 pub(super) fn group_c0_c1(vm: &mut Runtime, is_word: bool) {
     if is_word {
         let (operand, op) = u16::mod_rm_single(vm);
@@ -19,10 +29,12 @@ pub(super) fn group_c0_c1(vm: &mut Runtime, is_word: bool) {
     }
 }
 
-pub(super) fn group_d0_d3(vm: &mut Runtime, is_word: bool, directional: bool) {
-    // All eight bits of CL count. This is the 8086's behaviour, kept
-    // deliberately: the 80186 and later mask the count to 5 bits.
-    let count = if !directional {
+/// Opcodes D0h-D3h: shift or rotate an r/m operand by 1 or, with bit 1 of
+/// the opcode set (`by_cl`), by CL.
+pub(super) fn group_d0_d3(vm: &mut Runtime, is_word: bool, by_cl: bool) {
+    // All eight bits of CL count: the 8086's behaviour. The 80186 and later
+    // mask the count to 5 bits.
+    let count = if !by_cl {
         1
     } else {
         vm.cpu.registers.cx.low() as u32

@@ -1,5 +1,25 @@
+//! The register file and the operand references the instructions work
+//! through: `Register` is a 16-bit register with its two byte halves,
+//! `Registers` the 8086's set of them, and `ByteWrapper`/`WordWrapper` name
+//! an operand wherever it lives, in a register or in guest memory.
+//!
+//! The invariant: a wrapper is a raw pointer without a lifetime, so that an
+//! instruction can take one for its destination, go on using `&mut Runtime`
+//! (fetch an immediate, set the flags) and store through it last. Nothing
+//! checks that. It holds because the bytes never move (registers are fields
+//! of the `Runtime` that `process` borrows, memory is one boxed array), the
+//! machine runs on one thread, and callers keep two rules: a wrapper is
+//! never stored (an instruction makes it, uses it and drops it), and until
+//! its last use the bytes behind it are written through wrappers only, never
+//! through `vm`. Rust's aliasing rules for `&mut` do not sanction this
+//! (Stacked Borrows rejects it): the tests hold it up, not the compiler.
+
 use crate::vm::memory::{Memory, Segment};
 
+/// A 16-bit register, readable as a word or as its two bytes. Both fields
+/// are plain integers over the same two bytes and a `Register` is always
+/// built from a whole word, so either view is initialized and valid at all
+/// times: every `unsafe` access to a field below rests on that.
 #[repr(C)]
 pub union Register {
     word: u16,
@@ -18,27 +38,38 @@ impl Default for Register {
     }
 }
 
+/// An 8-bit operand: a pointer to a register half or to a byte of guest
+/// memory, under the wrapper contract of the module header.
 pub struct ByteWrapper {
     inner: *mut u8,
 }
 
 impl ByteWrapper {
+    /// Forgets the borrow: from here on the wrapper contract, not the borrow
+    /// checker, keeps the pointer valid.
     pub fn new(byte: &mut u8) -> Self {
         Self { inner: byte }
     }
 
     #[inline(always)]
     pub fn byte(&self) -> u8 {
+        // SAFETY: wrapper contract: `inner` points at a `u8` of the register
+        // file, of guest memory or of its ROM sink, which stays live for as
+        // long as a wrapper may be in use.
         unsafe { *self.inner }
     }
 
     #[inline(always)]
     pub fn set(&self, byte: u8) {
+        // SAFETY: wrapper contract, as for `byte`; nothing but wrappers
+        // writes the pointee while this one is in use.
         unsafe { *self.inner = byte }
     }
 
     #[inline]
     pub fn swap(&mut self, other: &mut ByteWrapper) {
+        // SAFETY: both pointers are valid under the wrapper contract, and
+        // `ptr::swap` allows them to be the same byte (XCHG AL, AL).
         unsafe { core::ptr::swap(self.inner, other.inner) };
     }
 }
@@ -52,10 +83,14 @@ pub struct WordWrapper {
 }
 
 impl WordWrapper {
+    /// Forgets the borrow, like `ByteWrapper::new`.
     pub fn from_register(register: &mut Register) -> Self {
+        // SAFETY: either view of the union is always valid (see `Register`).
         let bytes = unsafe { register.byte.as_mut_ptr() };
         Self {
+            // SAFETY: `LOW_IDX` is 0 or 1, inside the two bytes of the array.
             lo: unsafe { bytes.add(LOW_IDX) },
+            // SAFETY: `HIGH_IDX` is the other index of the same array.
             hi: unsafe { bytes.add(HIGH_IDX) },
         }
     }
@@ -69,13 +104,19 @@ impl WordWrapper {
 
     #[inline(always)]
     pub fn word(&self) -> u16 {
+        // SAFETY: wrapper contract: `lo` and `hi` each point at a `u8` of the
+        // register file, of guest memory or of its ROM sink, which stays
+        // live for as long as a wrapper may be in use.
         u16::from_le_bytes(unsafe { [*self.lo, *self.hi] })
     }
 
     #[inline(always)]
     pub fn set(&self, word: u16) {
         let bytes = word.to_le_bytes();
+        // SAFETY: wrapper contract, as for `word`; nothing but wrappers
+        // writes the pointees while this one is in use.
         unsafe { *self.lo = bytes[0] };
+        // SAFETY: as for the low byte.
         unsafe { *self.hi = bytes[1] };
     }
 
@@ -86,6 +127,8 @@ impl WordWrapper {
         other.set(mine);
     }
 
+    /// Exchanges the operand with `register`, which must not be the register
+    /// this wrapper points at: it is written through its own reference.
     #[inline]
     pub fn swap_register(&mut self, register: &mut Register) {
         let mine = self.word();
@@ -138,26 +181,31 @@ pub const HIGH_IDX: usize = 1;
 impl Register {
     #[inline(always)]
     pub fn word(&self) -> u16 {
+        // SAFETY: either view of the union is always valid (see `Register`).
         unsafe { self.word }
     }
 
     #[inline(always)]
     pub fn low(&self) -> u8 {
+        // SAFETY: either view of the union is always valid (see `Register`).
         unsafe { self.byte[LOW_IDX] }
     }
 
     #[inline(always)]
     pub fn high(&self) -> u8 {
+        // SAFETY: either view of the union is always valid (see `Register`).
         unsafe { self.byte[HIGH_IDX] }
     }
 
     #[inline(always)]
     pub fn ref_mut_low(&mut self) -> ByteWrapper {
+        // SAFETY: either view of the union is always valid (see `Register`).
         ByteWrapper::new(unsafe { &mut self.byte[LOW_IDX] })
     }
 
     #[inline(always)]
     pub fn ref_mut_high(&mut self) -> ByteWrapper {
+        // SAFETY: either view of the union is always valid (see `Register`).
         ByteWrapper::new(unsafe { &mut self.byte[HIGH_IDX] })
     }
 
@@ -168,11 +216,13 @@ impl Register {
 
     #[inline(always)]
     pub fn set_low(&mut self, byte: u8) {
+        // SAFETY: either view of the union is always valid (see `Register`).
         unsafe { self.byte[LOW_IDX] = byte };
     }
 
     #[inline(always)]
     pub fn set_high(&mut self, byte: u8) {
+        // SAFETY: either view of the union is always valid (see `Register`).
         unsafe { self.byte[HIGH_IDX] = byte };
     }
 
@@ -228,6 +278,10 @@ impl Registers {
     /// CS=0xFFFF, IP=0x0000 -> execution starts at physical 0xFFFF0.
     /// All other registers are 0x0000.
     /// The BIOS is responsible for setting up the stack and segments.
+    ///
+    /// `memory` is what the four segment registers will address: it must
+    /// point at a `Memory` that stays where it is for as long as these
+    /// registers are used (see `Segment::new`).
     pub fn new(memory: *mut Memory) -> Self {
         Self {
             ax: Register::default(),

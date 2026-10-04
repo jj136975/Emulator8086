@@ -1,3 +1,12 @@
+//! Integer arithmetic for the instruction code. `SpecialOps` gives `u8` and
+//! `u16` one interface (additions and subtractions that report overflow and
+//! carry, rotates through the carry, shifts), so that an instruction is
+//! written once for both operand widths.
+//!
+//! The invariant: these are total over the operands an 8086 can present,
+//! but for the preconditions their callers check: `bit` and the plain shifts
+//! take an index or a count below `BITS`, and `div_rem` a non-zero divisor.
+
 use std::ops::{BitAnd, BitOr, BitXor};
 
 #[inline]

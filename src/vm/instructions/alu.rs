@@ -1,5 +1,20 @@
+//! The arithmetic and logic instructions: the eight two-operand ALU
+//! operations in every encoding, INC and DEC, TEST, the F6/F7 group (NOT,
+//! NEG, MUL, IMUL, DIV, IDIV), the 80186's IMUL by an immediate, and CBW and
+//! CWD.
+//!
+//! The invariant: the flags of the eight operations are computed in one
+//! place, `alu`, whatever the encoding. CMP runs the same code and drops the
+//! result, as CMPS and SCAS do, and NEG is a subtraction from zero. What
+//! looks odd in the F6/F7 group is the 8086's microcode showing through and
+//! stays: a REP prefix negates the result of MUL and IMUL and the quotient
+//! of IDIV, and IDIV rejects the most negative quotient.
+
 use super::control::div_zero;
-use super::{update_arithmetic_flags, update_logical_flags, update_result_flags};
+use super::{
+    BYTE_SIGN_FLAG, WORD_SIGN_FLAG, update_arithmetic_flags, update_logical_flags,
+    update_result_flags,
+};
 use crate::utils::number::{SpecialOps, extend_sign};
 use crate::vm::modrm::ModRM;
 use crate::vm::registers::OperandRef;
@@ -80,6 +95,14 @@ pub(super) fn inc_dec<T: SpecialOps>(vm: &mut Runtime, dest: &impl OperandRef<T>
     dest.set(res);
 }
 
+/// INC reg (40h-47h) and DEC reg (48h-4Fh); the register is in bits 0-2 of
+/// the opcode.
+#[inline(always)]
+pub(super) fn inc_dec_reg(vm: &mut Runtime, opcode: u8, decrement: bool) {
+    let reg = vm.cpu.registers.ref_reg_word(opcode & 0b111);
+    inc_dec(vm, &reg, decrement);
+}
+
 /// `op` between the accumulator and an immediate (opcodes x4h, x5h, xCh, xDh).
 #[inline(always)]
 pub(super) fn accumulator_immediate(vm: &mut Runtime, op: u8, is_word: bool) {
@@ -139,6 +162,8 @@ pub(super) fn group_80_83(vm: &mut Runtime, is_word: bool, sign_extended: bool) 
     }
 }
 
+/// Opcodes F6h and F7h: TEST, NOT, NEG, MUL, IMUL, DIV or IDIV of the r/m
+/// operand, selected by the reg field.
 pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
     if is_word {
         let (modrm, reg) = u16::mod_rm_single(vm);
@@ -323,5 +348,80 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             }
             _ => unreachable!(),
         };
+    }
+}
+
+/// TEST accumulator, imm (A8h, A9h): sets the flags of an AND and stores
+/// nothing.
+#[inline(always)]
+pub(super) fn test_accumulator_immediate(vm: &mut Runtime, is_word: bool) {
+    if is_word {
+        let word = vm.cpu.fetch_word();
+        update_logical_flags(vm, vm.cpu.registers.ax.word() & word);
+    } else {
+        let byte = vm.cpu.fetch_byte();
+        update_logical_flags(vm, vm.cpu.registers.ax.low() & byte);
+    }
+}
+
+/// TEST r/m, reg (84h, 85h).
+#[inline(always)]
+pub(super) fn test_mod_rm(vm: &mut Runtime, is_word: bool) {
+    if is_word {
+        let (modrm, word) = u16::mod_rm_lhs(vm);
+        update_logical_flags(vm, modrm.word() & word);
+    } else {
+        let (modrm, byte) = u8::mod_rm_lhs(vm);
+        update_logical_flags(vm, modrm.byte() & byte);
+    }
+}
+
+/// IMUL reg, r/m16, imm16 (69h, 80186+): the register receives the low word
+/// of the signed product; CF and OF are set if the product does not fit it.
+#[inline(always)]
+pub(super) fn imul_imm16(vm: &mut Runtime) {
+    let (modrm, reg) = u16::mod_rm_single(vm);
+    let src = modrm.word();
+    let imm = vm.cpu.fetch_word();
+    let result = (src as i16 as i32) * (imm as i16 as i32);
+    vm.cpu.registers.ref_reg_word(reg).set(result as u16);
+    let overflow = !(-32768..=32767).contains(&result);
+    vm.cpu.update_flag(Overflow, overflow);
+    vm.cpu.update_flag(Carry, overflow);
+}
+
+/// IMUL reg, r/m16, imm8 (6Bh, 80186+): as `imul_imm16`, with the byte
+/// sign-extended.
+#[inline(always)]
+pub(super) fn imul_imm8(vm: &mut Runtime) {
+    let (modrm, reg) = u16::mod_rm_single(vm);
+    let src = modrm.word();
+    let imm = vm.cpu.fetch_byte() as i8 as i16;
+    let result = (src as i16 as i32) * (imm as i32);
+    vm.cpu.registers.ref_reg_word(reg).set(result as u16);
+    let overflow = !(-32768..=32767).contains(&result);
+    vm.cpu.update_flag(Overflow, overflow);
+    vm.cpu.update_flag(Carry, overflow);
+}
+
+/// CBW (98h): sign-extends AL into AH.
+#[inline(always)]
+pub(super) fn cbw(vm: &mut Runtime) {
+    let al = vm.cpu.registers.ax.low();
+    if al & BYTE_SIGN_FLAG != 0 {
+        vm.cpu.registers.ax.set_high(!0);
+    } else {
+        vm.cpu.registers.ax.set_high(0);
+    }
+}
+
+/// CWD (99h): sign-extends AX into DX.
+#[inline(always)]
+pub(super) fn cwd(vm: &mut Runtime) {
+    let ax = vm.cpu.registers.ax.word();
+    if ax & WORD_SIGN_FLAG != 0 {
+        vm.cpu.registers.dx.set(0xFFFF);
+    } else {
+        vm.cpu.registers.dx.set(0);
     }
 }

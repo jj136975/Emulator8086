@@ -1,3 +1,10 @@
+//! One instruction at a time: each test places a few instructions in segment
+//! 0 of a machine without devices and steps `process` over them. What needs
+//! more than that (wrap-around, ROM, prefix orders, what happens between two
+//! instructions) is in `edge_cases`.
+
+mod edge_cases;
+
 use crate::io::bus::IoDevice;
 use crate::io::pic::PicDevice;
 use crate::vm::instructions::process;
@@ -255,7 +262,7 @@ fn lahf_sahf() {
     exec(&mut vm); // LAHF
     assert_eq!(vm.cpu.registers.ax.high(), 0xD7);
 
-    // Now clear flags and restore from AH
+    // With the low byte of FLAGS cleared, SAHF restores it from AH.
     vm.cpu.flags = 0xFF00;
     exec(&mut vm); // SAHF
     assert_eq!(vm.cpu.flags & 0xFF, 0xD7);
@@ -1655,10 +1662,6 @@ fn dec_rm_word() {
     assert_eq!(vm.cpu.registers.ds.read_word(0x200), 0x00FF);
 }
 
-// ===========================================================================
-// REGRESSION TESTS
-// ===========================================================================
-
 /// TEST clears CF and OF.
 #[test]
 fn test_clears_carry_and_overflow() {
@@ -1695,7 +1698,7 @@ fn pop_ss_sets_interrupt_inhibit() {
     // Set DS=0x1234 first so we push something, then pop into SS.
     let mut vm = setup(&[0x1E, 0x17]);
     vm.cpu.registers.ds.reg_mut().set(0x1234);
-    assert!(!vm.interrupt_inhibit, "baseline");
+    assert!(!vm.interrupt_inhibit, "nothing is inhibited before POP SS");
     exec_n(&mut vm, 2);
     assert!(
         vm.interrupt_inhibit,
@@ -1761,7 +1764,7 @@ fn rep_movsb_should_break_on_pending_interrupt() {
     vm.cpu.pic.request_interrupt(0);
     assert!(
         vm.cpu.pic.has_interrupt(),
-        "sanity: PIC must report a pending interrupt before the REP runs"
+        "the PIC must report a pending interrupt before the REP runs"
     );
 
     // Execute: CLD, then REP prefix, then MOVSB (which internally loops).

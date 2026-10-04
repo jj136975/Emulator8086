@@ -1,3 +1,13 @@
+//! The CPU state: the register file, the megabyte of guest memory, FLAGS,
+//! the halt latch and the interrupt controller. It is a struct apart from
+//! the `Runtime` because it is what the port bus hands a device: the bus is
+//! borrowed while it dispatches, and the device gets the rest.
+//!
+//! The invariant: `registers` and `memory` are one unit. Each segment
+//! register keeps a raw pointer to the `Memory` behind the box
+//! (`Registers::new`), so the box is built first, handed to the registers,
+//! and never replaced for as long as the `Cpu` exists.
+
 use crate::io::pic::Pic;
 use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;

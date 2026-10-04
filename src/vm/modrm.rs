@@ -1,3 +1,13 @@
+//! ModR/M decoding. `decode_rm` turns the mod and r/m fields of the byte into
+//! an operand, a register or a memory offset with its default segment, and
+//! the `ModRM` trait reads that operand or takes a reference to it at either
+//! width.
+//!
+//! The invariant: `decode_rm` is the only effective-address decoder and it
+//! consumes the displacement bytes, so it runs exactly once for a ModR/M
+//! byte and before any immediate is fetched. The references handed out here
+//! are the raw-pointer wrappers of `registers.rs` and come with its rules.
+
 use crate::vm::memory::Segment;
 use crate::vm::registers::{ByteWrapper, OperandRef, WordWrapper};
 use crate::vm::runtime::Runtime;

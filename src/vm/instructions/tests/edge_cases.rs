@@ -1,7 +1,11 @@
-//! Regression tests for CPU behaviour that the single-instruction hardware
-//! vectors cannot reach: host-side arithmetic overflow, wrap-around at segment
-//! and memory boundaries, ROM protection, prefix combinations, and interrupt
-//! and single-step sequencing.
+//! CPU behaviour at the edges the single-instruction hardware vectors cannot
+//! reach: a division the host cannot represent, operands that wrap around a
+//! segment or the end of memory, stores into ROM, prefix bytes in every
+//! order, and what happens between two instructions (interrupt recognition,
+//! the single-step trap, a REP that is interrupted and resumed).
+//!
+//! Each test starts guest code at 1000:0100 on a machine without devices,
+//! with SS:SP = 2000:1000, DS = 3000 and ES = 4000 unless it sets them.
 
 use crate::io::bus::IoDevice;
 use crate::io::pic::PicDevice;

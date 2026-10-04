@@ -1,3 +1,16 @@
+//! Guest memory. `Memory` is the megabyte the 8086 addresses: every address
+//! is taken modulo 2^20 and a word is two separately addressed bytes, so it
+//! wraps at the end of a segment or of memory as on the chip. `Segment` is a
+//! segment register with the accessors of its 64 KiB window.
+//!
+//! The invariant: nothing the guest does changes ROM (the top 64 KiB, once
+//! protection is on). `write_byte` drops the store, and an operand reference
+//! to a ROM byte points at a copy of it in `rom_sink`. The sink has one slot
+//! per byte of one operand, so a reference into ROM is good only until the
+//! next reference is taken. A `Segment` reaches its `Memory` through a raw
+//! pointer: no reference to `cpu.memory` may be held across a call on a
+//! segment.
+
 use crate::vm::registers::{ByteWrapper, Register, WordWrapper};
 
 pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
@@ -36,8 +49,9 @@ impl Memory {
         memory.mem[offset..offset + data.len()].copy_from_slice(data);
     }
 
-    /// The byte an operand reference to `addr` reads and writes. A ROM byte is copied to scratch slot `slot` first,
-    /// so the operand reads it normally but cannot change it.
+    /// The byte an operand reference to `addr` reads and writes. A ROM byte
+    /// is copied to scratch slot `slot` first, so the operand reads it
+    /// normally but cannot change it.
     #[inline]
     fn operand_byte(&mut self, addr: usize, slot: usize) -> &mut u8 {
         let addr = addr & 0xFFFFF;
@@ -62,7 +76,10 @@ impl Memory {
     pub fn ref_word_at(&mut self, lo: usize, hi: usize) -> WordWrapper {
         let lo: *mut u8 = self.operand_byte(lo, 0);
         let hi: *mut u8 = self.operand_byte(hi, 1);
-        // SAFETY: both pointers address live bytes owned by `self`.
+        // SAFETY: both pointers address bytes this `Memory` owns, in its
+        // array or in `rom_sink`. They stay valid while it is neither moved
+        // nor dropped, which outlasts any wrapper used as the wrapper
+        // contract (`registers.rs`) requires.
         unsafe { WordWrapper::from_parts(lo, hi) }
     }
 
@@ -111,10 +128,18 @@ impl Memory {
 
 pub struct Segment {
     offset: Register,
+    /// The `Memory` this segment addresses: the one its `Cpu` keeps boxed
+    /// (`Registers::new`). That allocation outlives the registers and is
+    /// never replaced, so the pointer always points at a live `Memory`. It
+    /// aliases the box that owns that `Memory`, which the aliasing rules
+    /// sanction no more than the operand wrappers of `registers.rs`: what
+    /// keeps it working is that the two paths are never in use at once.
     mem: *mut Memory,
 }
 
 impl Segment {
+    /// `memory` must point at a `Memory` that stays where it is for as long
+    /// as the segment is used: in the machine, the box the `Cpu` owns.
     pub fn new(offset: u16, memory: *mut Memory) -> Self {
         Self {
             offset: Register::new(offset),
@@ -130,6 +155,8 @@ impl Segment {
     #[inline]
     pub fn ref_byte(&mut self, address: u16) -> ByteWrapper {
         let address = self.phys_address(address);
+        // SAFETY: `mem` points at a live `Memory` (see the field), and the
+        // caller holds no reference to it across this call.
         unsafe { (*self.mem).ref_byte(address) }
     }
 
@@ -138,12 +165,16 @@ impl Segment {
         // The high byte's offset wraps inside the segment (FFFFh -> 0000h).
         let lo = self.phys_address(address);
         let hi = self.phys_address(address.wrapping_add(1));
+        // SAFETY: `mem` points at a live `Memory` (see the field), and the
+        // caller holds no reference to it across this call.
         unsafe { (*self.mem).ref_word_at(lo, hi) }
     }
 
     #[inline]
     pub fn read_byte(&self, address: u16) -> u8 {
         let address = self.phys_address(address);
+        // SAFETY: `mem` points at a live `Memory` (see the field), and the
+        // caller holds no mutable reference to it across this call.
         unsafe { (*self.mem).read_byte(address) }
     }
 
@@ -158,6 +189,8 @@ impl Segment {
     #[inline]
     pub fn write_byte(&mut self, address: u16, byte: u8) {
         let address = self.phys_address(address);
+        // SAFETY: `mem` points at a live `Memory` (see the field), and the
+        // caller holds no reference to it across this call.
         unsafe {
             (*self.mem).write_byte(address, byte);
         }
@@ -181,113 +214,6 @@ impl Segment {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Regression tests — Memory & Segment invariants.
-// ---------------------------------------------------------------------------
 #[cfg(test)]
-mod inspection_tests {
-    use super::*;
-
-    /// A word at the last physical address has its high byte at address 0,
-    /// for reads and for writes.
-    #[test]
-    fn word_reference_at_last_physical_address_wraps_to_zero() {
-        let mut mem = Memory::new();
-        mem.write_byte_unchecked(0xFFFFF, 0x11);
-        mem.write_byte_unchecked(0x00000, 0x22);
-        let w = mem.ref_word_at(0xFFFFF, 0x00000);
-        assert_eq!(w.word(), 0x2211, "low from 0xFFFFF, high wraps to 0x00000");
-        w.set(0xBBAA);
-        assert_eq!(mem.read_byte(0xFFFFF), 0xAA);
-        assert_eq!(mem.read_byte(0x00000), 0xBB);
-    }
-
-    /// Operand references into ROM read the ROM bytes but drop writes, byte
-    /// by byte: a word straddling the RAM/ROM boundary stores only its RAM half.
-    #[test]
-    fn operand_references_cannot_modify_rom() {
-        let mut mem = Memory::new();
-        mem.write_byte_unchecked(0xEFFFF, 0x11);
-        mem.write_byte_unchecked(0xF0000, 0x22);
-        mem.write_byte_unchecked(0xF0001, 0x33);
-        mem.enable_rom_protection();
-
-        let b = mem.ref_byte(0xF0000);
-        assert_eq!(b.byte(), 0x22);
-        b.set(0x99);
-        assert_eq!(mem.read_byte(0xF0000), 0x22);
-
-        let w = mem.ref_word_at(0xF0000, 0xF0001);
-        assert_eq!(w.word(), 0x3322);
-        w.set(0x7788);
-        assert_eq!(mem.read_word(0xF0000), 0x3322);
-
-        let straddling = mem.ref_word_at(0xEFFFF, 0xF0000);
-        assert_eq!(straddling.word(), 0x2211);
-        straddling.set(0x5566);
-        assert_eq!(mem.read_byte(0xEFFFF), 0x66, "the RAM byte is written");
-        assert_eq!(mem.read_byte(0xF0000), 0x22, "the ROM byte is not");
-    }
-
-    /// `Segment::read_word` at offset 0xFFFF wraps within the segment, as on
-    /// the 8086: low byte from offset 0xFFFF, high byte from offset 0x0000.
-    #[test]
-    fn segment_read_word_wraps_within_segment_at_offset_ffff() {
-        let mut mem = Box::new(Memory::new());
-        // Pick segment 0x1000. Physical 0x10000..0x1FFFF.
-        // Write 0xAA at segment:0xFFFF (physical 0x1FFFF)
-        // Write 0xBB at segment:0x0000 (physical 0x10000)
-        Memory::copy_data(&mut mem, 0x1FFFF, &[0xAA]);
-        Memory::copy_data(&mut mem, 0x10000, &[0xBB]);
-        let seg = Segment::new(0x1000, &mut *mem as *mut Memory);
-        let word = seg.read_word(0xFFFF);
-        assert_eq!(
-            word, 0xBBAA,
-            "At offset 0xFFFF, low byte should come from segment:FFFF (0xAA) \
-             and high byte should wrap to segment:0000 (0xBB), giving 0xBBAA"
-        );
-    }
-
-    /// `Memory::read_word` at physical 0xFFFFF reads the high byte from
-    /// physical 0, like the 8086's 20-bit address bus (no A20 line).
-    #[test]
-    fn memory_read_word_wraps_at_1mb_boundary() {
-        let mut mem = Memory::new();
-        mem.write_byte_unchecked(0xFFFFF, 0x11);
-        mem.write_byte_unchecked(0x00000, 0x22);
-        let word = mem.read_word(0xFFFFF);
-        assert_eq!(
-            word, 0x2211,
-            "At physical 0xFFFFF, low byte is 0x11, high byte wraps to 0x00000 (0x22)"
-        );
-    }
-
-    /// With ROM protection enabled, `write_byte` drops writes at or above
-    /// `rom_start`; `write_byte_unchecked` still writes.
-    #[test]
-    fn rom_write_protection_blocks_writes() {
-        let mut mem = Memory::new();
-        // Seed a known byte via unchecked write
-        mem.write_byte_unchecked(0xF1234, 0xAB);
-        mem.enable_rom_protection();
-        // Try to overwrite through the protected API
-        mem.write_byte(0xF1234, 0xCD);
-        assert_eq!(
-            mem.read_byte(0xF1234),
-            0xAB,
-            "ROM write should have been dropped; value changed"
-        );
-        // write_byte_unchecked should still bypass
-        mem.write_byte_unchecked(0xF1234, 0xCD);
-        assert_eq!(mem.read_byte(0xF1234), 0xCD);
-    }
-
-    /// Sanity: writes below rom_start still succeed.
-    #[test]
-    fn writes_below_rom_start_still_work() {
-        let mut mem = Memory::new();
-        mem.enable_rom_protection();
-        mem.write_byte(0x00100, 0xEF);
-        assert_eq!(mem.read_byte(0x00100), 0xEF);
-    }
-}
+#[path = "memory_tests.rs"]
+mod tests;

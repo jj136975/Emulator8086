@@ -1,3 +1,14 @@
+//! The string instructions MOVS, CMPS, SCAS, LODS and STOS, the 80186's INS
+//! and OUTS, and the REP loop around them, each written once over the
+//! element width.
+//!
+//! The invariant: a repeated instruction is interruptible between two
+//! elements. `repeat` then puts IP back on the instruction's first prefix
+//! byte (`op_start_pc`) and returns with CX, SI and DI already advanced, so
+//! that after IRET the same bytes resume the count. Whatever an element does
+//! must therefore be complete, registers included, before `repeat` looks for
+//! an interrupt.
+
 use super::alu::{CMP, alu};
 use crate::utils::number::SpecialOps;
 use crate::vm::memory::Segment;
@@ -147,7 +158,7 @@ fn element_step<T: Element>(vm: &Runtime) -> u16 {
 // inlined into the opcode dispatcher, the REP loops of the byte forms run
 // about half as fast.
 
-/// MOVS — copy DS:[SI] to ES:[DI]
+/// MOVS — copy `DS:[SI]` to `ES:[DI]`
 #[inline(never)]
 pub(super) fn movs<T: Element>(vm: &mut Runtime) {
     let step = element_step::<T>(vm);
@@ -161,7 +172,7 @@ pub(super) fn movs<T: Element>(vm: &mut Runtime) {
     });
 }
 
-/// CMPS — compare DS:[SI] with ES:[DI]
+/// CMPS — compare `DS:[SI]` with `ES:[DI]`
 #[inline(never)]
 pub(super) fn cmps<T: Element>(vm: &mut Runtime) {
     let step = element_step::<T>(vm);
@@ -176,7 +187,7 @@ pub(super) fn cmps<T: Element>(vm: &mut Runtime) {
     });
 }
 
-/// STOS — store the accumulator at ES:[DI]
+/// STOS — store the accumulator at `ES:[DI]`
 #[inline(never)]
 pub(super) fn stos<T: Element>(vm: &mut Runtime) {
     let step = element_step::<T>(vm);
@@ -188,7 +199,7 @@ pub(super) fn stos<T: Element>(vm: &mut Runtime) {
     });
 }
 
-/// LODS — load the accumulator from DS:[SI]
+/// LODS — load the accumulator from `DS:[SI]`
 #[inline(never)]
 pub(super) fn lods<T: Element>(vm: &mut Runtime) {
     let step = element_step::<T>(vm);
@@ -200,7 +211,7 @@ pub(super) fn lods<T: Element>(vm: &mut Runtime) {
     });
 }
 
-/// INS — read from port [DX] into ES:[DI] (80186+)
+/// INS — read from port `[DX]` into `ES:[DI]` (80186+)
 #[inline(never)]
 pub(super) fn ins<T: Element>(vm: &mut Runtime) {
     let step = element_step::<T>(vm);
@@ -213,7 +224,7 @@ pub(super) fn ins<T: Element>(vm: &mut Runtime) {
     });
 }
 
-/// OUTS — write DS:[SI] to port [DX] (80186+)
+/// OUTS — write `DS:[SI]` to port `[DX]` (80186+)
 #[inline(never)]
 pub(super) fn outs<T: Element>(vm: &mut Runtime) {
     let step = element_step::<T>(vm);
@@ -226,7 +237,7 @@ pub(super) fn outs<T: Element>(vm: &mut Runtime) {
     });
 }
 
-/// SCAS — compare the accumulator with ES:[DI]
+/// SCAS — compare the accumulator with `ES:[DI]`
 #[inline(never)]
 pub(super) fn scas<T: Element>(vm: &mut Runtime) {
     let step = element_step::<T>(vm);
