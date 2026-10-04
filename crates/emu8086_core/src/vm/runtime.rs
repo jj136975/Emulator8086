@@ -23,7 +23,7 @@ use crate::io::disk_spec::open_drives;
 use crate::io::dma::{DmaController, DmaPageRegisters};
 use crate::io::fdc::FdcStub;
 use crate::io::hdc::HdcStub;
-use crate::io::keyboard::{EmulatorEvent, KeyboardController};
+use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
 use crate::io::pit::Pit;
 use crate::io::vga::VgaDevice;
@@ -247,7 +247,10 @@ impl Runtime {
     #[cfg(test)]
     pub fn new_test_machine(
         disk_ctrl: DiskController,
-    ) -> (Self, std::sync::mpsc::Sender<EmulatorEvent>) {
+    ) -> (
+        Self,
+        std::sync::mpsc::Sender<crate::io::keyboard::EmulatorEvent>,
+    ) {
         let (tx, rx) = std::sync::mpsc::channel();
         let vm = Self::with_devices(disk_ctrl, KeyboardController::with_receiver(rx));
         (vm, tx)
@@ -311,10 +314,8 @@ impl Runtime {
 
             if (self.instruction_count.is_multiple_of(1000) || self.cpu.halted)
                 && let Some(kb) = &self.keyboard
-                && let Some(EmulatorEvent::DumpVga) = kb.borrow_mut().poll(&mut self.cpu.pic)
-                && let Some(vga) = &self.vga
             {
-                vga.borrow().dump(&self.cpu.memory, "vga_dump.txt");
+                kb.borrow_mut().poll(&mut self.cpu.pic);
             }
 
             // Interrupts are not recognised between a prefix byte and the
@@ -361,6 +362,14 @@ impl Runtime {
         self.cpu.halted = false;
         self.prefixes = Prefixes::default();
         self.interrupt_inhibit = false;
+    }
+
+    /// The state of the display as text, for a diagnosis
+    /// (`VgaDevice::dump_text`), or `None` on a machine without a VGA. The
+    /// machine writes it nowhere: its owner decides where the text goes.
+    pub fn vga_dump(&self) -> Option<String> {
+        let vga = self.vga.as_ref()?;
+        Some(vga.borrow().dump_text(&self.cpu.memory))
     }
 
     /// Tells the machine that `nanos` of host time have passed (at most one

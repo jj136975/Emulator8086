@@ -127,6 +127,53 @@ fn display_pages_4_to_7_are_addressable() {
     assert_eq!(vga.text_cell_address(2048), 0xB8000);
 }
 
+/// The dump is text: the mode, the registers that place the screen and the
+/// cursor, and the page that is displayed, each of its 25 rows once as
+/// characters and once as character and attribute in hexadecimal. It shows
+/// the displayed page, not the start of the buffer.
+#[test]
+fn dump_text_describes_the_page_that_is_displayed() {
+    let mut vga = VgaDevice::new();
+    let mut rt = Runtime::new_test();
+    // Page 1 starts 2048 cells into the buffer; the cursor is on its
+    // second row.
+    write_crtc(&mut vga, &mut rt, 0x0C, 0x08);
+    write_crtc(&mut vga, &mut rt, 0x0D, 0x00);
+    write_crtc(&mut vga, &mut rt, 0x0E, 0x08);
+    write_crtc(&mut vga, &mut rt, 0x0F, 82);
+    for (cell, character) in b"HELLO".iter().enumerate() {
+        let address = vga.text_cell_address(cell);
+        rt.cpu.memory.write_byte(address, *character);
+        rt.cpu.memory.write_byte(address + 1, 0x1F);
+    }
+    rt.cpu.memory.write_byte(0xB8000, b'X'); // page 0, not displayed
+
+    let dump = vga.dump_text(&rt.cpu.memory);
+    assert!(dump.starts_with("=== VGA Diagnostic Dump ===\n"), "{dump}");
+    assert!(dump.contains("Video mode: Text80x25\n"), "{dump}");
+    assert!(
+        dump.contains("CRTC start_address=2048 cursor_offset=2130 "),
+        "{dump}"
+    );
+    assert!(
+        dump.contains("CRTC regs: 0x0C=08 0x0D=00 0x0E=08 0x0F=52\n"),
+        "{dump}"
+    );
+
+    let rows: Vec<&str> = dump
+        .lines()
+        .filter(|line| line.starts_with("Row "))
+        .collect();
+    assert_eq!(rows.len(), 25);
+    // Characters outside the printable ASCII range show as dots.
+    assert_eq!(rows[0], format!("Row 00: |HELLO{}|", ".".repeat(75)));
+    assert!(
+        dump.contains("\n        481F 451F 4C1F 4C1F 4F1F 0000 "),
+        "{dump}"
+    );
+    assert!(!dump.contains('X'), "page 0 is not on the screen:\n{dump}");
+}
+
 /// CRTC register 01h holds the column count minus one on the VGA (4Fh for
 /// 80) and the count itself on the 6845; both read as the count.
 #[test]

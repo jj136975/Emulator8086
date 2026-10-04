@@ -3,6 +3,7 @@
 //! Status 1, whose retrace bits run on the timer clock the runtime
 //! advances. The rasterisers read the screen's state through it: the video
 //! mode, the colours, the cursor, and where each displayed text cell lies.
+//! `dump_text` puts that state into words for a diagnosis.
 //!
 //! The invariant: nothing here draws. A rasteriser reads the registers and
 //! the two values derived from them, `video_mode` and `blink_mode`. Each is
@@ -11,7 +12,6 @@
 //! never lags behind what the guest programmed.
 
 use std::cell::Cell;
-use std::io::Write;
 use std::rc::Rc;
 
 use crate::io::bus::IoDevice;
@@ -271,18 +271,17 @@ impl VgaDevice {
         };
     }
 
-    /// Dump VGA text buffer to a file for debugging.
-    pub fn dump(&self, memory: &Memory, path: &str) {
-        use std::fs::File;
+    /// What a display problem is diagnosed from, as text: the registers
+    /// that place the screen and the cursor, what the BIOS data area says
+    /// of video and keyboard, the interrupt vectors the BIOS serves, and
+    /// the displayed text page, characters and attributes. Nothing is
+    /// written anywhere: whoever asks decides where the text goes.
+    pub fn dump_text(&self, memory: &Memory) -> String {
+        use std::fmt::Write;
         let start = self.start_address();
         let cols = self.cols();
-        let mut f = match File::create(path) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("VGA dump failed: {}", e);
-                return;
-            }
-        };
+        // Writing to a `String` cannot fail: the results below are dropped.
+        let mut f = String::new();
         let offset = self.cursor_offset();
         let _ = writeln!(f, "=== VGA Diagnostic Dump ===");
         let _ = writeln!(f, "Video mode: {:?}", self.video_mode);
@@ -414,7 +413,7 @@ impl VgaDevice {
             }
             let _ = writeln!(f);
         }
-        eprintln!("VGA dumped to {}", path);
+        f
     }
 }
 

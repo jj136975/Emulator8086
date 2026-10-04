@@ -246,6 +246,25 @@ fn no_bootable_disk_reports_and_waits_for_a_key() {
     );
 }
 
+/// The machine gives the state of its display as text and writes it
+/// nowhere: the dump holds what the BIOS printed, as a row of the screen,
+/// and the vectors the BIOS installed. A machine without a VGA has none.
+#[test]
+fn vga_dump_is_the_text_of_what_the_screen_shows() {
+    let machine = Machine::boot(disks(vec![(0x00, blank_floppy())]));
+    let dump = machine.rt.vga_dump().expect("the machine has a VGA");
+
+    assert!(dump.starts_with("=== VGA Diagnostic Dump ===\n"), "{dump}");
+    let row = dump
+        .lines()
+        .find(|line| line.contains("No bootable disk"))
+        .unwrap_or_else(|| panic!("the message is not in the dump:\n{dump}"));
+    assert!(row.starts_with("Row "), "{row}");
+    assert!(dump.contains("  INT 10h (Video) = F000:"), "{dump}");
+
+    assert!(Runtime::new_test().vga_dump().is_none());
+}
+
 #[test]
 fn boot_is_retried_after_a_keypress() {
     let mut machine = Machine::boot(disks(vec![]));

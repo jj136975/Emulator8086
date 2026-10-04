@@ -33,12 +33,30 @@ use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
 /// frame period is left for rasterising and for waiting on vsync.
 const CPU_SLICE: Duration = Duration::from_millis(10);
 
+/// The file the VGA dump is written to, in the working directory.
+const VGA_DUMP_FILE: &str = "vga_dump.txt";
+
 struct EmulatorApp {
     runtime: Runtime,
     pacer: Pacer,
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     kbd_tx: mpsc::Sender<EmulatorEvent>,
+}
+
+impl EmulatorApp {
+    /// Writes the machine's VGA dump to `VGA_DUMP_FILE` and says on stderr
+    /// what became of it. The machine only gives the text: where it goes is
+    /// the app's business.
+    fn dump_vga(&self) {
+        let Some(dump) = self.runtime.vga_dump() else {
+            return;
+        };
+        match std::fs::write(VGA_DUMP_FILE, dump) {
+            Ok(()) => eprintln!("VGA dumped to {VGA_DUMP_FILE}"),
+            Err(error) => eprintln!("VGA dump failed: {error}"),
+        }
+    }
 }
 
 impl ApplicationHandler for EmulatorApp {
@@ -87,7 +105,7 @@ impl ApplicationHandler for EmulatorApp {
                 if let PhysicalKey::Code(winit::keyboard::KeyCode::F12) = event.physical_key
                     && event.state == ElementState::Pressed
                 {
-                    let _ = self.kbd_tx.send(EmulatorEvent::DumpVga);
+                    self.dump_vga();
                     return;
                 }
 

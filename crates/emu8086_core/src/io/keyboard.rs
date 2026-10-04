@@ -24,7 +24,6 @@ use std::sync::mpsc;
 pub enum EmulatorEvent {
     Scancode(u8),    // make code
     ScanRelease(u8), // break code (scancode | 0x80)
-    DumpVga,         // dump the VGA state to a file (F12)
 }
 
 /// IBM PC/XT 8255 PPI keyboard controller.
@@ -87,18 +86,12 @@ impl KeyboardController {
     /// Call this periodically from the main loop (e.g. every ~1000 instructions).
     /// Drains the event channel and loads the next scancode into the shift
     /// register when it is clear and the keyboard is enabled.
-    /// Returns Some(event) for an event that is not a key (DumpVga).
-    pub fn poll(&mut self, pic: &mut Pic) -> Option<EmulatorEvent> {
-        while let Ok(event) = self.rx.try_recv() {
-            match event {
-                EmulatorEvent::DumpVga => {
-                    return Some(event);
-                }
-                EmulatorEvent::Scancode(sc) | EmulatorEvent::ScanRelease(sc) => {
-                    debug!("Received scancode: 0x{:02X}", sc);
-                    self.pending.push_back(sc);
-                }
-            }
+    pub fn poll(&mut self, pic: &mut Pic) {
+        while let Ok(EmulatorEvent::Scancode(sc) | EmulatorEvent::ScanRelease(sc)) =
+            self.rx.try_recv()
+        {
+            debug!("Received scancode: 0x{:02X}", sc);
+            self.pending.push_back(sc);
         }
 
         if self.kb_reset_pending {
@@ -118,8 +111,6 @@ impl KeyboardController {
             self.ksr_cleared = false;
             pic.request_interrupt(1);
         }
-
-        None
     }
 }
 
