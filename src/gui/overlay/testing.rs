@@ -99,6 +99,28 @@ impl Screen {
             .collect()
     }
 
+    /// The running texts level with `text`, left to right, `text` among
+    /// them: the row of a table it is in, as a reader sees it. A text is on
+    /// the row when it spans the height of the middle of `text`. Empty when
+    /// `text` is not on the screen.
+    pub fn row(&self, text: &str) -> Vec<&str> {
+        let labels = || {
+            self.nodes
+                .iter()
+                .filter(|node| node.role() == Role::Label)
+                .filter_map(|node| Some((node.value()?, node.bounds()?)))
+        };
+        let Some((_, first)) = labels().find(|(value, _)| *value == text) else {
+            return Vec::new();
+        };
+        let middle = (first.y0 + first.y1) / 2.0;
+        let mut row: Vec<_> = labels()
+            .filter(|(_, bounds)| bounds.y0 <= middle && middle <= bounds.y1)
+            .collect();
+        row.sort_by(|(_, a), (_, b)| a.x0.total_cmp(&b.x0));
+        row.into_iter().map(|(value, _)| value).collect()
+    }
+
     /// Whether the checkbox labelled `label` is ticked.
     pub fn ticked(&self, label: &str) -> bool {
         let checkbox = self

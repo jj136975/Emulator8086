@@ -277,3 +277,91 @@ fn icw1_leaves_special_mask_mode() {
     rt.cpu.pic.request_interrupt(1);
     assert!(!rt.cpu.pic.has_interrupt());
 }
+
+/// The view names what each initialisation word set, as the BIOS programs
+/// the controller (ICW1 11h, ICW2 08h, ICW3 04h, ICW4 01h, then the mask
+/// FCh), and says which word a sequence still waits for.
+#[test]
+fn the_view_names_what_the_initialisation_words_set() {
+    let mut rt = Runtime::new_test();
+    let mut dev = PicDevice;
+    dev.port_out_byte(0x20, 0x11, &mut rt.cpu); // edge, cascade, ICW4 needed
+    assert_eq!(rt.cpu.pic.view().awaiting_icw, Some(2));
+    dev.port_out_byte(0x21, 0x08, &mut rt.cpu);
+    assert_eq!(
+        rt.cpu.pic.view().awaiting_icw,
+        Some(3),
+        "a cascade has ICW3"
+    );
+    dev.port_out_byte(0x21, 0x04, &mut rt.cpu);
+    assert_eq!(rt.cpu.pic.view().awaiting_icw, Some(4));
+    dev.port_out_byte(0x21, 0x01, &mut rt.cpu); // 8086 mode, normal EOI
+    dev.port_out_byte(0x21, 0xFC, &mut rt.cpu);
+
+    assert_eq!(
+        rt.cpu.pic.view(),
+        PicView {
+            request: 0x00,
+            in_service: 0x00,
+            mask: 0xFC,
+            vector_base: 0x08,
+            level_triggered: false,
+            single: false,
+            auto_eoi: false,
+            rotate_on_auto_eoi: false,
+            special_mask: false,
+            highest_priority: 0,
+            reads_in_service: false,
+            poll: false,
+            awaiting_icw: None,
+        }
+    );
+
+    // A single, level-triggered controller in automatic EOI mode, with
+    // vectors from 70h.
+    for (port, value) in [(0x20, 0x1B), (0x21, 0x70), (0x21, 0x03)] {
+        dev.port_out_byte(port, value, &mut rt.cpu);
+    }
+    let view = rt.cpu.pic.view();
+    assert!(view.level_triggered && view.single && view.auto_eoi);
+    assert_eq!((view.vector_base, view.awaiting_icw), (0x70, None));
+    assert_eq!(view.mask, 0x00, "ICW1 clears the mask");
+}
+
+/// The view follows the registers through requests, acknowledges and the
+/// operation command words, and reading it changes none of them: a
+/// pending poll is still answered by the guest's next read.
+#[test]
+fn the_view_follows_the_registers_without_touching_them() {
+    let (mut rt, mut dev) = initialized();
+    rt.cpu.pic.request_interrupt(3);
+    dev.port_out_byte(0x20, 0x0C, &mut rt.cpu); // OCW3: poll
+    let view = rt.cpu.pic.view();
+    assert!(view.poll);
+    assert_eq!((view.request, view.in_service), (0x08, 0x00));
+    assert!(rt.cpu.pic.view().poll, "looking does not answer the poll");
+    assert_eq!(
+        dev.port_in_byte(0x20, &mut rt.cpu),
+        0x83,
+        "the guest's read does"
+    );
+    let view = rt.cpu.pic.view();
+    assert!(!view.poll);
+    assert_eq!((view.request, view.in_service), (0x00, 0x08));
+
+    rt.cpu.pic.request_interrupt(0);
+    assert_eq!(rt.cpu.pic.acknowledge(), 0x08);
+    assert_eq!(rt.cpu.pic.view().in_service, 0x09);
+
+    dev.port_out_byte(0x21, 0x02, &mut rt.cpu); // OCW1: mask IRQ1
+    dev.port_out_byte(0x20, 0x0B, &mut rt.cpu); // OCW3: read the ISR
+    dev.port_out_byte(0x20, 0x68, &mut rt.cpu); // OCW3: special mask mode
+    let view = rt.cpu.pic.view();
+    assert_eq!(view.mask, 0x02);
+    assert!(view.reads_in_service && view.special_mask);
+
+    dev.port_out_byte(0x20, 0xC4, &mut rt.cpu); // OCW2: IRQ4 lowest
+    assert_eq!(rt.cpu.pic.view().highest_priority, 5);
+    dev.port_out_byte(0x20, 0x80, &mut rt.cpu); // OCW2: rotate in AEOI mode
+    assert!(rt.cpu.pic.view().rotate_on_auto_eoi);
+}

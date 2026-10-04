@@ -41,6 +41,13 @@ pub struct Palette {
     pub warning: Color32,
     /// What failed.
     pub error: Color32,
+    /// A bit that is set, a line that is active: an interrupt requested or
+    /// in service, an output or a gate that is high.
+    pub on: Color32,
+    /// A bit that is clear, a line at rest: quieter than running text.
+    pub off: Color32,
+    /// A line held back whatever it asks: an interrupt that is masked.
+    pub masked: Color32,
 }
 
 /// The sizes of the overlay, in points.
@@ -85,6 +92,9 @@ pub const PALETTE: Palette = Palette {
     link: Color32::from_rgb(110, 170, 255),
     warning: Color32::from_rgb(240, 170, 60),
     error: Color32::from_rgb(240, 96, 96),
+    on: Color32::from_rgb(112, 204, 132),
+    off: Color32::from_rgb(104, 110, 124),
+    masked: Color32::from_rgb(196, 136, 96),
 };
 
 pub const METRICS: Metrics = Metrics {

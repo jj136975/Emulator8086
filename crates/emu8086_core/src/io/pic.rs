@@ -7,6 +7,10 @@
 //! instruction; `PicDevice` holds no state and reaches it through the
 //! `cpu` each port access is handed.
 //!
+//! `Pic::view` describes the controller to a reader in its datasheet's
+//! terms, without a port access: reading the status ports would answer a
+//! poll the guest is waiting for.
+//!
 //! The invariant: a request is latched. `request_interrupt` sets an IRR bit
 //! that stays until the interrupt is acknowledged (in edge-triggered mode)
 //! or its device withdraws it with `clear_interrupt`. Devices raise a
@@ -21,6 +25,44 @@ use log::debug;
 enum TriggerMode {
     Edge,
     Level,
+}
+
+/// What the 8259A holds and how it was programmed, named as its datasheet
+/// names them. A copy: holding one changes nothing in the controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PicView {
+    /// IRR: the lines with a request waiting, bit n for IRQn.
+    pub request: u8,
+    /// ISR: the lines whose interrupt is being serviced.
+    pub in_service: u8,
+    /// IMR: the lines that are masked.
+    pub mask: u8,
+    /// ICW2: the vector of IRQ0; IRQn is served by `vector_base + n`.
+    pub vector_base: u8,
+    /// ICW1 LTIM: a request is a level held high, not a rising edge.
+    pub level_triggered: bool,
+    /// ICW1 SNGL: the controller works alone, and its initialisation
+    /// skips ICW3. Clear, it was set up for a cascade, which this machine
+    /// does not have: ICW3 was taken and ignored.
+    pub single: bool,
+    /// ICW4 AEOI: an interrupt leaves service when it is acknowledged,
+    /// without an EOI command.
+    pub auto_eoi: bool,
+    /// OCW2 "rotate in automatic EOI mode": each interrupt that ends
+    /// automatically becomes the lowest priority.
+    pub rotate_on_auto_eoi: bool,
+    /// OCW3 SMM: special mask mode, in which a masked line in service no
+    /// longer holds back the lines below it.
+    pub special_mask: bool,
+    /// The line with the highest priority: IRQ0 until a rotation moves it.
+    pub highest_priority: u8,
+    /// OCW3 RR/RIS: a read of port 20h returns the ISR, rather than the IRR.
+    pub reads_in_service: bool,
+    /// OCW3 P: a poll command waits for the read that answers it.
+    pub poll: bool,
+    /// The initialisation word the controller waits for, 2 to 4, while
+    /// the sequence ICW1 started is not over.
+    pub awaiting_icw: Option<u8>,
 }
 
 pub struct Pic {
@@ -75,6 +117,27 @@ impl Pic {
             trigger_mode: TriggerMode::Edge,
             lowest_priority: 7,
             rotate_on_aeoi: false,
+        }
+    }
+
+    /// The controller as a reader sees it. Nothing is acknowledged, polled
+    /// or selected: the guest finds the controller as it left it.
+    pub fn view(&self) -> PicView {
+        PicView {
+            request: self.irr,
+            in_service: self.isr,
+            mask: self.imr,
+            vector_base: self.vector_base,
+            level_triggered: self.trigger_mode == TriggerMode::Level,
+            single: self.single_pic,
+            auto_eoi: self.auto_eoi,
+            rotate_on_auto_eoi: self.rotate_on_aeoi,
+            special_mask: self.special_mask,
+            highest_priority: (self.lowest_priority + 1) % 8,
+            reads_in_service: self.read_register == 1,
+            poll: self.poll,
+            // `icw_step` counts the words after ICW1: 1 stands for ICW2.
+            awaiting_icw: (self.icw_step > 0).then_some(self.icw_step + 1),
         }
     }
 
