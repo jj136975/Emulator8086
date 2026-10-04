@@ -78,6 +78,10 @@ The window sends the physical key positions, like a real keyboard: with a non-US
 
 ## Technical Details
 
+### Layout
+
+The repository is a Cargo workspace of two crates. `crates/emu8086_core` is the machine as a library: the CPU, the devices, the disks and the BIOS it embeds. It opens no window, uses no GPU and reads no clock, and builds for `wasm32-unknown-unknown` as it is. The root package is the application around it: the command line and the window, which shows the machine's picture, sends it the keys and tells it the time. `cargo build` and `cargo run` at the root build and run the application.
+
 ### CPU
 
 Full 8086 real-mode with 1MB segmented memory (`segment << 4 + offset`), plus the 80186 additions PUSHA/POPA, PUSH imm, IMUL imm, INS/OUTS, shift/rotate by an immediate count and ENTER/LEAVE (BOUND is accepted and does nothing).
@@ -143,14 +147,14 @@ The CPU is validated against 608,000 single-instruction test vectors (2,000 per 
 # Fetch the CPU test vectors (git submodule)
 git submodule update --init
 
-# Unit and integration tests
-cargo test
+# Unit and integration tests of both crates
+cargo test --workspace
 
 # Everything, including the hardware-captured CPU vectors
-cargo test --release -- --include-ignored
+cargo test --workspace --release -- --include-ignored
 
 # Test a single opcode
-cargo test cpu_tests::test_opcode_00 -- --ignored
+cargo test -p emu8086_core cpu_tests::test_opcode_00 -- --ignored
 ```
 
 ## Credits
