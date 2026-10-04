@@ -37,27 +37,29 @@ The app, in `src/`:
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause |
 | `gui/renderer.rs` | wgpu: `FrameBlit` (frame texture and blit pipeline), `OverlayPass` (egui's meshes), `record_frame` (both in one render pass, no surface needed) and `Renderer` (the window's surface) |
 | `gui/keys.rs` | physical key to XT scancode; `GuestKeys` sends the codes and remembers which keys the guest holds |
-| `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows; `Command`, what a tool asks the app to do; `Cx`, what a panel works on |
+| `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on |
 | `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
 | `gui/overlay/about.rs` | the About panel; every panel has a file like it |
+| `gui/overlay/memory.rs` | the Memory panel: a hex view of guest memory, the address field (`parse_address`), the jumps to where the register pairs point and to the landmarks of the first megabyte |
+| `gui/overlay/pic.rs`, `pit.rs`, `vga.rs`, `keyboard.rs`, `debug_port.rs` | the device panels: the 8259A, the 8253, the VGA and its DAC, the 8255's keyboard interface, the port E9h log |
 | `gui/overlay/messages.rs` | where a tool says what it did or why it failed |
 | `gui/overlay/theme.rs` | the palette and the sizes as named slots, and their one application to egui's style |
-| `gui/overlay/testing.rs` | test support: drives the overlay frame by frame with hand-made input and reads the screen as egui describes it to a screen reader |
+| `gui/overlay/testing.rs` | test support: drives the overlay frame by frame with hand-made input and reads the screen as egui describes it to a screen reader; `Shell`, the shell alone over a machine; `waiting_for_a_key`, a machine the BIOS booted |
 
 The core, in `crates/emu8086_core/`:
 
 | path | role |
 |---|---|
 | `src/lib.rs` | the two rules of the crate, its public modules, `BIOS_ROM`, the crate-level test modules |
-| `src/vm/runtime.rs` | the machine: the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM loader |
+| `src/vm/runtime.rs` | the machine: the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM loader, the loans of the devices the app reads (`pit`, `keyboard`, `debug_console`) |
 | `src/vm/instructions/` | the CPU: `process()` in `mod.rs` is the opcode table, one line per opcode; the bodies live in the domain modules beside it (`alu`, `bcd`, `control`, `shift`, `stack`, `string`, `transfer`) |
 | `src/vm/modrm.rs` | `decode_rm`, the only effective-address decoder, and the `ModRM` operand widths |
 | `src/vm/registers.rs`, `memory.rs`, `cpu.rs` | the register file and the raw-pointer operand wrappers, the 1 MB memory with its ROM protection, the `Cpu` (which also holds the 8259A) |
 | `src/utils/number.rs` | `SpecialOps`: the arithmetic the instruction code is written once with for `u8` and `u16` |
 | `src/vm/cli.rs` | the monitor's disk commands (swap, new, move, save, eject, put, reset); compiled for tests only until the overlay's disk panel calls them |
 | `src/io/bus.rs` | `IoDevice` and the port bus |
-| `src/io/pic.rs`, `pit.rs`, `keyboard.rs`, `dma.rs`, `fdc.rs`, `hdc.rs`, `console.rs` | 8259A, 8253, the XT keyboard on the 8255, the 8237 as registers, two controller stand-ins, debug port E9h |
-| `src/io/vga.rs`, `raster.rs`, `font_cp437.rs` | the VGA registers, the CPU-side rasterisers the window uploads, the 8x16 font |
+| `src/io/pic.rs`, `pit.rs`, `keyboard.rs`, `dma.rs`, `fdc.rs`, `hdc.rs`, `console.rs` | 8259A, 8253, the XT keyboard on the 8255, the 8237 as registers, two controller stand-ins, debug port E9h (which keeps its last lines). The first three and the console describe themselves to a reader without a port access: `Pic::view`, `Pit::channels`, `KeyboardController::view`, `DebugConsole::lines` |
+| `src/io/vga.rs`, `raster.rs`, `font_cp437.rs` | the VGA registers (`VgaDevice::registers` and `dac_colour` for a reader), the CPU-side rasterisers the window uploads, the 8x16 font |
 | `src/io/disk/`, `src/io/disk_spec.rs` | disk images, the host side of INT 13h, host-side FAT access and the `WallClock` its callers pass; the spellings of drives and images on the command line and in the monitor |
 | `build.rs` | reassembles `assets/rom/bios.bin` when a ROM source is newer and patches its checksum |
 | `src/bios_tests.rs` | tests that boot the real ROM on a fully wired machine (the `Machine` harness) |
@@ -124,7 +126,19 @@ box is never replaced).
   the View menu, the window and its close button follow from `ALL`. The
   body has the machine as `cx.runtime` for the length of the pass, asks the
   app for what only the app can do through `cx.commands`, and says what it
-  did or why it failed through `cx.messages`.
+  did or why it failed through `cx.messages`. The window takes the size of
+  the body: a horizontal separator would stretch it across the screen, so
+  panels part their sections with a gap. A panel's own state lives in
+  egui's memory (`ui.data_mut`), as the Memory panel's view does.
+- **A device panel** (8259A, 8253, VGA, keyboard, port E9h): reads the
+  device's description, never its ports, since a port read is seen by the
+  guest (a poll answered, a flip-flop reset, a DAC index moved):
+  `cpu.pic.view()`, `pit().channels()`, `vga` with `registers()` and
+  `dac_colour()`, `keyboard().view()`, `debug_console().lines()`. What
+  the core does not describe yet is added as a read-only view of the
+  device, never by making its internals public. A panel that shows many
+  rows (the memory dump, the log) lays out only those on the screen
+  (`ScrollArea::show_rows`).
 - **A machine action of the overlay**: a variant of `Command`
   (`src/gui/overlay/mod.rs`), its entry in the menu bar, and its arm in
   `Session::execute` (`src/gui/session.rs`), which reports through
@@ -138,10 +152,13 @@ box is never replaced).
   app builds its machine with `Runtime::new`: the core's `#[cfg(test)]`
   helpers do not exist outside the core.
 - **A test of the overlay**: `Driver` in `src/gui/overlay/testing.rs` runs
-  the shell (`overlay::tests`) or the whole session (`session::tests`) frame
-  by frame with hand-made input, and `Screen` is what a pass showed: a
-  control is found by its role and its label and clicked with the pointer,
-  as a user would (`click`, `frame`, `wait`, `screen().shows(..)`). No
+  the shell (`Shell`, for `overlay::tests` and each panel's tests) or the
+  whole session (`session::tests`) frame by frame with hand-made input, and
+  `Screen` is what a pass showed: a control is found by its role and its
+  label and clicked with the pointer, as a user would (`click`, `fill` for
+  a text field, `frame`, `wait`, `screen().shows(..)`, `screen().row(..)`
+  for a row of a table). `Shell::with_panel` opens a panel over a machine;
+  `waiting_for_a_key` is one the BIOS booted, the same on every run. No
   window, no GPU; the time is the one the test states.
 
 ## Build & test
