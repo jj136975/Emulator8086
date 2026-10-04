@@ -52,9 +52,10 @@ impl IoBus {
 
     /// Gives `device` the ports `start..=end`. Ranges are registered while
     /// the machine is built, in increasing order and without overlap; one
-    /// that does not lie wholly past the previous range panics.
+    /// that ends before it starts, or does not lie wholly past the previous
+    /// range, panics.
     pub fn register(&mut self, start: u16, end: u16, device: Box<dyn IoDevice>) {
-        if !self.mappings.is_empty() && (start <= self.last_port || end < start) {
+        if end < start || (!self.mappings.is_empty() && start <= self.last_port) {
             panic!("Port ranges must be registered in increasing order without overlap");
         }
         self.mappings.push(PortMapping { start, end, device });

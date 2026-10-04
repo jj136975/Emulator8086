@@ -39,6 +39,15 @@ fn out_of_order_registration_panics() {
     bus.register(0x00, 0x0F, Box::new(DummyDevice));
 }
 
+/// A range that ends before it starts owns no port and panics, the first
+/// one registered included.
+#[test]
+#[should_panic(expected = "increasing order without overlap")]
+fn a_backwards_first_range_panics() {
+    let mut bus = IoBus::new();
+    bus.register(0x2F, 0x20, Box::new(DummyDevice));
+}
+
 /// A device that logs every access it is given as (id, port, value);
 /// reads return its id.
 struct Probe {
