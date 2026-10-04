@@ -127,6 +127,8 @@ impl Session {
                 self.overlay.messages().done("Machine reset");
             }
             Command::DumpVga => {
+                // The one place where the session writes to the host: on a
+                // host without files the text has to leave another way.
                 let file = self.dump_file.display();
                 match self.runtime.vga_dump() {
                     Some(dump) => match std::fs::write(&self.dump_file, dump) {

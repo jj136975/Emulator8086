@@ -4,8 +4,9 @@ An Intel 8086 PC emulator in Rust: a real-mode CPU interpreter, the PC/XT
 devices around it and a BIOS written in NASM. It boots MS-DOS 6.22 and runs
 DOOM8088. One Cargo workspace of two crates in one configuration (no cargo
 features): the machine, and the app around it with a winit + wgpu window as
-its only frontend. `README.md` is the user-facing description (options,
-controls, what is and is not emulated).
+its only frontend and an egui overlay of tools over the picture. `README.md`
+is the user-facing description (options, controls, what is and is not
+emulated).
 
 The coding style and conventions are the ones of the sibling project
 `bettervoxel_engine` (its `CLAUDE.md`, "Writing conventions" and "Hard
@@ -16,7 +17,7 @@ rules"), restated below as far as they apply here.
 | crate | role |
 |---|---|
 | `crates/emu8086_core` | the machine: the CPU, the devices, the disks, the BIOS ROM it embeds (`BIOS_ROM`) with the build script that assembles it, and every test of the machine. A library with no window, no GPU and no clock: it builds for wasm32-unknown-unknown on its own |
-| root package `emulator_8086` | the app: the command line, the winit window, the wgpu renderer, the key map. It owns the machine, measures host time for it and is its wall clock. `cargo run` at the root runs it |
+| root package `emulator_8086` | the app: the command line, the winit window, the wgpu renderer, the key map, the overlay of tools (egui). It owns the machine, measures host time for it and is its wall clock. `cargo run` at the root runs it |
 
 The root `Cargo.toml` is the version authority for every dependency
 (`[workspace.dependencies]`; a member only adds features, as the app adds
@@ -31,10 +32,17 @@ The app, in `src/`:
 |---|---|
 | `main.rs` | the command line and start-up: builds the machine the options describe and loads its ROM, the image the command line names or the core's `BIOS_ROM` |
 | `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, through fatfs's `chrono` feature |
-| `gui/mod.rs` | the winit application: owns the machine, the pacer and the renderer, runs the guest once per redraw |
-| `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest |
-| `gui/renderer.rs` | wgpu: `FrameBlit` (frame texture and blit pipeline, no surface needed) and `Renderer` (the window's surface) |
-| `gui/keys.rs` | physical key to XT scancode |
+| `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, keeps the overlay's key (F12), runs and draws a frame per redraw |
+| `gui/session.rs` | `Session`: the machine, the pacer, the guest's keyboard and the overlay, without a window. Decides whose a key is, and carries out the overlay's `Command`s on the machine |
+| `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause |
+| `gui/renderer.rs` | wgpu: `FrameBlit` (frame texture and blit pipeline), `OverlayPass` (egui's meshes), `record_frame` (both in one render pass, no surface needed) and `Renderer` (the window's surface) |
+| `gui/keys.rs` | physical key to XT scancode; `GuestKeys` sends the codes and remembers which keys the guest holds |
+| `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows; `Command`, what a tool asks the app to do; `Cx`, what a panel works on |
+| `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
+| `gui/overlay/about.rs` | the About panel; every panel has a file like it |
+| `gui/overlay/messages.rs` | where a tool says what it did or why it failed |
+| `gui/overlay/theme.rs` | the palette and the sizes as named slots, and their one application to egui's style |
+| `gui/overlay/testing.rs` | test support: drives the overlay frame by frame with hand-made input and reads the screen as egui describes it to a screen reader |
 
 The core, in `crates/emu8086_core/`:
 
@@ -90,19 +98,51 @@ box is never replaced).
   per instruction; the VGA's retrace status derives from the same count.
   The one reader of the host clock for the machine is the app's `Pacer`
   (`src/gui/pacer.rs`): it samples every 256 instructions while the guest
-  runs and at once when it halts. The window's cursor blink is the one
-  thing drawn on host time. A test states the time: `credit_pit_time`, then
-  `step_frame`.
+  runs and at once when it halts. A paused guest (`Pacer::set_paused`) is
+  not run, and the time it stands still is credited to nobody. The window's
+  cursor blink is the one thing drawn on host time, and the overlay's only
+  time is that of egui's input. A test states the time: `credit_pit_time`,
+  then `step_frame`.
 - **The wall clock**: `io::disk::WallClock`, an argument of whatever formats
   a disk or copies a file onto one. The app passes `HostClock`
   (`src/wall_clock.rs`), a test `FixedClock`.
 - **Keys**: the window sends `EmulatorEvent`s down a channel to
   `KeyboardController`: the scancode of the physical key (`src/gui/keys.rs`),
-  so the layout is the guest's business. F12 is kept by the window.
+  so the layout is the guest's business. F12 is the window's
+  (`gui::OVERLAY_KEY`): it shows and hides the overlay, and neither egui nor
+  the guest sees it. Every other event of the window goes to egui first. A
+  key then goes on to the guest unless egui kept it (Tab) or the overlay
+  has the keyboard: one of its widgets has the focus or one of its menus is
+  open (`Overlay::wants_keyboard`, `Session::key`). The guest gets the
+  release of a key if and only if it got its press: when the overlay takes
+  the keyboard, or the window loses it, the keys the guest holds are let go
+  (`GuestKeys::release_all`).
+- **An overlay panel**: ONE row in THE panel table
+  (`src/gui/overlay/panels.rs`: a variant of `Panel`, its place in `ALL`,
+  its arm in `title` and in `body`) plus one file for the body,
+  `pub(super) fn body(ui: &mut egui::Ui, cx: &mut Cx<'_>)`. The checkbox in
+  the View menu, the window and its close button follow from `ALL`. The
+  body has the machine as `cx.runtime` for the length of the pass, asks the
+  app for what only the app can do through `cx.commands`, and says what it
+  did or why it failed through `cx.messages`.
+- **A machine action of the overlay**: a variant of `Command`
+  (`src/gui/overlay/mod.rs`), its entry in the menu bar, and its arm in
+  `Session::execute` (`src/gui/session.rs`), which reports through
+  `Overlay::messages`. What touches the host (the file of the VGA dump) is
+  in the session, never in the overlay.
+- **A colour of the overlay**: a slot of `PALETTE` in
+  `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
+  under `src/gui/overlay/` spells a colour.
 - **A machine-level test**: `Machine` in the core's `src/bios_tests.rs`
   (`boot`, `run_stub`, `press`, `feed_time`, `screen_text`). A test of the
   app builds its machine with `Runtime::new`: the core's `#[cfg(test)]`
   helpers do not exist outside the core.
+- **A test of the overlay**: `Driver` in `src/gui/overlay/testing.rs` runs
+  the shell (`overlay::tests`) or the whole session (`session::tests`) frame
+  by frame with hand-made input, and `Screen` is what a pass showed: a
+  control is found by its role and its label and clicked with the pointer,
+  as a user would (`click`, `frame`, `wait`, `screen().shows(..)`). No
+  window, no GPU; the time is the one the test states.
 
 ## Build & test
 
@@ -133,12 +173,19 @@ The emulator binary opens a window: do not run it from an agent session.
 The machine is exercised through the test harness. The wgpu pipeline (frame
 upload, whole-number scaling, centring, sRGB) is exercised by the app's
 `gui::renderer::tests::blit_draws_the_rasterised_frame_scaled_and_centred`,
-which draws offscreen on a real adapter and reads the pixels back; without
-an adapter it prints why and passes (`--nocapture` shows the adapter, and
-`WGPU_BACKEND=dx12|vulkan|gl` picks the backend). The pacer runs on the
-host's real clock in `gui::pacer::tests`. The window itself (the surface
-and its presentation, the winit event loop, key delivery) is compile-checked
-only and needs the user's eyes.
+and the overlay drawn over the picture in the same pass by
+`the_overlay_is_drawn_over_the_picture_and_only_where_it_is` beside it:
+both record frames with `record_frame`, the function the window calls, draw
+offscreen on a real adapter and read the pixels back; without an adapter
+they print why and pass (`--nocapture` shows the adapter, and
+`WGPU_BACKEND=dx12|vulkan|gl` picks the backend). The overlay's logic and
+the session's (the menus, the commands, pause, whose a key is) run without
+a window on hand-made input (`gui::overlay::tests`, `gui::session::tests`).
+The pacer runs on the host's real clock in `gui::pacer::tests`. The window
+itself is compile-checked only and needs the user's eyes: the surface and
+its presentation, the winit event loop, and `gui/mod.rs`, which is where
+egui-winit turns the window's events into egui's input and where F12 is
+picked out.
 
 ## Writing conventions
 
@@ -183,6 +230,19 @@ paths, local build dirs) go in `CLAUDE.local.md` (gitignored), never here.
 - Both rules are tests (`crate_rules_tests` in the core). The wasm32 check
   alone does not hold the first: a clock read compiles for that target and
   panics when it runs.
+- **The overlay has no thread, and nothing in it blocks or reads a
+  clock.** It has the machine as `&mut Runtime` for the length of its pass,
+  on the thread that draws: there is no channel to a machine elsewhere.
+  Its time is the time of egui's input, never `std::time::Instant`, and it
+  writes no file itself: what needs the host is a `Command` the session
+  carries out. The overlay has to run in a browser, which has neither a
+  second thread nor a file system to offer.
+- **Only `src/gui/overlay/theme.rs` spells a colour of the overlay.** The
+  shell and the panels name a slot of `PALETTE`, so that a change of the
+  theme reaches all they draw. The rule is a test:
+  `theme::tests::only_the_theme_spells_a_colour` sweeps the sources under
+  `src/gui/overlay/` for a colour built from literals or a named constant
+  of `Color32`, `Rgba` or `Hsva`.
 - **Ask before adding ANY new library** (dev-dependencies included). What
   was asked and answered is in the dependency ledger below: read it first.
 - **Never push.** The user pushes. Never `git add -A`; commit with explicit
@@ -204,7 +264,7 @@ not listed has not been asked: ask first, and add the answer here.
 | date | crate or tool | answer | scope |
 |---|---|---|---|
 | 2026-10-04 | `wgpu` 24 → 30, `winit` 0.30.13 | approved | the window; the versions `egui-wgpu` 0.36 requires |
-| 2026-10-04 | `egui` 0.36, `egui-wgpu`, `egui-winit` | approved | the overlay in the window |
+| 2026-10-04 | `egui` 0.36, `egui-wgpu`, `egui-winit` | approved | the overlay in the window. In use, in the app only, with egui's `default_fonts` and no other feature: no system clipboard (`arboard`), no screen-reader adapter (`accesskit_winit`), no opening of links (`webbrowser`), none of which a browser has |
 | 2026-10-04 | `rfd` 0.17 | approved | file dialogs, native and in the browser |
 | 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build |
 | 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate |
@@ -214,7 +274,10 @@ Approved does not mean added: the manifests say what is in use, the root
 one at which version and each crate's own which of them it takes.
 `crossterm` left with the terminal frontend on the same date. chrono is a
 direct dependency of neither crate: the app gets the local time through
-fatfs's `chrono` feature.
+fatfs's `chrono` feature. egui depends on the `accesskit` crate (the data
+types a screen reader is described the screen with) whatever its features:
+it is in the lock file because egui brings it, and the overlay's tests read
+the screen through it (`egui::accesskit`, no dependency of its own).
 
 When a version of the GPU stack changes, check that `Cargo.lock` holds one
 `windows` crate. `gpu-allocator` accepts a range of them and cargo leaves it

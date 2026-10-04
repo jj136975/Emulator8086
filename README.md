@@ -8,6 +8,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
+- A tools overlay in the window (F12): pause and resume, reset, VGA dump, the machine's drives at a glance
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
 
@@ -66,11 +67,27 @@ cargo run --release -- my-bios.bin --hd msdos.vhd --boot hd0
 
 | Key | Action |
 |-----|--------|
-| F12 | Dump VGA state to `vga_dump.txt` |
+| F12 | Show or hide the tools overlay |
+| Any other key | Goes to the guest, with the exceptions below while the overlay is shown |
 
 Closing the window quits the emulator.
 
-Disk and machine tools (swapping and saving disks, copying host files onto them, rebooting the guest) are moving into an overlay in the window; until it is there, disks are chosen on the command line.
+### The Tools Overlay
+
+F12 puts a menu bar over the picture; for the first seconds after start a hint in the corner names the key. The guest keeps running under it.
+
+| Menu | Entry | What it does |
+|------|-------|--------------|
+| Machine | Pause / Resume | Holds the guest still while the window goes on drawing. The menu bar and the window title say so. The guest's timer is not owed the time it stood paused |
+| Machine | Reset | Reboots the guest |
+| Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory |
+| View | About | A panel with the key bindings, the version, and the machine: the image in each drive, whether it can be written, and the boot order |
+
+A panel is a window over the picture that can be moved and closed. What a tool did, or why it failed, shows for a few seconds below the menu bar.
+
+While the overlay is shown the keys still go to the guest, except that Tab moves between the overlay's controls, and that the keys are the overlay's own for as long as one of its menus is open or one of its controls has the keyboard focus (Escape closes the menu and gives the focus up). Whatever the guest was holding at that moment is released.
+
+Disk tools (swapping and saving disks, copying host files onto them) are to come as panels of the overlay; until then, disks are chosen on the command line.
 
 ### Keyboard Layouts
 
@@ -80,7 +97,7 @@ The window sends the physical key positions, like a real keyboard: with a non-US
 
 ### Layout
 
-The repository is a Cargo workspace of two crates. `crates/emu8086_core` is the machine as a library: the CPU, the devices, the disks and the BIOS it embeds. It opens no window, uses no GPU and reads no clock, and builds for `wasm32-unknown-unknown` as it is. The root package is the application around it: the command line and the window, which shows the machine's picture, sends it the keys and tells it the time. `cargo build` and `cargo run` at the root build and run the application.
+The repository is a Cargo workspace of two crates. `crates/emu8086_core` is the machine as a library: the CPU, the devices, the disks and the BIOS it embeds. It opens no window, uses no GPU and reads no clock, and builds for `wasm32-unknown-unknown` as it is. The root package is the application around it: the command line and the window, which shows the machine's picture, sends it the keys and tells it the time, and draws the tools overlay over the picture (egui). `cargo build` and `cargo run` at the root build and run the application.
 
 ### CPU
 
@@ -141,7 +158,7 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 ### Testing
 
-The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back; on a machine without an adapter it says so and passes.
+The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking through it with hand-made input.
 
 ```bash
 # Fetch the CPU test vectors (git submodule)
