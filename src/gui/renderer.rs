@@ -107,7 +107,7 @@ struct BlitUniforms {
     _pad: [f32; 2],
 }
 
-pub struct WgpuRenderer {
+pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
@@ -190,7 +190,7 @@ fn fs_main(in: VsOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-impl WgpuRenderer {
+impl Renderer {
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
 
@@ -538,5 +538,5 @@ impl WgpuRenderer {
 }
 
 #[cfg(test)]
-#[path = "renderer_wgpu_tests.rs"]
+#[path = "renderer_tests.rs"]
 mod tests;

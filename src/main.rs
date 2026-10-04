@@ -17,6 +17,7 @@ use crate::io::disk_spec::{parse_boot_order, parse_disk_specs};
 use crate::io::keyboard::KeyboardController;
 use crate::vm::runtime::Runtime;
 
+mod gui;
 mod io;
 mod utils;
 mod vm;
@@ -74,7 +75,7 @@ fn run(args: Cli) -> Result<(), String> {
     let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace, keyboard)?;
     runtime.load_rom(args.rom)?;
 
-    runtime.run_gui(keys);
+    gui::run(runtime, keys);
     Ok(())
 }
 

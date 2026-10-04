@@ -1,12 +1,12 @@
-//! The machine's devices and the two halves of its window frontend. Every
-//! device answers its ports through `bus::IoDevice` and is put on the port
-//! bus when the machine is built. The frontend draws the screen (`raster`
-//! and `font_cp437` on the CPU, `renderer_wgpu` on the GPU) and turns host
-//! keys into scancodes (`keyboard_winit`).
+//! The machine's devices, and the screen as pixels. Every device answers
+//! its ports through `bus::IoDevice` and is put on the port bus when the
+//! machine is built. `raster` turns what the VGA holds into an RGBA frame,
+//! with the glyphs of `font_cp437`.
 //!
-//! The invariant: only `renderer_wgpu` and `keyboard_winit` know of the
-//! window and the GPU. The devices and the rasterisers run without either,
-//! which is what lets the tests cover them.
+//! The invariant: nothing here knows of a window or a GPU. Keys arrive as
+//! scancodes down a channel and the picture leaves as a frame in memory;
+//! what shows the one and sends the other is `crate::gui`. That is what
+//! lets the tests cover every device and every pixel.
 
 pub mod bus;
 pub mod console;
@@ -17,9 +17,7 @@ pub mod fdc;
 pub mod font_cp437;
 pub mod hdc;
 pub mod keyboard;
-pub mod keyboard_winit;
 pub mod pic;
 pub mod pit;
 pub mod raster;
-pub mod renderer_wgpu;
 pub mod vga;

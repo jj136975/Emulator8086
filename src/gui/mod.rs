@@ -1,12 +1,15 @@
-//! The window frontend's main loop: a winit event loop that owns the
-//! machine. Each redraw runs the CPU for `CPU_SLICE`, draws the frame and
-//! asks for the next redraw; key presses and releases go to the keyboard
-//! controller as scancodes, and F12 asks for a VGA dump.
+//! The window: a winit application that owns the machine. Each redraw runs
+//! the CPU for `CPU_SLICE`, draws the frame (`renderer`) and asks for the
+//! next redraw; key presses and releases go to the keyboard controller as
+//! scancodes (`keys`), and F12 asks for a VGA dump.
 //!
 //! The invariant: the guest runs only inside `RedrawRequested`, so a redraw
 //! must always be pending. The loop asks for one after every frame and
 //! whenever it is about to wait; a path that stops asking stops the
 //! machine.
+
+mod keys;
+mod renderer;
 
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -19,9 +22,9 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
 use crate::io::keyboard::EmulatorEvent;
-use crate::io::keyboard_winit::physical_key_to_scancode;
-use crate::io::renderer_wgpu::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, WgpuRenderer};
 use crate::vm::runtime::Runtime;
+use keys::physical_key_to_scancode;
+use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
 
 /// Host time the CPU runs for before each frame is drawn. The rest of the
 /// frame period is left for rasterising and for waiting on vsync.
@@ -29,7 +32,7 @@ const CPU_SLICE: Duration = Duration::from_millis(10);
 
 struct EmulatorApp {
     runtime: Runtime,
-    renderer: Option<WgpuRenderer>,
+    renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     kbd_tx: mpsc::Sender<EmulatorEvent>,
 }
@@ -53,7 +56,7 @@ impl ApplicationHandler for EmulatorApp {
                 .expect("Failed to create window"),
         );
 
-        let renderer = WgpuRenderer::new(window.clone());
+        let renderer = Renderer::new(window.clone());
         self.window = Some(window);
         self.renderer = Some(renderer);
     }
@@ -122,26 +125,23 @@ impl ApplicationHandler for EmulatorApp {
     }
 }
 
-impl Runtime {
-    /// Opens the window and runs the machine in it until the window is
-    /// closed. `kbd_tx` feeds the keyboard controller the machine was built
-    /// with.
-    pub fn run_gui(self, kbd_tx: mpsc::Sender<EmulatorEvent>) {
-        log::debug!(
-            "Starting emulator with boot order: {:02X?}",
-            self.disks.borrow().boot_order()
-        );
+/// Opens the window and runs `runtime` in it until the window is closed.
+/// `kbd_tx` feeds the keyboard controller the machine was built with.
+pub fn run(runtime: Runtime, kbd_tx: mpsc::Sender<EmulatorEvent>) {
+    log::debug!(
+        "Starting emulator with boot order: {:02X?}",
+        runtime.disks.borrow().boot_order()
+    );
 
-        let event_loop = EventLoop::new().expect("Failed to create event loop");
-        event_loop.set_control_flow(ControlFlow::Poll);
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    event_loop.set_control_flow(ControlFlow::Poll);
 
-        let mut app = EmulatorApp {
-            runtime: self,
-            renderer: None,
-            window: None,
-            kbd_tx,
-        };
+    let mut app = EmulatorApp {
+        runtime,
+        renderer: None,
+        window: None,
+        kbd_tx,
+    };
 
-        event_loop.run_app(&mut app).expect("Event loop failed");
-    }
+    event_loop.run_app(&mut app).expect("Event loop failed");
 }

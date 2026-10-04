@@ -1,8 +1,8 @@
 //! The machine: the CPU state (`cpu`, `registers`, `memory`), the
 //! instruction interpreter (`instructions`, with `modrm` decoding its
-//! operands), the `runtime` that wires the devices to it and runs it, the
-//! window's event loop (`runtime_gui`) and the monitor's commands (`cli`),
-//! which only the tests compile until the overlay's disk panel calls them.
+//! operands), the `runtime` that wires the devices to it and runs it, and
+//! the monitor's commands (`cli`), which only the tests compile until the
+//! overlay's disk panel calls them.
 //!
 //! The invariant: a machine is single-threaded and its `Memory` box is
 //! permanent. The segment registers hold raw pointers to that allocation,
@@ -18,4 +18,3 @@ pub mod memory;
 mod modrm;
 pub mod registers;
 pub mod runtime;
-pub mod runtime_gui;
