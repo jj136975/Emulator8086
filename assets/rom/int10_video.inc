@@ -40,6 +40,7 @@ int10_handler:
     push cx
     push ax
     push dx
+    push bx
 
     cmp al, 0x13
     je .set_mode_13h
@@ -120,6 +121,7 @@ int10_handler:
     out dx, al
 
 .set_mode_done:
+    pop bx
     pop dx
     pop ax
     pop cx

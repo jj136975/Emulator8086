@@ -581,16 +581,40 @@ fn copy_host_dir_recursive<T: Read + Write + Seek>(
     Ok(count)
 }
 
-/// BIOS disk service trap — mapped to port 0xB0.
-/// The BIOS INT 13h handler does `OUT 0xB0, AL` which triggers this device
-/// to read CPU registers, perform disk I/O, and set return values + flags.
+/// Port of the BIOS disk service trap: the INT 13h handler does
+/// `OUT 0xB0, AL`, which makes the controller read the CPU registers, perform
+/// the disk I/O, and set the return values and flags.
+pub const DISK_TRAP_PORT: u16 = 0xB0;
+
+/// Port through which the BIOS bootstrap (INT 19h) learns the boot order:
+/// any write rewinds the list, each read returns the next BIOS drive number,
+/// and `BOOT_ORDER_END` is returned once the list is exhausted.
+pub const BOOT_ORDER_PORT: u16 = 0xB1;
+pub const BOOT_ORDER_END: u8 = 0xFF;
+
 pub struct DiskController {
     pub drives: Vec<(u8, DiskImage)>, // (drive number, image)
+    boot_order: Vec<u8>,
+    boot_cursor: usize,
 }
 
 impl DiskController {
     pub fn new() -> Self {
-        Self { drives: Vec::new() }
+        Self {
+            drives: Vec::new(),
+            boot_order: vec![0x00, 0x80], // floppy A:, then hard disk 0
+            boot_cursor: 0,
+        }
+    }
+
+    /// Sets the BIOS drive numbers the bootstrap tries, in order.
+    pub fn set_boot_order(&mut self, order: Vec<u8>) {
+        self.boot_order = order;
+        self.boot_cursor = 0;
+    }
+
+    pub fn boot_order(&self) -> &[u8] {
+        &self.boot_order
     }
 
     pub fn attach(&mut self, drive: u8, image: DiskImage) {
@@ -1172,12 +1196,25 @@ impl DiskController {
 }
 
 impl IoDevice for DiskController {
-    fn port_in_byte(&mut self, _port: u16, _cpu: &mut Cpu) -> u8 {
-        0xFF
+    fn port_in_byte(&mut self, port: u16, _cpu: &mut Cpu) -> u8 {
+        if port != BOOT_ORDER_PORT {
+            return 0xFF;
+        }
+        match self.boot_order.get(self.boot_cursor) {
+            Some(&drive) => {
+                self.boot_cursor += 1;
+                drive
+            }
+            None => BOOT_ORDER_END,
+        }
     }
 
-    fn port_out_byte(&mut self, _port: u16, _value: u8, cpu: &mut Cpu) {
-        self.handle_trap(cpu);
+    fn port_out_byte(&mut self, port: u16, _value: u8, cpu: &mut Cpu) {
+        match port {
+            DISK_TRAP_PORT => self.handle_trap(cpu),
+            BOOT_ORDER_PORT => self.boot_cursor = 0,
+            _ => {}
+        }
     }
 
     fn name(&self) -> &'static str {

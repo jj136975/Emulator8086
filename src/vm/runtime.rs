@@ -1,6 +1,9 @@
 use crate::io::bus::IoBus;
 use crate::io::console::DebugConsole;
-use crate::io::disk::{DiskController, DiskImage, DiskSource, DiskSpec, HD_DEFAULT_SIZE_MB};
+use crate::io::disk::{
+    DiskController, DiskImage, DiskSource, DiskSpec, BOOT_ORDER_PORT, DISK_TRAP_PORT,
+    HD_DEFAULT_SIZE_MB,
+};
 use crate::io::dma::{DmaController, DmaPageRegisters};
 use crate::io::fdc::FdcStub;
 use crate::io::hdc::HdcStub;
@@ -58,11 +61,21 @@ impl From<u8> for SegmentType {
     }
 }
 
-pub enum Prefix {
-    Rep(bool),
-    Lock,
-    Seg(SegmentType),
-    Queued(Box<Prefix>),
+/// Prefixes latched for the instruction currently being decoded.
+///
+/// Every prefix byte is consumed by its own `process` call, which latches it
+/// here and sets `pending` so the next call knows it continues the same
+/// instruction. The latches are independent, as on the real CPU, so prefixes
+/// combine in any order. LOCK has no effect on a single-CPU machine and is
+/// only tracked through `pending`.
+#[derive(Clone, Copy, Default)]
+pub struct Prefixes {
+    /// REP/REPE/REPZ (`Some(true)`, opcode F3) or REPNE/REPNZ (`Some(false)`, opcode F2).
+    pub rep: Option<bool>,
+    /// Segment override for the instruction's memory operand.
+    pub segment: Option<SegmentType>,
+    /// The previous `process` call consumed a prefix byte.
+    pub pending: bool,
 }
 
 const RENDER_INTERVAL: u64 = 50_000; // every ~50K instructions
@@ -99,9 +112,7 @@ pub struct Runtime {
     pub(crate) cpu: Cpu,
     running: bool,
     status: u16,
-    pub prefix: Option<Prefix>,
-    pub segment_override: Option<SegmentType>,
-    pub boot_order: Vec<u8>,
+    pub prefixes: Prefixes,
     pub instruction_count: u64,
     pub trace: bool,
     pub interrupt_inhibit: bool,
@@ -140,10 +151,8 @@ impl Runtime {
             },
             running: true,
             status: 0,
-            prefix: None,
-            segment_override: None,
+            prefixes: Prefixes::default(),
             io_bus: IoBus::new(),
-            boot_order: Vec::new(),
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
@@ -167,9 +176,6 @@ impl Runtime {
         boot_order: Option<Vec<u8>>,
         trace: bool,
     ) -> Self {
-        let mut memory = Box::new(Memory::new());
-        let registers = Registers::new(memory.deref_mut());
-
         let mut disk_ctrl = DiskController::new();
 
         for spec in disk_specs {
@@ -207,9 +213,22 @@ impl Runtime {
             disk_ctrl.attach(0x80 + id as u8, image);
         }
 
-        // Create I/O bus and register devices
+        if let Some(order) = boot_order {
+            disk_ctrl.set_boot_order(order);
+        }
+
+        let mut vm = Self::with_devices(disk_ctrl, KeyboardController::new());
+        vm.trace = trace;
+        vm
+    }
+
+    /// Builds a machine with the full device set wired to the port bus.
+    fn with_devices(disk_ctrl: DiskController, keyboard: KeyboardController) -> Self {
+        let mut memory = Box::new(Memory::new());
+        let registers = Registers::new(memory.deref_mut());
+
         let mut io_bus = IoBus::new();
-        let keyboard = Rc::new(RefCell::new(KeyboardController::new()));
+        let keyboard = Rc::new(RefCell::new(keyboard));
         let vga = Rc::new(RefCell::new(VgaDevice::new()));
         let disk_ctrl = Rc::new(RefCell::new(disk_ctrl));
         let pit = Rc::new(RefCell::new(Pit::new()));
@@ -221,7 +240,7 @@ impl Runtime {
         io_bus.register(0x40, 0x43, Box::new(Rc::clone(&pit)));
         io_bus.register(0x60, 0x63, Box::new(Rc::clone(&keyboard)));
         io_bus.register(0x81, 0x87, Box::new(DmaPageRegisters::new()));
-        io_bus.register(0xB0, 0xB0, Box::new(Rc::clone(&disk_ctrl)));
+        io_bus.register(DISK_TRAP_PORT, BOOT_ORDER_PORT, Box::new(Rc::clone(&disk_ctrl)));
         io_bus.register(0xE9, 0xE9, Box::new(DebugConsole));
         io_bus.register(0x320, 0x323, Box::new(HdcStub::new()));
         io_bus.register(0x3C0, 0x3DA, Box::new(Rc::clone(&vga)));
@@ -238,12 +257,10 @@ impl Runtime {
             },
             running: true,
             status: 0,
-            prefix: None,
-            segment_override: None,
+            prefixes: Prefixes::default(),
             io_bus,
-            boot_order: boot_order.unwrap_or_else(|| vec![0x00, 0x80]),
             instruction_count: 0,
-            trace,
+            trace: false,
             interrupt_inhibit: false,
             trace_ring: [TraceEntry::default(); TRACE_RING_SIZE],
             trace_ring_pos: 0,
@@ -260,6 +277,17 @@ impl Runtime {
 
         vm.cpu.set_flag(Interrupt);
         vm
+    }
+
+    /// A fully wired machine for integration tests. The keyboard is fed
+    /// through the returned channel instead of a terminal thread.
+    #[cfg(test)]
+    pub fn new_test_machine(
+        disk_ctrl: DiskController,
+    ) -> (Self, std::sync::mpsc::Sender<crate::io::keyboard::EmulatorEvent>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let vm = Self::with_devices(disk_ctrl, KeyboardController::with_receiver(rx));
+        (vm, tx)
     }
 
     pub fn exit(&mut self, status: u16) {
@@ -340,8 +368,13 @@ impl Runtime {
 
     pub(crate) fn load_rom(&mut self, path: PathBuf) {
         let rom_data = std::fs::read(path).expect("Failed to read ROM file");
+        self.load_rom_image(&rom_data);
+    }
+
+    /// Copies a ROM image to F000:0000 and write-protects the region.
+    pub(crate) fn load_rom_image(&mut self, rom_data: &[u8]) {
         if rom_data.len() > 0x10000 {
-            panic!("ROM file too large (max 64KB)");
+            panic!("ROM image too large (max 64KB)");
         }
 
         let load_address = 0xF0000;
@@ -412,8 +445,9 @@ impl Runtime {
                 }
             }
 
-            // Interrupt handling
-            if self.interrupt_inhibit || self.prefix.is_some() {
+            // Interrupt handling. Interrupts are not recognised between a
+            // prefix byte and the instruction it belongs to.
+            if self.interrupt_inhibit || self.prefixes.pending {
                 self.interrupt_inhibit = false;
             } else if self.cpu.check_flag(Interrupt) && self.cpu.pic.has_interrupt() {
                 let vector = self.cpu.pic.acknowledge();
@@ -431,7 +465,7 @@ impl Runtime {
     pub fn run(&mut self) {
         debug!(
             "Starting emulator with boot order: {:02X?}",
-            self.boot_order
+            self.disks.borrow().boot_order()
         );
         if self.trace {
             debug!("Tracing Enabled");
@@ -531,24 +565,18 @@ impl Runtime {
     }
 
     pub fn data_segment(&mut self) -> &mut Segment {
-        if let Some(segment) = self.segment_override {
-            return self.cpu.get_segment(segment);
+        match self.prefixes.segment {
+            Some(segment) => self.cpu.get_segment(segment),
+            None => &mut self.cpu.registers.ds,
         }
-        if let Some(Prefix::Seg(segment)) = &self.prefix {
-            return self.cpu.get_segment(*segment);
-        }
-        &mut self.cpu.registers.ds
     }
 
     /// Picks the correct default segment for a ModR/M memory operand.
     /// BP-based addressing (rm=010, 011, or rm=110 with mod!=00) defaults to SS.
     /// All other modes default to DS. An explicit segment override prefix wins.
     pub fn effective_segment(&mut self, mod_val: u8, rm: u8) -> &mut Segment {
-        if let Some(segment) = self.segment_override {
+        if let Some(segment) = self.prefixes.segment {
             return self.cpu.get_segment(segment);
-        }
-        if let Some(Prefix::Seg(segment)) = &self.prefix {
-            return self.cpu.get_segment(*segment);
         }
         let bp_based = match rm {
             0b010 | 0b011 => true,

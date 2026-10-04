@@ -225,7 +225,6 @@ reset_vector:
     db '02/24/26'               ; BIOS date at F000:FFF5 (8 bytes)
     db 0xFF                     ; Submodel byte at F000:FFFD
     db 0xFE                     ; Model byte at F000:FFFE (0xFE = IBM PC/XT)
-    ; Checksum byte at F000:FFFF — chosen so the 8-bit sum of the full
-    ; 64KB ROM image equals 0, as required by the IBM PC POST routine.
-    ; If any other byte of the ROM changes, recompute this.
-    db 0x4C                     ; Checksum at F000:FFFF
+    ; Checksum byte at F000:FFFF. build.rs patches it after assembly so the
+    ; 8-bit sum of the full 64KB ROM image is 0, as the IBM PC POST expects.
+    db 0x00                     ; Checksum placeholder at F000:FFFF

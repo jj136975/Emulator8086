@@ -1,17 +1,15 @@
 use super::{update_arithmetic_flags_byte, update_arithmetic_flags_word};
 use crate::utils::number::SpecialOps;
 use crate::vm::runtime::CpuFlag::*;
-use crate::vm::runtime::{Prefix, Runtime};
+use crate::vm::runtime::Runtime;
 
 /// Rewind PC to the start of the current REP-string instruction (the first
-/// prefix byte) and clear prefix state so the main loop can service a
-/// pending interrupt. After IRET the CPU re-enters through the REP prefix
-/// with CX at its decremented value, resuming the string op.
+/// prefix byte) so the main loop can service a pending interrupt. After
+/// IRET the CPU re-enters through the prefixes with CX at its decremented
+/// value, resuming the string op.
 #[inline]
 fn break_for_interrupt(vm: &mut Runtime) {
     vm.cpu.registers.pc.set(vm.cpu.registers.op_start_pc);
-    vm.prefix = None;
-    vm.segment_override = None;
 }
 
 /// Check whether we should suspend a REP-string op for a pending interrupt.
@@ -21,7 +19,7 @@ fn interrupt_pending(vm: &Runtime) -> bool {
 }
 
 pub(super) fn movs(vm: &mut Runtime, is_word: bool) {
-    let rep = matches!(&vm.prefix, Some(Prefix::Rep(_)));
+    let rep = vm.prefixes.rep.is_some();
     let step: u16 = if is_word { 2 } else { 1 };
     let dir = vm.cpu.check_flag(Directional);
 
@@ -58,17 +56,10 @@ pub(super) fn movs(vm: &mut Runtime, is_word: bool) {
             return;
         }
     }
-    if rep {
-        vm.prefix = None;
-    }
-    vm.segment_override = None;
 }
 
 pub(super) fn cmps(vm: &mut Runtime, is_word: bool) {
-    let rep = match &vm.prefix {
-        Some(Prefix::Rep(z)) => Some(*z),
-        _ => None,
-    };
+    let rep = vm.prefixes.rep;
     let step: u16 = if is_word { 2 } else { 1 };
     let dir = vm.cpu.check_flag(Directional);
 
@@ -112,14 +103,10 @@ pub(super) fn cmps(vm: &mut Runtime, is_word: bool) {
             return;
         }
     }
-    if rep.is_some() {
-        vm.prefix = None;
-    }
-    vm.segment_override = None;
 }
 
 pub(super) fn stos(vm: &mut Runtime, is_word: bool) {
-    let rep = matches!(&vm.prefix, Some(Prefix::Rep(_)));
+    let rep = vm.prefixes.rep.is_some();
     let step: u16 = if is_word { 2 } else { 1 };
     let dir = vm.cpu.check_flag(Directional);
 
@@ -151,14 +138,10 @@ pub(super) fn stos(vm: &mut Runtime, is_word: bool) {
             return;
         }
     }
-    if rep {
-        vm.prefix = None;
-    }
-    vm.segment_override = None;
 }
 
 pub(super) fn lods(vm: &mut Runtime, is_word: bool) {
-    let rep = matches!(&vm.prefix, Some(Prefix::Rep(_)));
+    let rep = vm.prefixes.rep.is_some();
     let step: u16 = if is_word { 2 } else { 1 };
     let dir = vm.cpu.check_flag(Directional);
 
@@ -190,15 +173,11 @@ pub(super) fn lods(vm: &mut Runtime, is_word: bool) {
             return;
         }
     }
-    if rep {
-        vm.prefix = None;
-    }
-    vm.segment_override = None;
 }
 
 /// INS — read from port [DX] into ES:[DI] (80186+)
 pub(super) fn ins(vm: &mut Runtime, is_word: bool) {
-    let rep = matches!(&vm.prefix, Some(Prefix::Rep(_)));
+    let rep = vm.prefixes.rep.is_some();
     let step: u16 = if is_word { 2 } else { 1 };
     let dir = vm.cpu.check_flag(Directional);
 
@@ -231,14 +210,11 @@ pub(super) fn ins(vm: &mut Runtime, is_word: bool) {
             return;
         }
     }
-    if rep {
-        vm.prefix = None;
-    }
 }
 
 /// OUTS — write DS:[SI] to port [DX] (80186+)
 pub(super) fn outs(vm: &mut Runtime, is_word: bool) {
-    let rep = matches!(&vm.prefix, Some(Prefix::Rep(_)));
+    let rep = vm.prefixes.rep.is_some();
     let step: u16 = if is_word { 2 } else { 1 };
     let dir = vm.cpu.check_flag(Directional);
 
@@ -271,16 +247,10 @@ pub(super) fn outs(vm: &mut Runtime, is_word: bool) {
             return;
         }
     }
-    if rep {
-        vm.prefix = None;
-    }
 }
 
 pub(super) fn scas(vm: &mut Runtime, is_word: bool) {
-    let rep = match &vm.prefix {
-        Some(Prefix::Rep(z)) => Some(*z),
-        _ => None,
-    };
+    let rep = vm.prefixes.rep;
     let step: u16 = if is_word { 2 } else { 1 };
     let dir = vm.cpu.check_flag(Directional);
 
@@ -321,8 +291,4 @@ pub(super) fn scas(vm: &mut Runtime, is_word: bool) {
             return;
         }
     }
-    if rep.is_some() {
-        vm.prefix = None;
-    }
-    vm.segment_override = None;
 }

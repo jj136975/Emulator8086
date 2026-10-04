@@ -1805,3 +1805,132 @@ fn rep_movsb_should_break_on_pending_interrupt() {
          inside the loop."
     );
 }
+
+// ========================================================================
+// PREFIX COMBINATIONS
+// ========================================================================
+
+/// Physical addresses of the same offset (0x200) in three segments, each
+/// seeded with a different marker so a test can tell which one was read.
+const CS_MARKER: u8 = 0xC5; // CS = 0x0000
+const DS_MARKER: u8 = 0xD5; // DS = 0x1000
+const ES_MARKER: u8 = 0xE5; // ES = 0x3000
+
+fn setup_segment_markers(code: &[u8]) -> Runtime {
+    let mut vm = setup(code);
+    vm.cpu.registers.ds.reg_mut().set(0x1000);
+    vm.cpu.registers.es.reg_mut().set(0x3000);
+    vm.cpu.memory.write_byte(0x00200, CS_MARKER);
+    vm.cpu.memory.write_byte(0x10200, DS_MARKER);
+    vm.cpu.memory.write_byte(0x30200, ES_MARKER);
+    vm
+}
+
+/// Runs `code` (prefix bytes followed by MOVSB) with CX=5, the source at
+/// SI=0x200 and the destination at ES:0x400. Returns CX afterwards and the
+/// five destination bytes.
+fn run_prefixed_movsb(code: &[u8]) -> (u16, [u8; 5]) {
+    let mut vm = setup(code);
+    vm.cpu.registers.ds.reg_mut().set(0x1000);
+    vm.cpu.registers.es.reg_mut().set(0x3000);
+    for i in 0..5 {
+        vm.cpu.memory.write_byte(0x10200 + i, 0xD0 + i as u8); // DS:0x200
+        vm.cpu.memory.write_byte(0x30200 + i, 0xE0 + i as u8); // ES:0x200
+    }
+    vm.cpu.registers.cx.set(5);
+    vm.cpu.registers.si.set(0x200);
+    vm.cpu.registers.di.set(0x400);
+    exec_n(&mut vm, code.len());
+    let mut dest = [0u8; 5];
+    for (i, byte) in dest.iter_mut().enumerate() {
+        *byte = vm.cpu.memory.read_byte(0x30400 + i);
+    }
+    (vm.cpu.registers.cx.word(), dest)
+}
+
+const FROM_DS: [u8; 5] = [0xD0, 0xD1, 0xD2, 0xD3, 0xD4];
+const FROM_ES: [u8; 5] = [0xE0, 0xE1, 0xE2, 0xE3, 0xE4];
+
+#[test]
+fn rep_movsb_without_override_reads_ds() {
+    // REP MOVSB  (F3 A4)
+    assert_eq!(run_prefixed_movsb(&[0xF3, 0xA4]), (0, FROM_DS));
+}
+
+#[test]
+fn segment_override_then_rep() {
+    // ES: REP MOVSB  (26 F3 A4)
+    assert_eq!(run_prefixed_movsb(&[0x26, 0xF3, 0xA4]), (0, FROM_ES));
+}
+
+/// Regression: the REP prefix used to be dropped when a segment override
+/// followed it, so only one element was copied and CX was left untouched.
+#[test]
+fn rep_then_segment_override() {
+    // REP ES: MOVSB  (F3 26 A4)
+    assert_eq!(run_prefixed_movsb(&[0xF3, 0x26, 0xA4]), (0, FROM_ES));
+}
+
+#[test]
+fn lock_does_not_disturb_other_prefixes() {
+    // LOCK may appear anywhere among the prefixes.
+    assert_eq!(run_prefixed_movsb(&[0xF0, 0xF3, 0x26, 0xA4]), (0, FROM_ES));
+    assert_eq!(run_prefixed_movsb(&[0xF3, 0xF0, 0x26, 0xA4]), (0, FROM_ES));
+    assert_eq!(run_prefixed_movsb(&[0xF3, 0x26, 0xF0, 0xA4]), (0, FROM_ES));
+}
+
+#[test]
+fn rep_prefix_does_not_leak_into_next_instruction() {
+    // REP NOP; MOVSB  (F3 90 A4) — the MOVSB is not repeated.
+    let (cx, dest) = run_prefixed_movsb(&[0xF3, 0x90, 0xA4]);
+    assert_eq!(cx, 5, "MOVSB without its own REP must not touch CX");
+    assert_eq!(dest, [0xD0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn segment_override_applies_to_one_instruction_only() {
+    // ES: MOV AL,[0x200]; MOV BL,AL; MOV AL,[0x200]
+    let mut vm = setup_segment_markers(&[0x26, 0xA0, 0x00, 0x02, 0x88, 0xC3, 0xA0, 0x00, 0x02]);
+    exec_n(&mut vm, 4);
+    assert_eq!(vm.cpu.registers.bx.low(), ES_MARKER, "first load uses the override");
+    assert_eq!(vm.cpu.registers.ax.low(), DS_MARKER, "second load is back to DS");
+}
+
+#[test]
+fn last_segment_override_wins() {
+    // ES: CS: MOV AL,[0x200]  (26 2E A0 00 02)
+    let mut vm = setup_segment_markers(&[0x26, 0x2E, 0xA0, 0x00, 0x02]);
+    exec_n(&mut vm, 3);
+    assert_eq!(vm.cpu.registers.ax.low(), CS_MARKER);
+}
+
+/// An interrupt must not be recognised between a prefix byte and the
+/// instruction it belongs to: the return address would point past the
+/// prefix and the instruction would resume without it.
+#[test]
+fn interrupt_is_not_taken_between_prefix_and_instruction() {
+    // ES: MOV AL,[0x200]; HLT
+    let mut vm = setup_segment_markers(&[0x26, 0xA0, 0x00, 0x02, 0xF4]);
+
+    // IRQ0 handler at 0000:0500 is a bare IRET.
+    vm.cpu.memory.write_byte(0x0500, 0xCF);
+    vm.cpu.memory.write_word(0x08 * 4, 0x0500);
+    vm.cpu.memory.write_word(0x08 * 4 + 2, 0x0000);
+
+    let mut pic_dev = PicDevice;
+    pic_dev.port_out_byte(0x20, 0x13, &mut vm.cpu); // ICW1: edge, single, ICW4 needed
+    pic_dev.port_out_byte(0x21, 0x08, &mut vm.cpu); // ICW2: vector base 0x08
+    pic_dev.port_out_byte(0x21, 0x01, &mut vm.cpu); // ICW4: 8086 mode
+    pic_dev.port_out_byte(0x21, 0x00, &mut vm.cpu); // OCW1: unmask all
+    vm.cpu.set_flag(Interrupt);
+    vm.cpu.pic.request_interrupt(0);
+
+    vm.step_frame();
+
+    assert!(vm.cpu.halted, "program should have run to the HLT");
+    assert_eq!(
+        vm.cpu.registers.ax.low(),
+        ES_MARKER,
+        "the load must keep its ES override even with an interrupt pending"
+    );
+}

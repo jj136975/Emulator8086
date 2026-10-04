@@ -21,4 +21,4 @@ iret_stub:
     iret
 
 msg_fail:
-    db 'No bootable disk', 0x0D, 0x0A, 0
+    db 'No bootable disk - press any key to retry', 0x0D, 0x0A, 0

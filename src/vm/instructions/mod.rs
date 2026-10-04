@@ -9,8 +9,7 @@ mod tests;
 use crate::utils::number::{div_rem, SpecialOps};
 use crate::vm::modrm::{direct_address, rm_address, ModRM};
 use crate::vm::runtime::CpuFlag::*;
-use crate::vm::runtime::Prefix::{Queued, Seg};
-use crate::vm::runtime::{Prefix, Runtime, SegmentType};
+use crate::vm::runtime::{Prefixes, Runtime, SegmentType};
 use std::ops::{BitAnd, BitOr, BitXor};
 
 const WORD_MASK: u8 = 0b_00_00_00_01;
@@ -62,22 +61,20 @@ fn update_logical_flags_byte(vm: &mut Runtime, res: u8) {
 
 pub fn process(vm: &mut Runtime) {
     vm.cpu.registers.op_pc = vm.cpu.registers.pc.word();
-    // Track the start of the full instruction (first prefix byte). When
-    // no prefix is carried over from the previous `process` call, this IS
-    // a new instruction and its start is the current PC.
-    if !matches!(vm.prefix, Some(Queued(_))) {
+    if vm.prefixes.pending {
+        // The previous call consumed a prefix byte: this byte continues the
+        // same instruction, so the latched prefixes stay in force.
+        vm.prefixes.pending = false;
+    } else {
+        // A new instruction starts here. Remember where, including any
+        // prefix bytes, so an interrupted REP string op can be restarted.
+        vm.prefixes = Prefixes::default();
         vm.cpu.registers.op_start_pc = vm.cpu.registers.pc.word();
     }
 
     let opcode = vm.cpu.fetch_byte();
     let is_word: bool = opcode & WORD_MASK != 0;
     let directional: bool = opcode & DIRECTION_MASK != 0;
-    if let Some(Queued(prefix)) = vm.prefix.take() {
-        vm.prefix = Some(*prefix);
-    } else {
-        // Previous instruction's segment override has been consumed — clear it.
-        vm.segment_override = None;
-    }
 
     match opcode {
         // ADD ac,data
@@ -711,7 +708,7 @@ pub fn process(vm: &mut Runtime) {
         }
         // LOCK (0xF1 is undocumented alias on 8086)
         0xF0 | 0xF1 => {
-            vm.prefix = Some(Queued(Box::new(Prefix::Lock)));
+            vm.prefixes.pending = true;
         }
         // LODS
         0b_1010_1100 | 0b_1010_1101 => {
@@ -910,7 +907,8 @@ pub fn process(vm: &mut Runtime) {
         }
         // FS/GS segment prefix (386+) — ignore in real mode (treat as DS)
         0x64 | 0x65 => {
-            vm.prefix = Some(Queued(Box::new(Seg(SegmentType::DS))));
+            vm.prefixes.segment = Some(SegmentType::DS);
+            vm.prefixes.pending = true;
         }
         // Operand/Address size override (386+) — ignore in real mode (NOP prefix)
         0x66 | 0x67 => {}
@@ -1137,7 +1135,8 @@ pub fn process(vm: &mut Runtime) {
         }
         // REP | REPE | REPNE | REPNZ | REPZ
         0b_1111_0010 | 0b_1111_0011 => {
-            vm.prefix = Some(Queued(Box::new(Prefix::Rep(is_word))));
+            vm.prefixes.rep = Some(is_word);
+            vm.prefixes.pending = true;
         }
         // RET (long)
         0xCB => {
@@ -1239,9 +1238,8 @@ pub fn process(vm: &mut Runtime) {
         }
         // SEG
         0b_0010_0110 | 0b_0010_1110 | 0b_0011_0110 | 0b_0011_1110 => {
-            let seg = SegmentType::from((opcode >> 3) & 0b_11);
-            vm.segment_override = Some(seg);
-            vm.prefix = Some(Queued(Box::new(Seg(seg))));
+            vm.prefixes.segment = Some(SegmentType::from((opcode >> 3) & 0b_11));
+            vm.prefixes.pending = true;
         }
         // STOS
         0b_1010_1010 | 0b_1010_1011 => {

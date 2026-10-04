@@ -118,7 +118,7 @@ impl Runtime {
     pub fn run_gui(mut self) {
         log::debug!(
             "Starting emulator (GUI) with boot order: {:02X?}",
-            self.boot_order
+            self.disks.borrow().boot_order()
         );
 
         let event_loop = EventLoop::new().expect("Failed to create event loop");
