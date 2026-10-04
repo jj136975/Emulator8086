@@ -1,9 +1,9 @@
 //! The viewport and format helpers and the shader, which naga parses and
-//! validates, are tested without a GPU. Two tests run on a real one: they
+//! validates, are tested without a GPU. Three tests run on a real one: they
 //! ask for an adapter without a surface, record frames into a texture as
 //! the window records them into its surface (`record_frame`) and read the
-//! pixels back: the picture alone, and the picture with the overlay over
-//! it.
+//! pixels back: the picture alone, the picture with the overlay over it,
+//! and both again on a device that has no more than WebGL2 guarantees.
 //!
 //! The invariant: no test needs a window, and none fails for want of a GPU.
 //! On a machine without an adapter the GPU tests say so and pass.
@@ -167,6 +167,14 @@ const ALL_ON: BlinkPhase = BlinkPhase {
 /// surface. `None`, with the reason printed, on a machine that has no
 /// adapter or whose adapter gives no device.
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+    gpu_asked_for(required_limits)
+}
+
+/// As `gpu`, but the device is asked for the limits `limits` makes of those
+/// the adapter offers.
+fn gpu_asked_for(
+    limits: impl Fn(&wgpu::Limits) -> wgpu::Limits,
+) -> Option<(wgpu::Device, wgpu::Queue)> {
     // The environment may narrow the choice (`WGPU_BACKEND=vulkan`), so
     // that one machine can run the test on each backend it has.
     let instance =
@@ -184,13 +192,25 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         "GPU test on {} ({}, {:?})",
         info.name, info.backend, info.device_type
     );
-    match pollster::block_on(adapter.request_device(&device_descriptor(&adapter))) {
+    let descriptor = wgpu::DeviceDescriptor {
+        required_limits: limits(&adapter.limits()),
+        ..device_descriptor(&adapter)
+    };
+    match pollster::block_on(adapter.request_device(&descriptor)) {
         Ok(device_and_queue) => Some(device_and_queue),
         Err(error) => {
             eprintln!("skipped: the adapter gives no device: {error}");
             None
         }
     }
+}
+
+/// The limits a device is asked for when its adapter is WebGL2, made of
+/// what any adapter offers: what WebGL2 guarantees and no more, with
+/// textures as large as this adapter makes them.
+fn as_on_webgl2(offered: &wgpu::Limits) -> wgpu::Limits {
+    let webgl2 = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(offered.clone());
+    required_limits(&webgl2)
 }
 
 /// A machine without disks or ROM, whose text screen shows every character
@@ -385,7 +405,14 @@ fn assert_same_pixels(drawn: &[u8], expected: &[u8], width: u32, what: &str) {
 /// same blit swaps the frame texture for one of the new size.
 #[test]
 fn blit_draws_the_rasterised_frame_scaled_and_centred() {
-    let Some((device, queue)) = gpu() else {
+    blit_puts_the_frame_on_its_target(gpu());
+}
+
+/// Draws text and mode 13h frames on `gpu` and compares every pixel read
+/// back with the frame `raster` drew. Without a GPU there is nothing to
+/// compare.
+fn blit_puts_the_frame_on_its_target(gpu: Option<(wgpu::Device, wgpu::Queue)>) {
+    let Some((device, queue)) = gpu else {
         return;
     };
     const TEXT: (usize, usize) = (raster::TEXT_WIDTH, raster::TEXT_HEIGHT);
@@ -469,7 +496,31 @@ fn differing(
 /// picture, pixel for pixel.
 #[test]
 fn the_overlay_is_drawn_over_the_picture_and_only_where_it_is() {
-    let Some((device, queue)) = gpu() else {
+    overlay_lies_over_the_picture(gpu());
+}
+
+/// What WebGL2 guarantees is enough for the frame. A device that was asked
+/// for no more refuses whatever exceeds it, whichever adapter is under it:
+/// on such a device the picture and the overlay are drawn as on any other.
+#[test]
+fn the_frame_is_drawn_within_the_limits_of_webgl2() {
+    let gpu = gpu_asked_for(as_on_webgl2);
+    if let Some((device, _)) = &gpu {
+        let limits = device.limits();
+        assert_eq!(
+            limits.max_storage_buffers_per_shader_stage, 0,
+            "WebGL2 has no storage buffers: {limits:?}"
+        );
+    }
+    blit_puts_the_frame_on_its_target(gpu.clone());
+    overlay_lies_over_the_picture(gpu);
+}
+
+/// Draws the picture with the overlay over it on `gpu`, in each state of
+/// the overlay, and compares what is read back with the picture alone.
+/// Without a GPU there is nothing to compare.
+fn overlay_lies_over_the_picture(gpu: Option<(wgpu::Device, wgpu::Queue)>) {
+    let Some((device, queue)) = gpu else {
         return;
     };
     const TEXT: (usize, usize) = (raster::TEXT_WIDTH, raster::TEXT_HEIGHT);
