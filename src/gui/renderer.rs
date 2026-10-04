@@ -15,12 +15,12 @@
 //! egui's renderer is not touched.
 
 use std::sync::Arc;
-use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
 use super::overlay::{Overlay, Paint};
+use crate::platform::Instant;
 use emu8086_core::io::raster::{self, BlinkPhase};
 use emu8086_core::io::vga::{VgaDevice, VideoMode};
 use emu8086_core::vm::memory::Memory;

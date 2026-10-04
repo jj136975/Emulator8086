@@ -12,17 +12,25 @@
 //! instructions while the guest runs and at once when it halts: no timer
 //! interrupt is later than that. A slice that goes by paused moves the last
 //! sample to its end and credits nothing, so that the pause is owed to
-//! nobody when the guest runs again.
+//! nobody when the guest runs again. On a host that cannot wait, a slice
+//! with nothing to run ends early, and the time until the next slice is
+//! credited by that slice's first sample like any other.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use emu8086_core::vm::runtime::Runtime;
+
+use crate::platform::{self, Instant};
 
 /// Instructions the guest runs between two samples of the host clock;
 /// reading it for every instruction would dominate run time.
 const CLOCK_SAMPLE_INTERVAL: u64 = 256;
 /// How long a halted guest is left alone before it is looked at again.
 const IDLE_POLL: Duration = Duration::from_millis(1);
+
+/// How a pacer lets host time go by: `platform::wait`, or what a test puts
+/// in its place. `false` says the host cannot wait.
+type Wait = fn(Duration) -> bool;
 
 /// Measures host time and feeds it to the machine it paces.
 pub struct Pacer {
@@ -31,14 +39,23 @@ pub struct Pacer {
     last_sample: Instant,
     /// The guest stands still: slices go by and credit nothing.
     paused: bool,
+    /// How time the guest has no use for is let go by.
+    wait: Wait,
 }
 
 impl Pacer {
-    /// The first sample credits the time since this call.
+    /// A pacer that waits as the host does. The first sample credits the
+    /// time since this call.
     pub fn new() -> Self {
+        Self::waiting_with(platform::wait)
+    }
+
+    /// A pacer that lets time go by with `wait`.
+    fn waiting_with(wait: Wait) -> Self {
         Self {
             last_sample: Instant::now(),
             paused: false,
+            wait,
         }
     }
 
@@ -68,9 +85,15 @@ impl Pacer {
     /// promptly. A paused guest is not looked at: the slice is waited out,
     /// as long as any other, so that whoever calls slice after slice is
     /// paced the same.
+    ///
+    /// On a host that cannot wait there is no waiting out: the slice of a
+    /// paused guest, and of a guest that is halted with nothing due, ends
+    /// at once, and it is for the caller to come back, as a browser does
+    /// with its next frame. A halted guest is then looked at once per
+    /// slice.
     pub fn run_slice(&mut self, runtime: &mut Runtime, slice: Duration) {
         if self.paused {
-            wait(slice);
+            (self.wait)(slice);
             self.last_sample = Instant::now();
             return;
         }
@@ -83,18 +106,18 @@ impl Pacer {
             // A guest that halts gets the time that has passed at once: the
             // next sample follows without a wait. One that was halted all
             // through a look has had all the time there is, and waits.
-            if runtime.cpu.halted && runtime.instruction_count == executed {
-                wait(IDLE_POLL.min(deadline - now));
+            if runtime.cpu.halted
+                && runtime.instruction_count == executed
+                && !(self.wait)(IDLE_POLL.min(deadline - now))
+            {
+                // Sampling again on the spot would spin until the deadline.
+                // The time from the last sample on is not lost: the next
+                // slice credits it.
+                return;
             }
             now = self.sample(runtime);
         }
     }
-}
-
-/// Lets `duration` of host time go by. The one place where the pacer
-/// waits.
-fn wait(duration: Duration) {
-    std::thread::sleep(duration);
 }
 
 #[cfg(test)]

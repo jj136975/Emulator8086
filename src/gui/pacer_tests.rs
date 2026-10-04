@@ -162,3 +162,121 @@ fn the_time_spent_paused_is_never_credited() {
         "{ticks} ticks in 110 ms after a pause of 300 ms, expected 2"
     );
 }
+
+// ---------------------------------------------------------------------------
+// On a host that cannot wait
+// ---------------------------------------------------------------------------
+
+/// What `platform::wait` is on a host whose one thread must not block: no
+/// time goes by, and it says so.
+fn cannot_wait(_duration: Duration) -> bool {
+    false
+}
+
+/// The time from one frame of such a host to the next: it calls a slice per
+/// frame, and the test waits in its place.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// Calls a slice per frame until `time` has gone by, as such a host does,
+/// and one more, which credits the last frame.
+fn run_frames_for(pacer: &mut Pacer, rt: &mut Runtime, time: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < time {
+        pacer.run_slice(rt, Duration::from_millis(10));
+        std::thread::sleep(FRAME);
+    }
+    pacer.run_slice(rt, Duration::from_millis(10));
+}
+
+/// On a host that cannot wait, the slice of a guest that is halted with
+/// nothing due ends at once, instead of spinning on the clock until its
+/// deadline: the host comes back with its next frame.
+#[test]
+fn a_halted_guests_slice_ends_at_once_on_a_host_that_cannot_wait() {
+    let mut rt = machine(&reset_code(&[]));
+    rt.cpu.halted = true; // interrupts are off after a reset: nothing can wake it
+
+    let started = Instant::now();
+    Pacer::waiting_with(cannot_wait).run_slice(&mut rt, Duration::from_secs(5));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the slice ended"
+    );
+    assert_eq!(rt.instruction_count, 0);
+}
+
+/// So does the slice of a paused guest, which is not run.
+#[test]
+fn a_paused_guests_slice_ends_at_once_on_a_host_that_cannot_wait() {
+    let mut rt = machine(&reset_code(&[0xEB, 0xFE])); // JMP $
+    let mut pacer = Pacer::waiting_with(cannot_wait);
+    pacer.set_paused(true);
+
+    let started = Instant::now();
+    pacer.run_slice(&mut rt, Duration::from_secs(5));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the slice ended"
+    );
+    assert_eq!(rt.instruction_count, 0);
+}
+
+/// A guest that never halts runs for its whole slice there too: nothing in
+/// it waits.
+#[test]
+fn a_busy_guest_runs_its_whole_slice_on_a_host_that_cannot_wait() {
+    let mut rt = machine(&reset_code(&[0xEB, 0xFE])); // JMP $
+
+    let slice = Duration::from_millis(100);
+    let started = Instant::now();
+    Pacer::waiting_with(cannot_wait).run_slice(&mut rt, slice);
+    assert!(started.elapsed() >= slice);
+    assert!(
+        rt.instruction_count >= 100_000,
+        "only {} instructions ran",
+        rt.instruction_count
+    );
+}
+
+/// An idle guest's timer keeps its rate on a host that cannot wait: each
+/// slice ends as soon as the guest halts again, and the time from that
+/// slice to the next is credited by the next one, none of it lost.
+#[test]
+fn timer_ticks_reach_an_idle_guest_frame_by_frame_on_a_host_that_cannot_wait() {
+    let mut rt = machine_idling_in_the_bios();
+    let mut pacer = Pacer::waiting_with(cannot_wait);
+
+    let before = timer_ticks(&rt);
+    run_frames_for(&mut pacer, &mut rt, Duration::from_millis(250));
+    let ticks = timer_ticks(&rt) - before;
+    assert!(
+        (3..=6).contains(&ticks),
+        "{ticks} ticks in 250 ms of frames, expected 4 or 5"
+    );
+    assert!(rt.cpu.halted, "the guest idles between its ticks");
+}
+
+/// The time a guest stood paused is not credited there either: the slices
+/// that end at once still move the last sample, frame after frame.
+#[test]
+fn the_time_spent_paused_is_never_credited_on_a_host_that_cannot_wait() {
+    let mut rt = machine_idling_in_the_bios();
+    let mut pacer = Pacer::waiting_with(cannot_wait);
+    run_frames_for(&mut pacer, &mut rt, Duration::from_millis(60));
+
+    pacer.set_paused(true);
+    let ticks_at_pause = timer_ticks(&rt);
+    run_frames_for(&mut pacer, &mut rt, Duration::from_millis(300));
+    assert_eq!(timer_ticks(&rt), ticks_at_pause, "no tick while paused");
+
+    pacer.set_paused(false);
+    run_frames_for(&mut pacer, &mut rt, Duration::from_millis(110));
+    let ticks = timer_ticks(&rt) - ticks_at_pause;
+    // 110 ms and a frame hold two ticks of 55 ms. The 300 ms of the pause
+    // would be five more, or four with the cap on what the timer can be
+    // owed.
+    assert!(
+        (1..=3).contains(&ticks),
+        "{ticks} ticks in 110 ms of frames after a pause of 300 ms, expected 2"
+    );
+}

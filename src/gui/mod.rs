@@ -28,11 +28,13 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::platform;
 use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
 use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
@@ -122,9 +124,7 @@ impl EmulatorApp {
         let paused = self.session.paused();
         if front.titled_paused != paused {
             front.titled_paused = paused;
-            front
-                .window
-                .set_title(if paused { TITLE_PAUSED } else { TITLE });
+            platform::set_title(&front.window, if paused { TITLE_PAUSED } else { TITLE });
         }
 
         front.window.request_redraw();
@@ -137,18 +137,11 @@ impl ApplicationHandler for EmulatorApp {
             return;
         }
 
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title(TITLE)
-                        .with_inner_size(winit::dpi::PhysicalSize::new(
-                            DEFAULT_WINDOW_WIDTH,
-                            DEFAULT_WINDOW_HEIGHT,
-                        )),
-                )
-                .expect("Failed to create window"),
-        );
+        let window = Arc::new(platform::create_window(
+            event_loop,
+            TITLE,
+            PhysicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
+        ));
 
         let renderer = Renderer::new(window.clone(), event_loop.owned_display_handle());
         let egui = egui_winit::State::new(
@@ -220,21 +213,17 @@ impl ApplicationHandler for EmulatorApp {
     }
 }
 
-/// Opens the window and runs `runtime` in it until the window is closed.
-/// `kbd_tx` feeds the keyboard controller the machine was built with.
+/// Opens the window and runs `runtime` in it, in the host's event loop
+/// (`platform::run_app`). `kbd_tx` feeds the keyboard controller the
+/// machine was built with.
 pub fn run(runtime: Runtime, kbd_tx: mpsc::Sender<EmulatorEvent>) {
     log::debug!(
         "Starting emulator with boot order: {:02X?}",
         runtime.disks.borrow().boot_order()
     );
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
-    event_loop.set_control_flow(ControlFlow::Poll);
-
-    let mut app = EmulatorApp {
+    platform::run_app(EmulatorApp {
         session: Session::new(runtime, kbd_tx),
         front: None,
-    };
-
-    event_loop.run_app(&mut app).expect("Event loop failed");
+    });
 }

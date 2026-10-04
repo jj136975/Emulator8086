@@ -23,12 +23,14 @@ use emu8086_core::vm::runtime::Runtime;
 use super::keys::GuestKeys;
 use super::overlay::{Command, Overlay};
 use super::pacer::Pacer;
+use crate::platform;
 
 /// Host time the CPU runs for before each frame is drawn. The rest of the
 /// frame period is left for rasterising and for waiting on vsync.
 const CPU_SLICE: Duration = Duration::from_millis(10);
 
-/// The file the VGA dump is written to, in the working directory.
+/// The file the VGA dump goes to: on a host with files, in the working
+/// directory.
 const VGA_DUMP_FILE: &str = "vga_dump.txt";
 
 pub struct Session {
@@ -127,19 +129,13 @@ impl Session {
                 self.overlay.messages().done("Machine reset");
             }
             Command::DumpVga => {
-                // The one place where the session writes to the host: on a
-                // host without files the text has to leave another way.
-                let file = self.dump_file.display();
+                // The one place where the session hands a text to the host,
+                // which puts it where its user can read it: not every host
+                // has files.
                 match self.runtime.vga_dump() {
-                    Some(dump) => match std::fs::write(&self.dump_file, dump) {
-                        Ok(()) => self
-                            .overlay
-                            .messages()
-                            .done(format!("VGA state written to {file}")),
-                        Err(error) => self
-                            .overlay
-                            .messages()
-                            .failed(format!("Cannot write {file}: {error}")),
+                    Some(dump) => match platform::save_text(&self.dump_file, &dump) {
+                        Ok(saved) => self.overlay.messages().done(format!("VGA state {saved}")),
+                        Err(error) => self.overlay.messages().failed(error),
                     },
                     None => self.overlay.messages().failed("The machine has no VGA"),
                 }

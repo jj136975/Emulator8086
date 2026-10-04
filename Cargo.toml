@@ -10,6 +10,10 @@ emu8086_core.workspace = true
 clap.workspace = true
 log.workspace = true
 env_logger.workspace = true
+# The clocks of both hosts under one name (src/platform): std's on a
+# desktop, the page's `performance.now()` and `Date` in a browser, where
+# std's panic.
+web-time.workspace = true
 # The app is the machine's wall clock (src/wall_clock.rs). The local time
 # files on a FAT volume are stamped with comes from fatfs's own time
 # provider, which is there only with `chrono`: the app turns the feature
@@ -60,6 +64,7 @@ bytemuck = { version = "1", features = ["derive"] }
 egui = { version = "0.36", default-features = false }
 egui-wgpu = { version = "0.36", default-features = false }
 egui-winit = { version = "0.36", default-features = false }
+web-time = "1.1.0"
 # Dev-only: the hardware-captured CPU vectors (the `8086` submodule) are
 # gzipped JSON.
 serde = { version = "1", features = ["derive"] }

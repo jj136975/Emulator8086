@@ -2,23 +2,21 @@
 //! (`emu8086_core::io::disk::WallClock`). The core reads no clock: a disk
 //! formatted or a file copied from the host gets its time from here.
 //!
-//! The invariant: files are stamped with the host's local time. It comes
-//! from fatfs's own time provider, which reads it through chrono and is
-//! there only in a fatfs built with its `chrono` feature. This crate's
-//! manifest turns that feature on; without it every file would be stamped
-//! 1980-01-01 00:00.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//! The invariant: files are stamped with the host's local time, and how a
+//! host tells its local time is the host's business
+//! (`platform::fat_options`). Mount options made here by hand would stamp
+//! every file with whatever fatfs falls back on.
 
 use emu8086_core::io::disk::WallClock;
+
+use crate::platform::{self, SystemTime, UNIX_EPOCH};
 
 /// The clock of the host this process runs on.
 pub struct HostClock;
 
 impl WallClock for HostClock {
     fn fat_options(&self) -> fatfs::FsOptions {
-        // The options fatfs makes itself carry its own time provider.
-        fatfs::FsOptions::new()
+        platform::fat_options()
     }
 
     fn unix_nanos(&self) -> u64 {
