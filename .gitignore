@@ -1,4 +1,6 @@
 /target
+# The browser build, as trunk puts it out
+/dist/
 *.out
 *.c
 *.o

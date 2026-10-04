@@ -1,48 +1,66 @@
-//! What depends on the host the app runs on, behind one set of names. The
-//! rest of the app calls these names and never asks which host it is on:
-//! `native` is the desktop, with its command line, its files and a thread
-//! that may block.
+//! What depends on the host the app runs on, behind one set of names. There
+//! are two hosts: `native` is a desktop, with its command line, its files
+//! and a thread that may block; `web` is a browser, built for wasm32, where
+//! the app is part of a page and has none of those. Each side defines all
+//! the names, this module hands on the side that was built, and the rest of
+//! the app calls them without asking which host it is on.
 //!
 //! What a host offers:
 //!
-//! - `init`: where the log goes.
-//! - `options`: what the start asks of the machine (`crate::Options`).
-//! - `fail`: tells the user of an error at start-up, and ends the process.
-//! - `run_app`: runs the winit application in the host's event loop.
-//! - `create_window`, `set_title`: the window the machine is shown in.
-//! - `spawn`: runs a future to its end, at once if the host may block.
+//! - `init`: where the log goes and, in a browser, where a panic is told.
+//! - `options`: what the start asks of the machine (`crate::Options`): a
+//!   desktop's command line, and nothing in a browser.
+//! - `fail`: tells the user of an error at start-up, and ends the process
+//!   where there is one.
+//! - `run_app`: runs the winit application in the host's event loop: to its
+//!   end on a desktop; in a browser the loop is the page's, and the call
+//!   returns at once.
+//! - `create_window`, `set_title`: the window the machine is shown in. In a
+//!   browser it is a canvas, put into the page and as large as its
+//!   viewport, and the title is the page's.
+//! - `spawn`: runs a future to its end: at once on a desktop, which may
+//!   block; later in a browser, which may not.
 //! - `OverlayInput`: the window's events as egui's input.
 //! - `OVERLAY_SWITCH`: how the user shows and hides the overlay
 //!   (`OverlaySwitch`).
-//! - `wait`: lets host time go by, and says whether the host could.
+//! - `wait`: lets host time go by, and says whether the host could: a
+//!   browser cannot.
 //! - `fat_options`: the FAT mount options that carry the host's local time.
-//! - `save_text`: puts a text where the user can read it.
+//! - `save_text`: puts a text where the user can read it: in a file, or in
+//!   a download.
 //!
 //! and the clocks, which are `web_time`'s on every host: `Instant`,
-//! `SystemTime`, `UNIX_EPOCH`.
+//! `SystemTime`, `UNIX_EPOCH`. They are std's on a desktop and the page's
+//! in a browser, where std's panic.
 //!
-//! `egui_events` and `fat_stamp` are what a browser needs in the place of
-//! egui-winit and of fatfs's own clock, written so as to know nothing of a
-//! browser. On the desktop they are built for their tests alone.
+//! `egui_events` and `fat_stamp` are the parts of the browser's side that
+//! know nothing of a browser. They are built on a desktop too, for their
+//! tests alone.
 //!
 //! The invariant: this directory is the only part of the app that knows
 //! which host it is built for. Outside it no source file names
 //! `cfg(target_arch`, `wasm_bindgen`, `web_sys` or `js_sys`, and none
 //! sleeps, blocks on a future (`block_on`) or names a clock of `std::time`:
-//! not every host has a thread that may stand still or a clock std can
-//! read. The rule is a test (`tests.rs`).
+//! a browser has no thread that may stand still and no clock std can read.
+//! The rule is a test (`tests.rs`).
 
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
-#[cfg(test)]
+#[cfg(any(target_arch = "wasm32", test))]
 mod egui_events;
-#[cfg(test)]
+#[cfg(any(target_arch = "wasm32", test))]
 mod fat_stamp;
 
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
+#[cfg(target_arch = "wasm32")]
+pub use web::*;
 pub use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// How the user shows and hides the overlay on a host: with a key, with a

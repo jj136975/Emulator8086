@@ -7,33 +7,67 @@ license.workspace = true
 [dependencies]
 emu8086_core.workspace = true
 
-clap.workspace = true
 log.workspace = true
-env_logger.workspace = true
 # The clocks of both hosts under one name (src/platform): std's on a
 # desktop, the page's `performance.now()` and `Date` in a browser, where
-# std's panic.
+# the clocks of std panic.
 web-time.workspace = true
+
+# The window: winit opens it and delivers the keys, wgpu draws into it.
+wgpu.workspace = true
+winit.workspace = true
+bytemuck.workspace = true
+
+# The overlay: egui lays the tools out and egui-wgpu draws its meshes over
+# the emulator's frame. Of their features only egui's built-in fonts are
+# taken, without which it has no text: the system clipboard, the
+# screen-reader adapters and the opening of links have no counterpart in a
+# browser, where the overlay runs too.
+egui = { workspace = true, features = ["default_fonts"] }
+egui-wgpu.workspace = true
+
+# What only a desktop has (src/platform/native.rs): a command line, a
+# stderr to log to, a thread that may block on the GPU's start-up.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap.workspace = true
+env_logger.workspace = true
+pollster.workspace = true
+# The window's events as egui's input. egui-winit 0.36.2 does not build for
+# wasm32 (it implements `egui::DroppedFile::bytes`, which egui declares only
+# off wasm32): in a browser the app translates the events itself
+# (src/platform/egui_events.rs).
+egui-winit.workspace = true
 # The app is the machine's wall clock (src/wall_clock.rs). The local time
 # files on a FAT volume are stamped with comes from fatfs's own time
 # provider, which is there only with `chrono`: the app turns the feature
 # on, and the core, which reads no clock, lists fatfs without it.
 fatfs = { workspace = true, features = ["chrono"] }
 
-# The window: winit opens it and delivers the keys, wgpu draws into it.
-wgpu.workspace = true
-winit.workspace = true
-pollster.workspace = true
-bytemuck.workspace = true
-
-# The overlay: egui lays the tools out, egui-winit turns the window's events
-# into its input, egui-wgpu draws its meshes over the emulator's frame. Of
-# their features only egui's built-in fonts are taken, without which it has
-# no text: the system clipboard, the screen-reader adapters and the opening
-# of links have no counterpart in a browser, where the overlay is to run too.
-egui = { workspace = true, features = ["default_fonts"] }
-egui-wgpu.workspace = true
-egui-winit.workspace = true
+# What only a browser has (src/platform/web.rs): the page, reached through
+# wasm-bindgen.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Without `chrono`: there the wall clock is the page's `Date`.
+fatfs.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+web-sys = { workspace = true, features = [
+    "Blob",
+    "BlobPropertyBag",
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "HtmlAnchorElement",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "Node",
+    "Url",
+    "Window",
+    "console",
+] }
+# WebGPU is among wgpu's default features. WebGL2 is what a browser without
+# WebGPU is drawn with.
+wgpu = { workspace = true, features = ["webgl"] }
 
 [lints]
 workspace = true
@@ -65,6 +99,13 @@ egui = { version = "0.36", default-features = false }
 egui-wgpu = { version = "0.36", default-features = false }
 egui-winit = { version = "0.36", default-features = false }
 web-time = "1.1.0"
+# The browser build (wasm32-unknown-unknown). The four of wasm-bindgen move
+# together, and trunk fetches the wasm-bindgen CLI of the version that is
+# locked for the first.
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+js-sys = "0.3.106"
+web-sys = "0.3.106"
 # Dev-only: the hardware-captured CPU vectors (the `8086` submodule) are
 # gzipped JSON.
 serde = { version = "1", features = ["derive"] }

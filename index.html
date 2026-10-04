@@ -1,0 +1,28 @@
+<!doctype html>
+<!--
+  The page of the browser build: trunk (`trunk serve`, `trunk build`) builds
+  the application for wasm32-unknown-unknown and puts its script where the
+  link below stands.
+
+  The page holds nothing itself. The application puts its canvas into the
+  body and lays it over the whole viewport (src/platform/web.rs); what is
+  styled here is only what shows around a canvas that is not there yet.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Emulator 8086</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+    </style>
+    <link data-trunk rel="rust" data-bin="emulator_8086" />
+  </head>
+  <body></body>
+</html>
