@@ -16,3 +16,8 @@ vga_dump.txt
 
 # IDE configuration
 /.idea/
+
+# Per-user tool configuration
+.mcp.json
+# Per-user agent instructions (machine-specific paths, personal knobs).
+CLAUDE.local.md

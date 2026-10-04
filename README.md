@@ -40,7 +40,7 @@ Running DOOM in GUI mode with hardware-accelerated Mode 13h graphics:
 
 ### Requirements
 
-- [Rust](https://www.rust-lang.org/tools/install) (edition 2021)
+- [Rust](https://www.rust-lang.org/tools/install) 1.97.1 (edition 2024; the version is pinned in `rust-toolchain`, which rustup follows)
 - A BIOS ROM (included in `assets/rom/bios.bin`, or build your own with [NASM](https://www.nasm.us/))
 
 ### Build
