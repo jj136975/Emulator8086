@@ -1,7 +1,7 @@
 //! The overlay: the tools drawn over the emulator's picture with egui. This
 //! file is the shell: whether the overlay is shown, the hint of the first
 //! seconds, the menu bar and the messages. `messages` is where a tool says
-//! what it did.
+//! what it did; `theme` is the look.
 //!
 //! The shell knows egui and nothing else: no window, no GPU, no file, no
 //! clock. The window gathers egui's input and calls `run`, which returns
@@ -14,18 +14,18 @@
 //! and only for the first seconds: the hint that names its key.
 
 mod messages;
+pub mod theme;
 
 pub use messages::Messages;
 
 use egui::{Align2, Area, Frame, Id, MenuBar, Order, vec2};
 
+use theme::METRICS;
+
 /// What the hint says. The key is the window's (`gui::OVERLAY_KEY`).
 const HINT: &str = "F12: tools";
 /// How long the hint stays after the first frame, in seconds.
 const HINT_SECONDS: f64 = 5.0;
-/// From the edge of the window to what floats over the picture, the hint
-/// and the messages, in points.
-const EDGE: f32 = 12.0;
 
 /// What a tool asks the app to do with the machine. The shell only asks:
 /// the app carries the command out and says what came of it through
@@ -76,9 +76,10 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    /// A hidden overlay.
+    /// A hidden overlay, in the theme.
     pub fn new() -> Self {
         let ctx = egui::Context::default();
+        theme::apply(&ctx);
         // The keyboard is shared with the guest. egui's own shortcuts, to
         // zoom the UI (Ctrl with + or -) and to quit (Ctrl+Q), would act on
         // keys the guest gets as well.
@@ -189,7 +190,7 @@ impl Overlay {
         // The messages go below the menu bar, in what it leaves of the
         // window.
         let below_bar = ui.available_rect_before_wrap();
-        let corner = below_bar.right_top() + vec2(-EDGE, EDGE);
+        let corner = below_bar.right_top() + vec2(-METRICS.edge, METRICS.edge);
         self.messages.show(ui.ctx(), corner, now);
     }
 }
@@ -219,7 +220,7 @@ fn menu_bar(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
 fn hint(ctx: &egui::Context) {
     Area::new(Id::new("overlay_hint"))
         .order(Order::Foreground)
-        .anchor(Align2::LEFT_BOTTOM, vec2(EDGE, -EDGE))
+        .anchor(Align2::LEFT_BOTTOM, vec2(METRICS.edge, -METRICS.edge))
         // The hint is read, not used: clicks go to what lies under it.
         .interactable(false)
         .show(ctx, |ui| {

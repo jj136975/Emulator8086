@@ -10,6 +10,8 @@
 
 use egui::{Align, Align2, Area, Frame, Id, Layout, Order, Pos2};
 
+use super::theme::PALETTE;
+
 /// How long a message that reports something done stays, in seconds.
 pub(super) const DONE_SECONDS: f64 = 4.0;
 /// How long a failure stays: it says why, which takes longer to read.
@@ -83,9 +85,9 @@ impl Messages {
                     };
                     message.until.get_or_insert(now + seconds);
                     let colour = if message.failed {
-                        ui.visuals().error_fg_color
+                        PALETTE.error
                     } else {
-                        ui.visuals().strong_text_color()
+                        PALETTE.text_strong
                     };
                     Frame::popup(ui.style()).show(ui, |ui| {
                         ui.colored_label(colour, &message.text);
