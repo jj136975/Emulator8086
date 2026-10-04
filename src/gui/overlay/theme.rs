@@ -78,6 +78,10 @@ pub struct Metrics {
     /// Side of a colour swatch, such as an entry of the VGA's DAC. Swatches
     /// side by side are a `line` apart.
     pub swatch: f32,
+    /// How far, across and down, a panel's window first opens from the
+    /// window of the panel before it: enough to leave that one's title bar
+    /// in view.
+    pub cascade: f32,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -113,6 +117,7 @@ pub const METRICS: Metrics = Metrics {
     shadow_offset: [4, 8],
     shadow_blur: 12,
     swatch: 8.0,
+    cascade: 24.0,
 };
 
 /// Puts the theme on `ctx`. egui keeps one style for a dark host and one

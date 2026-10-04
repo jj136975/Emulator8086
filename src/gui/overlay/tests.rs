@@ -307,6 +307,22 @@ fn every_panel_has_a_title_a_checkbox_and_a_window() {
     }
 }
 
+/// Each panel's window first opens a step across and down from where the
+/// panel before it in the View menu opens: windows open at once lie apart,
+/// however little room the picture leaves them. Across, nothing pushes
+/// them back into the screen here; down, the screen's edge may.
+#[test]
+fn each_panel_opens_a_step_from_the_one_before_it() {
+    let mut shell = shown();
+    let titles = [Panel::Interrupts.title(), Panel::Timer.title()];
+    for title in titles {
+        shell.toggle_in_view_menu(title);
+    }
+    let [first, second] = titles.map(|title| shell.screen().rect(Role::Window, title));
+    assert_eq!(second.left() - first.left(), METRICS.cascade);
+    assert_ne!(first.left_top(), second.left_top());
+}
+
 /// The window of a panel is closed by its own button as well, and the View
 /// menu then shows the panel closed.
 #[test]

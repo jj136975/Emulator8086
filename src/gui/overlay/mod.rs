@@ -31,7 +31,7 @@ mod vga;
 pub use messages::Messages;
 pub use panels::Panel;
 
-use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Window, vec2};
+use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Vec2, Window, vec2};
 
 use emu8086_core::vm::runtime::Runtime;
 use theme::{METRICS, PALETTE};
@@ -250,14 +250,26 @@ impl Overlay {
         // What the menu bar leaves of the window: the panels stay in it,
         // and the messages go to its corner.
         let below_bar = ui.available_rect_before_wrap();
-        for panel in Panel::ALL {
+        for (index, panel) in Panel::ALL.into_iter().enumerate() {
             let mut is_open = open.contains(&panel);
             // A window takes the size of what its panel shows: a tool over
             // the picture hides no more of it than it has to. A panel that
             // shows more than fits scrolls it itself.
+            //
+            // It first opens a step from where the panel before it in the
+            // View menu opens, its title bar in view: egui would put it
+            // where there is room, and over a small picture there is none,
+            // so it would put them all in one place, the last one hiding
+            // the others. egui measures a new window in an unseen frame
+            // first, taking it meanwhile for the size it was given, and
+            // keeps it inside the screen at that size: given none, it takes
+            // one so wide that every step is pushed back to the same place.
+            let step = Vec2::splat(METRICS.edge + METRICS.cascade * index as f32);
             Window::new(panel.title())
                 .open(&mut is_open)
                 .constrain_to(below_bar)
+                .default_pos(below_bar.left_top() + step)
+                .default_size(Vec2::ZERO)
                 .auto_sized()
                 .show(ui.ctx(), |ui| panel.body(ui, &mut cx));
             // The window's own button closed it.
