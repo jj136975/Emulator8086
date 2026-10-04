@@ -64,11 +64,11 @@ fn guest_keys() -> (GuestKeys, Receiver<EmulatorEvent>) {
 }
 
 fn press(keys: &mut GuestKeys, code: KeyCode) {
-    keys.key(PhysicalKey::Code(code), ElementState::Pressed);
+    keys.key(PhysicalKey::Code(code), ElementState::Pressed, false);
 }
 
 fn release(keys: &mut GuestKeys, code: KeyCode) {
-    keys.key(PhysicalKey::Code(code), ElementState::Released);
+    keys.key(PhysicalKey::Code(code), ElementState::Released, false);
 }
 
 /// What was sent since the last look.
@@ -105,6 +105,39 @@ fn a_release_without_its_press_and_an_unknown_key_send_nothing() {
     press(&mut keys, KeyCode::F11);
     release(&mut keys, KeyCode::F11);
     assert_eq!(sent(&events), NOTHING);
+}
+
+/// A press the overlay kept is not sent, repeats of a held key included.
+/// The release of a key the guest holds is sent whoever kept it: the guest
+/// saw the key go down and has to see it come up.
+#[test]
+fn a_press_the_overlay_kept_is_not_sent_but_the_release_of_a_held_key_is() {
+    let (mut keys, events) = guest_keys();
+    let taken = true;
+    keys.key(
+        PhysicalKey::Code(KeyCode::KeyB),
+        ElementState::Pressed,
+        taken,
+    );
+    keys.key(
+        PhysicalKey::Code(KeyCode::KeyB),
+        ElementState::Released,
+        taken,
+    );
+    assert_eq!(sent(&events), NOTHING);
+
+    press(&mut keys, KeyCode::KeyA);
+    keys.key(
+        PhysicalKey::Code(KeyCode::KeyA),
+        ElementState::Pressed,
+        taken,
+    );
+    keys.key(
+        PhysicalKey::Code(KeyCode::KeyA),
+        ElementState::Released,
+        taken,
+    );
+    assert_eq!(sent(&events), [Scancode(0x1E), ScanRelease(0x9E)]);
 }
 
 /// `release_all` lets go of every key the guest holds, each once: the

@@ -39,13 +39,16 @@ impl GuestKeys {
         }
     }
 
-    /// A key of the host went down or came up. A key without a place on
-    /// the XT keyboard is not the guest's. A key held down arrives pressed
-    /// again and again, and is sent again: an XT keyboard repeats the same
-    /// way.
-    pub fn key(&mut self, key: PhysicalKey, state: ElementState) {
+    /// A key of the host went down or came up. `taken` says that the
+    /// overlay kept the event for itself: a press it kept is not the
+    /// guest's, while a release reaches the guest whoever kept it, if the
+    /// guest holds the key. A key without a place on the XT keyboard is
+    /// not the guest's either. A key held down arrives pressed again and
+    /// again, and is sent again: an XT keyboard repeats the same way.
+    pub fn key(&mut self, key: PhysicalKey, state: ElementState, taken: bool) {
         let held = self.held.iter().position(|(held, _)| *held == key);
         match state {
+            ElementState::Pressed if taken => {}
             ElementState::Pressed => {
                 let Some(scancode) = physical_key_to_scancode(key) else {
                     return;
@@ -66,7 +69,8 @@ impl GuestKeys {
 
     /// Lets go of every key the guest holds. For when the releases of the
     /// host's keys will not reach the guest anymore, as when the window
-    /// loses the keyboard: a key held then would stay down in the guest.
+    /// loses the keyboard or the overlay takes it: a key held then would
+    /// stay down in the guest.
     pub fn release_all(&mut self) {
         for (_, scancode) in std::mem::take(&mut self.held) {
             self.send(EmulatorEvent::ScanRelease(scancode | 0x80));

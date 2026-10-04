@@ -1,16 +1,18 @@
-//! The viewport and texture format helpers and the shader, which naga
-//! parses and validates, are tested without a GPU. The last test runs the
-//! pipeline on a real one: it asks for an adapter without a surface, records
-//! a frame into a texture as the window records one into its surface
-//! (`record_frame`) and reads the pixels back.
+//! The viewport and format helpers and the shader, which naga parses and
+//! validates, are tested without a GPU. Two tests run on a real one: they
+//! ask for an adapter without a surface, record frames into a texture as
+//! the window records them into its surface (`record_frame`) and read the
+//! pixels back: the picture alone, and the picture with the overlay over
+//! it.
 //!
 //! The invariant: no test needs a window, and none fails for want of a GPU.
-//! On a machine without an adapter the GPU test says so and passes.
+//! On a machine without an adapter the GPU tests say so and pass.
 
 use std::cell::Ref;
 use std::time::Duration;
 
 use super::*;
+use crate::gui::overlay::testing::{SCREEN, input};
 use crate::wall_clock::HostClock;
 use emu8086_core::io::keyboard::KeyboardController;
 use emu8086_core::vm::runtime::Runtime;
@@ -211,12 +213,16 @@ fn show_mode_13h_stripes(rt: &mut Runtime) {
     }
 }
 
-/// Draws the blit's frame into a new `width` x `height` texture of `format`
-/// and returns what the texture then holds: RGBA, row after row.
+/// Draws a frame into a new `width` x `height` texture of `format`, as the
+/// window draws one into its surface: the blit's picture and, over it,
+/// `paint` if there is one. Returns what the texture then holds: RGBA, row
+/// after row.
 fn draw_and_read_back(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     blit: &FrameBlit,
+    overlay: &mut OverlayPass,
+    mut paint: Option<Paint>,
     format: wgpu::TextureFormat,
     (width, height): (u32, u32),
 ) -> Vec<u8> {
@@ -249,7 +255,7 @@ fn draw_and_read_back(
     });
 
     // The frame as the window records it, then the copy that reads it back.
-    let frame = record_frame(device, blit, &view);
+    let mut commands = record_frame(device, queue, blit, overlay, paint.as_mut(), &view);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
@@ -268,7 +274,11 @@ fn draw_and_read_back(
         },
         size,
     );
-    queue.submit([frame, encoder.finish()]);
+    commands.push(encoder.finish());
+    queue.submit(commands);
+    if let Some(paint) = &mut paint {
+        overlay.release(paint);
+    }
 
     let (mapped, was_mapped) = std::sync::mpsc::channel();
     buffer.map_async(wgpu::MapMode::Read, .., move |result| {
@@ -365,9 +375,11 @@ fn blit_draws_the_rasterised_frame_scaled_and_centred() {
         // and of 15 above and below.
         let target = (1300, 830);
         let mut blit = FrameBlit::new(&device, format, target.0, target.1);
+        // No overlay is painted here: the frames are the picture alone.
+        let mut overlay = OverlayPass::new(&device, format);
         blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
         assert_same_pixels(
-            &draw_and_read_back(&device, &queue, &blit, format, target),
+            &draw_and_read_back(&device, &queue, &blit, &mut overlay, None, format, target),
             &frame_on_target(&text_frame, TEXT, target, 2, (10, 15)),
             target.0,
             &format!("text frame doubled, {format:?}"),
@@ -377,7 +389,7 @@ fn blit_draws_the_rasterised_frame_scaled_and_centred() {
         let target = (500, 300);
         blit.resize(&queue, target.0, target.1);
         assert_same_pixels(
-            &draw_and_read_back(&device, &queue, &blit, format, target),
+            &draw_and_read_back(&device, &queue, &blit, &mut overlay, None, format, target),
             &frame_on_target(&text_frame, TEXT, target, 1, (-70, -50)),
             target.0,
             &format!("text frame cut, {format:?}"),
@@ -393,10 +405,142 @@ fn blit_draws_the_rasterised_frame_scaled_and_centred() {
         blit.resize(&queue, target.0, target.1);
         blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
         assert_same_pixels(
-            &draw_and_read_back(&device, &queue, &blit, format, target),
+            &draw_and_read_back(&device, &queue, &blit, &mut overlay, None, format, target),
             &frame_on_target(&gfx_frame, GFX, target, 3, (20, 50)),
             target.0,
             &format!("mode 13h frame tripled, {format:?}"),
         );
     }
+}
+
+/// The pixel at `x`, `y` of an image `width` pixels wide.
+fn pixel(image: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let at = ((y * width + x) * 4) as usize;
+    [image[at], image[at + 1], image[at + 2], image[at + 3]]
+}
+
+/// The pixels of the `columns` x `rows` rectangle in which `drawn` and
+/// `picture`, both `width` pixels wide, differ.
+fn differing(
+    drawn: &[u8],
+    picture: &[u8],
+    width: u32,
+    columns: std::ops::Range<u32>,
+    rows: std::ops::Range<u32>,
+) -> usize {
+    rows.flat_map(|y| columns.clone().map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(drawn, width, x, y) != pixel(picture, width, x, y))
+        .count()
+}
+
+/// The overlay is drawn over the picture, in the same frame and only where
+/// it is. While the hint shows, the frame is the picture but for the hint's
+/// corner. Hidden, the overlay leaves nothing to paint and the frame is the
+/// picture exactly. Shown, its menu bar covers the top of the target in the
+/// colour of the style, and all that lies below the bar is still the
+/// picture, pixel for pixel.
+#[test]
+fn the_overlay_is_drawn_over_the_picture_and_only_where_it_is() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const TEXT: (usize, usize) = (raster::TEXT_WIDTH, raster::TEXT_HEIGHT);
+    // The text frame at its own size fills the window the overlay's tests
+    // pretend to have.
+    let target = (SCREEN[0], SCREEN[1]);
+    let (width, height) = target;
+    assert_eq!(target, (TEXT_WIDTH, TEXT_HEIGHT));
+
+    for format in [
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Rgba8Unorm,
+    ] {
+        let rt = text_screen();
+        let mut picture = vec![0; TEXT.0 * TEXT.1 * 4];
+        raster::rasterize_text(&mut picture, &vga(&rt), &rt.cpu.memory, ALL_ON);
+        let mut blit = FrameBlit::new(&device, format, width, height);
+        blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
+        let mut pass = OverlayPass::new(&device, format);
+        let mut overlay = Overlay::new();
+
+        // A frame as the window draws it: the overlay is painted only if it
+        // has anything to show.
+        let mut frame = |overlay: &mut Overlay| {
+            let paint = overlay.draws().then(|| overlay.take_paint());
+            draw_and_read_back(&device, &queue, &blit, &mut pass, paint, format, target)
+        };
+
+        // The first seconds: the hint, in the bottom left corner. It is
+        // laid out in one pass, shown from the next and fades in.
+        for time in [0.0, 1.0, 2.0] {
+            overlay.run(input(time, Vec::new()));
+        }
+        let drawn = frame(&mut overlay);
+        assert!(
+            differing(&drawn, &picture, width, 0..200, height - 60..height) > 100,
+            "the hint is drawn, {format:?}"
+        );
+        assert_eq!(
+            differing(&drawn, &picture, width, 0..width, 0..height - 60)
+                + differing(&drawn, &picture, width, 200..width, height - 60..height),
+            0,
+            "and nothing but the hint, {format:?}"
+        );
+
+        // Hidden and past the hint: nothing of the overlay is drawn.
+        overlay.toggle();
+        overlay.toggle();
+        assert!(!overlay.draws());
+        assert_same_pixels(
+            &frame(&mut overlay),
+            &picture,
+            width,
+            &format!("hidden overlay, {format:?}"),
+        );
+
+        // Shown: the menu bar along the top.
+        overlay.toggle();
+        overlay.run(input(3.0, Vec::new()));
+        overlay.run(input(3.1, Vec::new()));
+        let bar = overlay
+            .context()
+            .global_style()
+            .visuals
+            .panel_fill
+            .to_array();
+        let drawn = frame(&mut overlay);
+        // Inside the bar, right of its menus.
+        for (x, y) in [(300, 3), (width / 2, 8), (width - 40, 6)] {
+            let drawn = pixel(&drawn, width, x, y);
+            // An sRGB target takes the colour decoded and stores it encoded
+            // again: one step of rounding either way.
+            let close = drawn.iter().zip(&bar).all(|(a, b)| a.abs_diff(*b) <= 2);
+            assert!(
+                close,
+                "{x},{y} is {drawn:?}, the bar is {bar:?}, {format:?}"
+            );
+        }
+        assert_eq!(
+            differing(&drawn, &picture, width, 0..width, 40..height),
+            0,
+            "below the bar the picture is untouched, {format:?}"
+        );
+    }
+}
+
+/// The window is drawn in a plain 8-bit format when the surface has one,
+/// wherever it stands in the surface's list, and in the first format of
+/// the list when it has none.
+#[test]
+fn window_format_is_a_plain_one_when_the_surface_has_it() {
+    use wgpu::TextureFormat::*;
+    assert_eq!(window_format(&[Bgra8UnormSrgb, Bgra8Unorm]), Bgra8Unorm);
+    assert_eq!(
+        window_format(&[Rgba8UnormSrgb, Rgba16Float, Rgba8Unorm]),
+        Rgba8Unorm
+    );
+    assert_eq!(
+        window_format(&[Bgra8UnormSrgb, Rgba16Float]),
+        Bgra8UnormSrgb
+    );
 }

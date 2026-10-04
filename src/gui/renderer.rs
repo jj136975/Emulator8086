@@ -1,13 +1,18 @@
-//! The window's renderer, in two parts. `FrameBlit` needs no window: one
-//! texture that takes the frame `raster` draws on the CPU, and a
-//! fullscreen-triangle blit that scales it by a whole number, centres it in
-//! its target and leaves the rest of the target black. `Renderer` holds the
-//! wgpu surface on the winit window and puts one blit on it per frame.
+//! The window's renderer. Two things are drawn, and neither needs a window:
+//! `FrameBlit` is the emulator's picture, one texture that takes the frame
+//! `raster` draws on the CPU and a fullscreen-triangle blit that scales it
+//! by a whole number, centres it in its target and leaves the rest of the
+//! target black; `OverlayPass` is the overlay, egui's meshes over the
+//! picture. `record_frame` puts both into one render pass, the picture
+//! first. `Renderer` holds the wgpu surface on the winit window and records
+//! one such frame into it per redraw.
 //!
-//! The invariant: the frame holds display-encoded DAC colours that must
+//! The invariants: the frame holds display-encoded DAC colours that must
 //! reach the screen unchanged, so the texture's encoding follows the
 //! target's (`framebuffer_format`). A mismatch decodes without encoding
-//! again, or encodes what was never decoded: too dark or too bright.
+//! again, or encodes what was never decoded: too dark or too bright. And
+//! without an overlay to paint, a frame is the picture and nothing else:
+//! egui's renderer is not touched.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,6 +20,7 @@ use wgpu::util::DeviceExt;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
+use super::overlay::{Overlay, Paint};
 use emu8086_core::io::raster::{self, BlinkPhase};
 use emu8086_core::io::vga::{VgaDevice, VideoMode};
 use emu8086_core::vm::memory::Memory;
@@ -478,36 +484,136 @@ impl FrameBlit {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
+
+    /// Width and height of the target, in pixels.
+    fn target_size(&self) -> [u32; 2] {
+        [self.target_width, self.target_height]
+    }
+}
+
+/// The overlay on the GPU: egui's own renderer for wgpu, which keeps the
+/// textures egui draws from (its font atlas) and draws its meshes into a
+/// pass that already holds the picture.
+struct OverlayPass {
+    renderer: egui_wgpu::Renderer,
+}
+
+impl OverlayPass {
+    /// An overlay drawn into targets of `target_format`.
+    fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+        let options = egui_wgpu::RendererOptions::default();
+        Self {
+            renderer: egui_wgpu::Renderer::new(device, target_format, options),
+        }
+    }
+
+    /// Uploads what `paint` is drawn from, before the pass begins: the
+    /// textures egui changed, then the meshes. `size` is that of the
+    /// target, in pixels. Returns the command buffers of egui's paint
+    /// callbacks, to be submitted ahead of the frame's.
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        paint: &mut Paint,
+        size: [u32; 2],
+    ) -> Vec<wgpu::CommandBuffer> {
+        for (id, changes) in paint.textures.set.drain() {
+            for change in &changes {
+                self.renderer.update_texture(device, queue, id, change);
+            }
+        }
+        let screen = screen_descriptor(paint, size);
+        self.renderer
+            .update_buffers(device, queue, encoder, &paint.primitives, &screen)
+    }
+
+    /// Draws the meshes of `paint` into `pass`, over what it holds.
+    fn draw(&self, pass: &mut wgpu::RenderPass<'static>, paint: &Paint, size: [u32; 2]) {
+        let screen = screen_descriptor(paint, size);
+        self.renderer.render(pass, &paint.primitives, &screen);
+    }
+
+    /// Frees the textures egui gave up with `paint`. Only once the frame
+    /// that may still draw from them is submitted.
+    fn release(&mut self, paint: &mut Paint) {
+        for id in paint.textures.free.drain() {
+            self.renderer.free_texture(&id);
+        }
+    }
+}
+
+fn screen_descriptor(paint: &Paint, size: [u32; 2]) -> egui_wgpu::ScreenDescriptor {
+    egui_wgpu::ScreenDescriptor {
+        size_in_pixels: size,
+        pixels_per_point: paint.pixels_per_point,
+    }
 }
 
 /// Records one frame into `target`: a single render pass that starts from
-/// black and holds the emulator's picture.
+/// black, holds the emulator's picture and, over it, the overlay's `paint`
+/// if there is one. Returns the command buffers to submit, in order; the
+/// textures `paint` gives up are released after the submit
+/// (`OverlayPass::release`).
 fn record_frame(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     blit: &FrameBlit,
+    overlay: &mut OverlayPass,
+    mut paint: Option<&mut Paint>,
     target: &wgpu::TextureView,
-) -> wgpu::CommandBuffer {
+) -> Vec<wgpu::CommandBuffer> {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Frame Encoder"),
     });
+    let size = blit.target_size();
+    let mut commands = match paint.as_deref_mut() {
+        Some(paint) => overlay.prepare(device, queue, &mut encoder, paint, size),
+        None => Vec::new(),
+    };
     {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Frame Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
+        // egui's renderer takes a pass that does not borrow its encoder.
+        // The compiler then no longer sees that the encoder must not be
+        // used while the pass is open: this block is the pass, and the
+        // encoder is next used after it.
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Frame Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            })
+            .forget_lifetime();
         blit.draw(&mut pass);
+        if let Some(paint) = paint.as_deref() {
+            overlay.draw(&mut pass, paint, size);
+        }
     }
-    encoder.finish()
+    commands.push(encoder.finish());
+    commands
+}
+
+/// The format the window is drawn in: one of the two plain 8-bit formats if
+/// the surface has one, else whatever it offers first. egui blends the
+/// encoded colours a plain target stores; on an sRGB target the GPU blends
+/// them decoded, and the edges of its text and its shadows come out
+/// differently. The picture is the same on either (`framebuffer_format`).
+fn window_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
+    use wgpu::TextureFormat::{Bgra8Unorm, Rgba8Unorm};
+    formats
+        .iter()
+        .copied()
+        .find(|format| matches!(format, Bgra8Unorm | Rgba8Unorm))
+        .unwrap_or(formats[0])
 }
 
 pub struct Renderer {
@@ -516,6 +622,7 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     blit: FrameBlit,
+    overlay: OverlayPass,
 
     /// Reference point for the blink phase of cursor and text.
     started: Instant,
@@ -547,12 +654,7 @@ impl Renderer {
             .expect("Failed to create GPU device");
 
         let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(surface_caps.formats[0]);
+        let surface_format = window_format(&surface_caps.formats);
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -575,6 +677,7 @@ impl Renderer {
             surface_config.width,
             surface_config.height,
         );
+        let overlay = OverlayPass::new(&device, surface_format);
 
         Self {
             device,
@@ -582,8 +685,15 @@ impl Renderer {
             surface,
             surface_config,
             blit,
+            overlay,
             started: Instant::now(),
         }
+    }
+
+    /// The longest side a texture can have on this device: the limit of
+    /// egui's font atlas.
+    pub fn max_texture_side(&self) -> usize {
+        self.device.limits().max_texture_dimension_2d as usize
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -596,8 +706,12 @@ impl Renderer {
         self.blit.resize(&self.queue, width, height);
     }
 
-    /// Render current VGA state to the window.
-    pub fn render(&mut self, vga: &VgaDevice, memory: &Memory) {
+    /// Draws one frame in the window: the VGA's picture as it is now and,
+    /// over it, what the last pass of `overlay` left to paint, if an overlay
+    /// is given. Its paint is taken only once there is a frame to draw on:
+    /// the texture changes it carries come once and are kept in the overlay
+    /// until then.
+    pub fn render(&mut self, vga: &VgaDevice, memory: &Memory, overlay: Option<&mut Overlay>) {
         let output = match self.surface.get_current_texture() {
             // A suboptimal frame is drawn all the same: the resize that
             // made it so configures the surface again.
@@ -626,8 +740,19 @@ impl Renderer {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let frame = record_frame(&self.device, &self.blit, &view);
-        self.queue.submit(std::iter::once(frame));
+        let mut paint = overlay.map(Overlay::take_paint);
+        let frame = record_frame(
+            &self.device,
+            &self.queue,
+            &self.blit,
+            &mut self.overlay,
+            paint.as_mut(),
+            &view,
+        );
+        self.queue.submit(frame);
+        if let Some(paint) = &mut paint {
+            self.overlay.release(paint);
+        }
         self.queue.present(output);
     }
 }
