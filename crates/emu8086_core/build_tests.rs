@@ -1,6 +1,9 @@
 //! Cargo never compiles a build script with `cfg(test)`: these tests run in
 //! the crate's test binary, where `src/lib.rs` includes build.rs as the
 //! module `build_script`.
+//!
+//! The script compares the times of files, so the tests date the ROM image
+//! against its source, an hour apart, and never against the clock.
 
 use super::*;
 use std::time::Duration;
@@ -15,6 +18,13 @@ struct RomDir {
 }
 
 const OLD_ROM_BYTE: u8 = 0xAA;
+const HOUR: Duration = Duration::from_secs(3600);
+
+/// Which of the ROM image and its source is the newer file.
+enum Newer {
+    Source,
+    Image,
+}
 
 impl RomDir {
     fn new(name: &str) -> Self {
@@ -28,16 +38,21 @@ impl RomDir {
             scratch: dir.join("scratch.bin"),
             dir,
         };
-        fs::write(&rom.bin, vec![OLD_ROM_BYTE; ROM_SIZE]).unwrap();
-        rom.set_image_age(Duration::from_secs(3600));
         fs::write(&rom.asm, "; source\n").unwrap();
+        fs::write(&rom.bin, vec![OLD_ROM_BYTE; ROM_SIZE]).unwrap();
+        rom.date_image(Newer::Source);
         rom
     }
 
-    /// Makes the ROM image `age` older than now.
-    fn set_image_age(&self, age: Duration) {
+    /// Dates the ROM image an hour before its source, or an hour after it.
+    fn date_image(&self, newer: Newer) {
+        let source = fs::metadata(&self.asm).unwrap().modified().unwrap();
+        let image = match newer {
+            Newer::Source => source - HOUR,
+            Newer::Image => source + HOUR,
+        };
         let file = fs::File::options().write(true).open(&self.bin).unwrap();
-        file.set_modified(SystemTime::now() - age).unwrap();
+        file.set_modified(image).unwrap();
     }
 
     fn rebuild(&self, assemble: impl FnOnce(&Path, &Path) -> Assembly) -> Result<Rebuild, String> {
@@ -150,10 +165,7 @@ fn missing_assembler_skips_the_step_when_there_is_an_image() {
 #[test]
 fn up_to_date_image_is_not_reassembled() {
     let rom = RomDir::new("fresh");
-    let file = fs::File::options().write(true).open(&rom.bin).unwrap();
-    file.set_modified(SystemTime::now() + Duration::from_secs(3600))
-        .unwrap();
-    drop(file);
+    rom.date_image(Newer::Image);
 
     let result = rom.rebuild(|_, _| panic!("the assembler must not run"));
 

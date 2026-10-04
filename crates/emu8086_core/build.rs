@@ -19,7 +19,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
 
 const ROM_DIR: &str = "../../assets/rom";
 const ROM_SIZE: usize = 0x10000;
@@ -203,10 +202,14 @@ fn replace_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     replaced
 }
 
+/// Whether `a` was modified after `b`. A `b` whose time the host cannot
+/// tell counts as older than any `a`.
 fn is_newer(a: &Path, b: &Path) -> std::io::Result<bool> {
     let a_t = a.metadata()?.modified()?;
-    let b_t = b.metadata()?.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    Ok(a_t > b_t)
+    match b.metadata()?.modified() {
+        Ok(b_t) => Ok(a_t > b_t),
+        Err(_) => Ok(true),
+    }
 }
 
 /// Patch the final byte of the ROM so that the 8-bit sum of all bytes is 0.

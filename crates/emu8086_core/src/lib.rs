@@ -28,6 +28,9 @@ mod bios_inspection_tests;
 #[cfg(test)]
 mod bios_tests;
 
+#[cfg(test)]
+mod crate_rules_tests;
+
 /// The build script, compiled into the test binary so that its tests run
 /// with the others.
 #[cfg(test)]
