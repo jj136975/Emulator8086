@@ -16,7 +16,7 @@ rules"), restated below as far as they apply to a single crate.
 |---|---|
 | `src/main.rs` | the command line and start-up; declares the crate-level test modules |
 | `src/vm/runtime.rs` | the machine: the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`step_frame`, `run_slice`), timer pacing, interrupt delivery, reset, the ROM loader |
-| `src/vm/instructions/` | the CPU: `process()` in `mod.rs` is the opcode table, one arm per opcode; the arm bodies live in the domain modules beside it |
+| `src/vm/instructions/` | the CPU: `process()` in `mod.rs` is the opcode table, one line per opcode; the bodies live in the domain modules beside it (`alu`, `bcd`, `control`, `shift`, `stack`, `string`, `transfer`) |
 | `src/vm/modrm.rs` | `decode_rm`, the only effective-address decoder, and the `ModRM` operand widths |
 | `src/vm/registers.rs`, `memory.rs`, `cpu.rs` | the register file and the raw-pointer operand wrappers, the 1 MB memory with its ROM protection, the `Cpu` (which also holds the 8259A) |
 | `src/utils/number.rs` | `SpecialOps`: the arithmetic the instruction code is written once with for `u8` and `u16` |
@@ -42,7 +42,9 @@ before reading bodies.
 - **An opcode**: one arm of `process()`. A call handles ONE opcode byte; a
   prefix is a call of its own that latches into `vm.prefixes`. The 80186
   opcodes (60-62, 64-6F, C0, C1, C8, C9) are implemented on purpose; BOUND
-  is a documented no-op.
+  is a documented no-op. The dispatcher is the hot path and its speed moves
+  by several percent with code placement alone: judge a change to it over
+  more than one build, not by a single run.
 - **A device**: implements `IoDevice` (byte accesses only — the bus splits a
   word access in two) and is registered with its port range in
   `Runtime::with_devices`.
