@@ -2,7 +2,8 @@ use super::*;
 use crate::vm::runtime::Runtime;
 
 /// ICW1 with SNGL=1 (bit 1) selects a single PIC: ICW3 is skipped, so
-/// initialization completes after ICW1, ICW2 and ICW4.
+/// initialization completes after ICW1, ICW2 and ICW4, and the data write
+/// after those is OCW1, the interrupt mask.
 #[test]
 fn icw1_sngl_bit_means_single_pic_no_icw3_needed() {
     let mut rt = Runtime::new_test();
@@ -13,10 +14,12 @@ fn icw1_sngl_bit_means_single_pic_no_icw3_needed() {
     dev.port_out_byte(0x21, 0x08, &mut rt.cpu);
     // SNGL=1: no ICW3, so this data write is ICW4.
     dev.port_out_byte(0x21, 0x01, &mut rt.cpu); // ICW4: 8086 mode
-    assert!(
-        rt.cpu.pic.initialized,
-        "After ICW1(SNGL=1)+ICW2+ICW4 (3 writes), PIC should be initialized. \
-         If single_pic semantics were reversed, the PIC would be waiting for ICW3."
+
+    dev.port_out_byte(0x21, 0xAB, &mut rt.cpu);
+    assert_eq!(
+        dev.port_in_byte(0x21, &mut rt.cpu),
+        0xAB,
+        "a controller still waiting for ICW3 would have taken the mask as an initialisation word"
     );
 }
 

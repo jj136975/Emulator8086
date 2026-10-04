@@ -50,9 +50,6 @@ pub struct Pic {
     /// Special mask mode (OCW3 with ESMM and SMM set)
     special_mask: bool,
 
-    /// Set after full initialization
-    initialized: bool,
-
     /// Edge vs level trigger mode, set from ICW1 bit 3
     trigger_mode: TriggerMode,
     /// Lowest priority IRQ (default 7). Highest priority = (lowest_priority + 1) % 8.
@@ -75,7 +72,6 @@ impl Pic {
             read_register: 0,
             poll: false,
             special_mask: false,
-            initialized: false,
             trigger_mode: TriggerMode::Edge,
             lowest_priority: 7,
             rotate_on_aeoi: false,
@@ -267,7 +263,6 @@ impl Pic {
                 // Without an ICW4 its options take their defaults.
                 self.auto_eoi = false;
             }
-            self.initialized = false;
         } else if value & 0x08 == 0 {
             // OCW2 — EOI and rotation commands (bit 4=0, bit 3=0)
             let op = (value >> 5) & 0x07;
@@ -337,16 +332,10 @@ impl Pic {
                         // SNGL=0 (cascade): ICW3 is next
                         self.icw_step = 2;
                     }
-                    if self.icw_step == 0 {
-                        self.initialized = true;
-                    }
                 }
                 2 => {
                     // ICW3 — cascade configuration (consumed, not used in emulation)
                     self.icw_step = if self.icw4_expected { 3 } else { 0 };
-                    if self.icw_step == 0 {
-                        self.initialized = true;
-                    }
                 }
                 3 => {
                     // ICW4. Only auto-EOI (bit 1) changes anything here:
@@ -355,11 +344,9 @@ impl Pic {
                     // modelled.
                     self.auto_eoi = value & 0x02 != 0;
                     self.icw_step = 0;
-                    self.initialized = true;
                 }
                 _ => {
                     self.icw_step = 0;
-                    self.initialized = true;
                 }
             }
         } else {
