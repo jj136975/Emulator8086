@@ -265,9 +265,16 @@ fn every_panel_has_a_title_a_checkbox_and_a_window() {
             Panel::Memory => Panel::ALL.contains(&panel),
             Panel::Interrupts => Panel::ALL.contains(&panel),
             Panel::Timer => Panel::ALL.contains(&panel),
+            Panel::Video => Panel::ALL.contains(&panel),
         }
     }
-    for panel in [Panel::About, Panel::Memory, Panel::Interrupts, Panel::Timer] {
+    for panel in [
+        Panel::About,
+        Panel::Memory,
+        Panel::Interrupts,
+        Panel::Timer,
+        Panel::Video,
+    ] {
         assert!(listed(panel), "{panel:?} is in ALL");
     }
 

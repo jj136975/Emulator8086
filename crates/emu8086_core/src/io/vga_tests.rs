@@ -310,3 +310,76 @@ fn dac_conversion_endpoints_are_exact() {
         "63 must map to 0xFF (full scale), 32 to 130 and 0 to 0x00"
     );
 }
+
+/// A DAC entry's colour is that entry's, whatever the pixel mask; what a
+/// pixel shows goes through the mask first. Reading the colour does not
+/// move the guest's read index.
+#[test]
+fn a_dac_entry_has_its_colour_whatever_the_mask() {
+    let mut vga = VgaDevice::new();
+    let mut rt = Runtime::new_test();
+    vga.port_out_byte(0x3C8, 0x81, &mut rt.cpu);
+    for component in [0x3F, 0x15, 0x00] {
+        vga.port_out_byte(0x3C9, component, &mut rt.cpu);
+    }
+    vga.port_out_byte(0x3C6, 0x0F, &mut rt.cpu); // pixel mask
+    vga.port_out_byte(0x3C7, 0x81, &mut rt.cpu); // the guest reads entry 81h
+
+    assert_eq!(vga.dac_colour(0x81), [0xFF, 0x55, 0x00]);
+    assert_eq!(
+        vga.dac_to_rgb8(0x81),
+        vga.dac_colour(0x01),
+        "a pixel of 81h shows entry 01h"
+    );
+    assert_eq!(vga.dac_colour(0x01), [0x00, 0x00, 0xAA], "CGA blue");
+    assert_eq!(
+        vga.port_in_byte(0x3C9, &mut rt.cpu),
+        0x3F,
+        "the guest's read"
+    );
+}
+
+/// The register view holds what the guest wrote through each pair of
+/// index and data ports, at the index written to, the attribute
+/// controller's through its flip-flop; and the power-on cursor shape.
+/// Taking the view leaves the flip-flop where it was.
+#[test]
+fn the_register_view_holds_what_was_written() {
+    let mut vga = VgaDevice::new();
+    let mut rt = Runtime::new_test();
+    for (port, value) in [
+        (0x3C2, 0x63),
+        (0x3C4, 0x04),
+        (0x3C5, 0x0E),
+        (0x3CE, 0x05),
+        (0x3CF, 0x40),
+        (0x3C6, 0x0F),
+        (0x3D8, 0x09),
+        (0x3D9, 0x30),
+        (0x3C0, 0x10),
+        (0x3C0, 0x41),
+        (0x3C0, 0x14), // an index: the flip-flop expects data next
+    ] {
+        vga.port_out_byte(port, value, &mut rt.cpu);
+    }
+    write_crtc(&mut vga, &mut rt, 0x13, 0x28);
+
+    let registers = vga.registers();
+    assert_eq!(registers.misc_output, 0x63);
+    assert_eq!(registers.sequencer[4], 0x0E);
+    assert_eq!(registers.graphics[5], 0x40);
+    assert_eq!(registers.attribute[0x10], 0x41);
+    assert_eq!(registers.crtc[0x13], 0x28);
+    assert_eq!((registers.crtc[0x0A], registers.crtc[0x0B]), (0x06, 0x07));
+    assert_eq!(
+        (registers.dac_mask, registers.cga_mode, registers.cga_colour),
+        (0x0F, 0x09, 0x30)
+    );
+
+    vga.port_out_byte(0x3C0, 0x05, &mut rt.cpu);
+    assert_eq!(
+        vga.registers().attribute[0x14],
+        0x05,
+        "the view did not reset the flip-flop"
+    );
+}

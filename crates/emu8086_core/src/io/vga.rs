@@ -3,7 +3,8 @@
 //! Status 1, whose retrace bits run on the timer clock the runtime
 //! advances. The rasterisers read the screen's state through it: the video
 //! mode, the colours, the cursor, and where each displayed text cell lies.
-//! `dump_text` puts that state into words for a diagnosis.
+//! `dump_text` puts that state into words for a diagnosis, and `registers`
+//! and `dac_colour` hand it to a reader without a port access.
 //!
 //! The invariant: nothing here draws. A rasteriser reads the registers and
 //! the two values derived from them, `video_mode` and `blink_mode`. Each is
@@ -22,6 +23,29 @@ use crate::vm::memory::Memory;
 pub enum VideoMode {
     Text80x25,
     Mode13h, // 320x200 256-color (chain-4 linear at A000:0000)
+}
+
+/// The VGA's registers as the guest last wrote them, in the groups the
+/// VGA's documentation gives them and at the indexes it numbers them by. A
+/// copy: holding one changes nothing in the adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VgaRegisters {
+    /// Miscellaneous Output, written at 3C2h.
+    pub misc_output: u8,
+    /// The sequencer, SR00 to SR04.
+    pub sequencer: [u8; 5],
+    /// The CRT controller, CR00 to CR18.
+    pub crtc: [u8; 0x19],
+    /// The graphics controller, GR00 to GR08.
+    pub graphics: [u8; 9],
+    /// The attribute controller, AR00 to AR14.
+    pub attribute: [u8; 0x15],
+    /// The DAC's pixel mask, 3C6h.
+    pub dac_mask: u8,
+    /// The CGA's mode control register, 3D8h.
+    pub cga_mode: u8,
+    /// The CGA's colour select register, 3D9h.
+    pub cga_colour: u8,
 }
 
 /// VGA register-level emulation covering ports 0x3C0-0x3DA.
@@ -253,12 +277,36 @@ impl VgaDevice {
 
     /// Convert a DAC palette index to 8-bit RGB.
     pub fn dac_to_rgb8(&self, index: u8) -> [u8; 3] {
-        let [r6, g6, b6] = self.dac_palette[(index & self.dac_mask) as usize];
+        self.dac_colour(index & self.dac_mask)
+    }
+
+    /// The colour DAC entry `index` holds, its 6-bit components widened to
+    /// eight bits: the entry itself, whatever the pixel mask lets a pixel
+    /// of that value show.
+    #[inline]
+    pub fn dac_colour(&self, index: u8) -> [u8; 3] {
+        let [r6, g6, b6] = self.dac_palette[index as usize];
         [
             (r6 << 2) | (r6 >> 4),
             (g6 << 2) | (g6 >> 4),
             (b6 << 2) | (b6 >> 4),
         ]
+    }
+
+    /// The registers as a reader sees them. Nothing is read through a
+    /// port: the attribute controller's flip-flop and the DAC's indexes
+    /// are where the guest left them.
+    pub fn registers(&self) -> VgaRegisters {
+        VgaRegisters {
+            misc_output: self.misc_output,
+            sequencer: std::array::from_fn(|index| self.seq_regs[index]),
+            crtc: std::array::from_fn(|index| self.crtc_regs[index]),
+            graphics: std::array::from_fn(|index| self.gc_regs[index]),
+            attribute: std::array::from_fn(|index| self.attr_regs[index]),
+            dac_mask: self.dac_mask,
+            cga_mode: self.mode_register,
+            cga_colour: self.color_register,
+        }
     }
 
     /// Detect video mode from register state.

@@ -75,6 +75,9 @@ pub struct Metrics {
     /// Offset and blur of the shadow under windows and menus.
     pub shadow_offset: [i8; 2],
     pub shadow_blur: u8,
+    /// Side of a colour swatch, such as an entry of the VGA's DAC. Swatches
+    /// side by side are a `line` apart.
+    pub swatch: f32,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -109,6 +112,7 @@ pub const METRICS: Metrics = Metrics {
     edge: 12.0,
     shadow_offset: [4, 8],
     shadow_blur: 12,
+    swatch: 8.0,
 };
 
 /// Puts the theme on `ctx`. egui keeps one style for a dark host and one

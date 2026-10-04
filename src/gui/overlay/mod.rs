@@ -2,8 +2,8 @@
 //! file is the shell: whether the overlay is shown, the hint of the first
 //! seconds, the menu bar, the windows of the panels and the messages.
 //! `panels` is THE panel table, with a file per panel beside it (`about`,
-//! `memory`, and one per device: `pic`, `pit`); `messages` is where a tool
-//! says what it did; `theme` is the look.
+//! `memory`, and one per device: `pic`, `pit`, `vga`); `messages` is where
+//! a tool says what it did; `theme` is the look.
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread. The window gathers egui's input and calls
@@ -23,6 +23,7 @@ mod panels;
 mod pic;
 mod pit;
 pub mod theme;
+mod vga;
 
 pub use messages::Messages;
 pub use panels::Panel;
