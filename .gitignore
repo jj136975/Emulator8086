@@ -3,3 +3,16 @@
 *.c
 *.o
 *.s
+
+# Disk images and guest software kept locally
+*.vhd
+/assets/ms-dos/
+/assets/doom/
+/assets/rom/tests/*.bin
+
+# Run-time output
+*.log
+vga_dump.txt
+
+# IDE configuration
+/.idea/
