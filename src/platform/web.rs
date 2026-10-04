@@ -49,11 +49,16 @@ const CANVAS_STYLE: [(&str, &str); 6] = [
 /// given up, in milliseconds.
 const DOWNLOAD_KEPT_MS: i32 = 60_000;
 
+/// The keys that stay the browser's own, by the `code` of their events: its
+/// full screen and its developer tools. No XT keyboard has them, so the
+/// guest misses nothing.
+const BROWSER_KEYS: [&str; 2] = ["F11", "F12"];
+
 /// How the overlay is shown and hidden: with the secondary button of the
 /// pointer, on the picture. A page has no key for it: F12, the desktop's,
-/// opens the browser's developer tools and never reaches the page, and the
-/// other keys a browser leaves alone are the guest's. The pointer is free,
-/// since the machine has no mouse.
+/// is the browser's own (`BROWSER_KEYS`), and the keys a browser has no use
+/// for are the guest's. The pointer is free, since the machine has no
+/// mouse.
 pub const OVERLAY_SWITCH: OverlaySwitch = OverlaySwitch {
     key: None,
     button: Some(MouseButton::Right),
@@ -135,12 +140,15 @@ pub fn run_app(app: impl ApplicationHandler + 'static) {
 }
 
 /// Opens the window the machine is shown in: a canvas, put into the page
-/// and as large as its viewport, which is why `_size` is not heeded.
+/// and as large as its viewport, which is why `_size` is not heeded. The
+/// canvas takes the keyboard from the page, but for the keys that stay the
+/// browser's.
 pub fn create_window(
     event_loop: &ActiveEventLoop,
     title: &str,
     _size: PhysicalSize<u32>,
 ) -> Window {
+    leave_the_browser_its_keys();
     let window = event_loop
         .create_window(
             Window::default_attributes()
@@ -158,6 +166,33 @@ pub fn create_window(
     }
     set_title(&window, title);
     window
+}
+
+/// Keeps the keys of `BROWSER_KEYS` from the canvas, so that they do in
+/// this page what they do in any other. winit cancels what the browser
+/// would do with a key of the canvas, as it has to: Tab would walk out of
+/// the canvas, and F5 reload the page under the guest. A listener on the
+/// window sees a key on its way down to the canvas, before the canvas does,
+/// and stops these keys there: winit never sees them and cancels nothing.
+fn leave_the_browser_its_keys() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let stop = Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(|event: web_sys::KeyboardEvent| {
+        if BROWSER_KEYS.contains(&event.code().as_str()) {
+            event.stop_propagation();
+        }
+    });
+    for kind in ["keydown", "keyup"] {
+        // `true`: on the way down to the canvas, not on the way back up.
+        let _ = window.add_event_listener_with_callback_and_bool(
+            kind,
+            stop.as_ref().unchecked_ref(),
+            true,
+        );
+    }
+    // The listener stays for as long as the page does.
+    stop.forget();
 }
 
 /// Changes the title of the page, which is what a browser shows of it: on
