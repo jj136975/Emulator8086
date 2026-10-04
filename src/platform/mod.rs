@@ -21,6 +21,10 @@
 //! and the clocks, which are `web_time`'s on every host: `Instant`,
 //! `SystemTime`, `UNIX_EPOCH`.
 //!
+//! `egui_events` and `fat_stamp` are what a browser needs in the place of
+//! egui-winit and of fatfs's own clock, written so as to know nothing of a
+//! browser. On the desktop they are built for their tests alone.
+//!
 //! The invariant: this directory is the only part of the app that knows
 //! which host it is built for. Outside it no source file names
 //! `cfg(target_arch`, `wasm_bindgen`, `web_sys` or `js_sys`, and none
@@ -29,6 +33,11 @@
 //! read. The rule is a test (`tests.rs`).
 
 mod native;
+
+#[cfg(test)]
+mod egui_events;
+#[cfg(test)]
+mod fat_stamp;
 
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
