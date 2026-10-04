@@ -22,6 +22,15 @@ winit.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
 
+# The overlay: egui lays the tools out, egui-winit turns the window's events
+# into its input, egui-wgpu draws its meshes over the emulator's frame. Of
+# their features only egui's built-in fonts are taken, without which it has
+# no text: the system clipboard, the screen-reader adapters and the opening
+# of links have no counterpart in a browser, where the overlay is to run too.
+egui = { workspace = true, features = ["default_fonts"] }
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+
 [lints]
 workspace = true
 
@@ -46,6 +55,11 @@ wgpu = "30"
 winit = "0.30.13"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
+# The three egui crates move together: egui-wgpu names the wgpu version and
+# egui-winit the winit version they are built for (wgpu 30, winit 0.30.13).
+egui = { version = "0.36", default-features = false }
+egui-wgpu = { version = "0.36", default-features = false }
+egui-winit = { version = "0.36", default-features = false }
 # Dev-only: the hardware-captured CPU vectors (the `8086` submodule) are
 # gzipped JSON.
 serde = { version = "1", features = ["derive"] }
