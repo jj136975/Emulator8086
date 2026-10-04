@@ -7,7 +7,8 @@
 //! the look.
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
-//! no file, no clock, no thread. The window gathers egui's input and calls
+//! no file, no clock, no thread, and of the host only what its switch is
+//! called (`platform::OVERLAY_SWITCH`). The window gathers egui's input and calls
 //! `run`, which is lent the machine for the length of the pass and returns
 //! what the user asked the app to do (`Command`); the renderer takes what to
 //! draw (`take_paint`). The only time there is, is the time of that input.
@@ -15,7 +16,7 @@
 //! The invariant: a hidden overlay costs nothing. `draws` says whether there
 //! is anything to show; while it says no, the window runs no pass and the
 //! renderer is given nothing to paint. Hidden, the overlay shows one thing,
-//! and only for the first seconds: the hint that names its key.
+//! and only for the first seconds: the hint that names its switch.
 
 mod about;
 mod debug_port;
@@ -33,11 +34,16 @@ pub use panels::Panel;
 
 use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Vec2, Window, vec2};
 
+use crate::platform::OVERLAY_SWITCH;
 use emu8086_core::vm::runtime::Runtime;
 use theme::{METRICS, PALETTE};
 
-/// What the hint says. The key is the window's (`gui::OVERLAY_KEY`).
-const HINT: &str = "F12: tools";
+/// What the hint says: how the overlay is shown on this host, which is the
+/// host's to say (`platform::OVERLAY_SWITCH`).
+fn hint_text() -> String {
+    format!("{}: tools", OVERLAY_SWITCH.name)
+}
+
 /// How long the hint stays after the first frame, in seconds.
 const HINT_SECONDS: f64 = 5.0;
 /// The mark of a paused machine, at the right end of the menu bar.
@@ -84,13 +90,13 @@ pub struct Paint {
     pub pixels_per_point: f32,
 }
 
-/// The hint that names the overlay's key, shown while the overlay is not.
+/// The hint that names the overlay's switch, shown while the overlay is not.
 enum Hint {
     /// No pass has told the time yet.
     Unstarted,
     /// Shown until this input time.
     Until(f64),
-    /// Gone for good: its time is over, or the key was found.
+    /// Gone for good: its time is over, or the switch was found.
     Over,
 }
 
@@ -149,7 +155,7 @@ impl Overlay {
     }
 
     /// Shows the overlay, or hides it. Whoever does either has found the
-    /// key: the hint is over.
+    /// switch: the hint is over.
     pub fn toggle(&mut self) {
         self.visible = !self.visible;
         self.hint = Hint::Over;
@@ -339,7 +345,7 @@ fn hint(ctx: &egui::Context) {
         // The hint is read, not used: clicks go to what lies under it.
         .interactable(false)
         .show(ctx, |ui| {
-            Frame::popup(ui.style()).show(ui, |ui| ui.label(HINT));
+            Frame::popup(ui.style()).show(ui, |ui| ui.label(hint_text()));
         });
 }
 

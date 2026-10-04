@@ -12,7 +12,7 @@ use egui::accesskit::Role;
 use winit::keyboard::KeyCode;
 
 use super::*;
-use crate::gui::overlay::testing::{Driver, Passes, input, key};
+use crate::gui::overlay::testing::{Driver, Passes, SCREEN, input, key};
 use crate::wall_clock::HostClock;
 use EmulatorEvent::{ScanRelease, Scancode};
 use emu8086_core::BIOS_ROM;
@@ -86,6 +86,70 @@ fn the_overlay_key_toggles_once_per_press() {
 
     session.overlay_key(ElementState::Pressed, false);
     assert!(!session.overlay.visible());
+}
+
+/// The overlay's button of the pointer toggles the overlay when it goes
+/// down on the picture, once per press. A press the overlay kept, because
+/// the pointer is over it, is the overlay's own and toggles nothing.
+#[test]
+fn the_overlay_button_toggles_on_the_picture_only() {
+    let (mut session, _sent) = session_with(&BUSY_ROM);
+    assert!(!session.overlay.visible());
+
+    session.overlay_button(ElementState::Pressed, false);
+    assert!(session.overlay.visible());
+    session.overlay_button(ElementState::Released, false);
+    assert!(session.overlay.visible(), "one press, one toggle");
+
+    session.overlay_button(ElementState::Pressed, true);
+    session.overlay_button(ElementState::Released, true);
+    assert!(session.overlay.visible(), "the overlay kept the press");
+
+    session.overlay_button(ElementState::Pressed, false);
+    assert!(!session.overlay.visible());
+}
+
+/// What makes a press of the pointer the overlay's own: egui has a use for
+/// the pointer over the menu bar and over the window of a panel, and none
+/// on the picture that lies bare between them, where the overlay's button
+/// is its switch.
+#[test]
+fn the_pointer_is_the_overlays_over_what_it_shows_and_not_on_the_picture() {
+    let (mut session, _sent) = shown(&BUSY_ROM);
+    let kept_at = |session: &mut Driver<Session>, at: egui::Pos2| {
+        session.frame(vec![egui::Event::PointerMoved(at)]);
+        session.target.overlay.context().egui_wants_pointer_input()
+    };
+
+    let bar = session.screen().rect(Role::Button, "Machine").center();
+    assert!(kept_at(&mut session, bar), "over the menu bar");
+    let picture = egui::pos2(SCREEN[0] as f32 / 2.0, SCREEN[1] as f32 / 2.0);
+    assert!(!kept_at(&mut session, picture), "on the picture");
+
+    session.click(Role::Button, "View");
+    session.click(Role::CheckBox, "About");
+    session.wait(1.0);
+    let panel = session.screen().rect(Role::Window, "About").center();
+    assert!(kept_at(&mut session, panel), "over a panel");
+}
+
+/// An overlay shown by its button with the focus where it was left has the
+/// keyboard from that moment, as one shown by its key has: the keys the
+/// guest holds are let go.
+#[test]
+fn showing_the_overlay_by_its_button_lets_go_of_the_guests_keys() {
+    let (mut session, events) = shown(&BUSY_ROM);
+    let guest = &mut session.target;
+    assert!(guest.frame(|| input(1.0, vec![key(egui::Key::Tab, true)])));
+    assert!(guest.overlay.wants_keyboard());
+
+    guest.overlay_button(ElementState::Pressed, false);
+    assert!(!guest.overlay.wants_keyboard(), "hidden");
+    guest.key(code(KeyCode::KeyA), ElementState::Pressed, false);
+    assert_eq!(sent(&events), [Scancode(0x1E)]);
+
+    guest.overlay_button(ElementState::Pressed, false);
+    assert_eq!(sent(&events), [ScanRelease(0x9E)]);
 }
 
 /// A key goes to the guest unless the overlay kept it. The release of a

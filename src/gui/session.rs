@@ -59,11 +59,26 @@ impl Session {
     /// key is only still down.
     pub fn overlay_key(&mut self, state: ElementState, repeat: bool) {
         if state == ElementState::Pressed && !repeat {
-            self.overlay.toggle();
-            // An overlay that comes back with the focus where it left it
-            // has the keyboard at once.
-            self.yield_keyboard();
+            self.toggle_overlay();
         }
+    }
+
+    /// The overlay's button of the pointer went down or came up. `kept`
+    /// says that egui, which was offered the event first, has a use for the
+    /// pointer where it is: over the overlay, a press is the overlay's own.
+    /// Going down on the picture, the button shows the overlay or hides it.
+    pub fn overlay_button(&mut self, state: ElementState, kept: bool) {
+        if state == ElementState::Pressed && !kept {
+            self.toggle_overlay();
+        }
+    }
+
+    /// Shows the overlay, or hides it.
+    fn toggle_overlay(&mut self) {
+        self.overlay.toggle();
+        // An overlay that comes back with the focus where it left it has
+        // the keyboard at once.
+        self.yield_keyboard();
     }
 
     /// Any other key of the window went down or came up. `kept` says that

@@ -14,9 +14,12 @@
 //!   (`platform::spawn`). The renderer is taken from where its start-up
 //!   puts it, never assumed to be there: until it is, a redraw runs no
 //!   frame, so the machine starts with its picture.
-//! - The overlay's key is the window's: neither egui nor the guest sees it.
-//!   Every other event goes to egui first, and a key goes on to the guest
-//!   unless egui kept it or the overlay has the keyboard (`Session::key`).
+//! - The overlay's switch is the host's (`platform::OVERLAY_SWITCH`). A key
+//!   that is the switch is the window's: neither egui nor the guest sees
+//!   it. Every other event goes to egui first: a key goes on to the guest
+//!   unless egui kept it or the overlay has the keyboard (`Session::key`),
+//!   and a button of the pointer that is the switch works it unless egui
+//!   kept the press (`Session::overlay_button`).
 //! - A hidden overlay costs a frame nothing: no input is gathered for it,
 //!   no pass run, nothing painted. Events still go through egui's window
 //!   state, so that it knows where the pointer is and which modifiers are
@@ -34,19 +37,16 @@ use std::sync::mpsc::{self, Receiver};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
-use crate::platform::{self, OverlayInput};
+use crate::platform::{self, OVERLAY_SWITCH, OverlayInput};
 use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
 use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
 use session::Session;
-
-/// The key that shows and hides the overlay.
-const OVERLAY_KEY: PhysicalKey = PhysicalKey::Code(KeyCode::F12);
 
 /// The window's title, and its title while the machine is paused: the mark
 /// in the overlay's menu bar is not there to see when the overlay is hidden.
@@ -96,10 +96,11 @@ struct EmulatorApp {
 }
 
 impl EmulatorApp {
-    /// The overlay's key went down or came up.
-    fn overlay_key(&mut self, state: ElementState, repeat: bool) {
+    /// The overlay's switch was worked: `switch` is what the session makes
+    /// of it, which may show the overlay or hide it.
+    fn switch_overlay(&mut self, switch: impl FnOnce(&mut Session)) {
         let shown = self.session.overlay.visible();
-        self.session.overlay_key(state, repeat);
+        switch(&mut self.session);
         // A hidden overlay asks nothing of the window anymore: the cursor
         // and the IME go back to what a window without egui has.
         if shown
@@ -208,12 +209,15 @@ impl ApplicationHandler for EmulatorApp {
             is_synthetic,
             ..
         } = &event
-            && key.physical_key == OVERLAY_KEY
+            && OVERLAY_SWITCH
+                .key
+                .is_some_and(|switch| key.physical_key == PhysicalKey::Code(switch))
         {
             // A key the host reports as down because the window got the
             // keyboard was not pressed for this window.
             if !is_synthetic {
-                self.overlay_key(key.state, key.repeat);
+                let (state, repeat) = (key.state, key.repeat);
+                self.switch_overlay(|session| session.overlay_key(state, repeat));
             }
             return;
         }
@@ -235,6 +239,12 @@ impl ApplicationHandler for EmulatorApp {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 self.session.key(event.physical_key, event.state, kept);
+            }
+
+            WindowEvent::MouseInput { state, button, .. }
+                if OVERLAY_SWITCH.button == Some(button) =>
+            {
+                self.switch_overlay(|session| session.overlay_button(state, kept));
             }
 
             WindowEvent::Focused(false) => self.session.focus_lost(),

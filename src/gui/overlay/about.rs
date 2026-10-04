@@ -12,10 +12,20 @@ use emu8086_core::io::disk::DiskController;
 use emu8086_core::io::disk_spec::drive_label;
 
 use super::Cx;
+use crate::platform::OVERLAY_SWITCH;
 
-/// The keys the window keeps or shares with the tools, and what each does.
+/// What the overlay's switch does. A button of the pointer is the switch on
+/// the picture only: over the tools it is theirs.
+const SWITCH_EFFECT: &str = if OVERLAY_SWITCH.button.is_some() {
+    "On the picture: shows or hides the tools"
+} else {
+    "Shows or hides the tools"
+};
+
+/// The overlay's switch, by the name the host gives it, and the keys the
+/// window shares with the tools: what each does.
 const KEYS: [(&str, &str); 3] = [
-    ("F12", "Shows or hides the tools"),
+    (OVERLAY_SWITCH.name, SWITCH_EFFECT),
     ("Tab", "While the tools are shown: their next control"),
     (
         "Other keys",

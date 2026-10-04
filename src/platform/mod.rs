@@ -12,6 +12,8 @@
 //! - `create_window`, `set_title`: the window the machine is shown in.
 //! - `spawn`: runs a future to its end, at once if the host may block.
 //! - `OverlayInput`: the window's events as egui's input.
+//! - `OVERLAY_SWITCH`: how the user shows and hides the overlay
+//!   (`OverlaySwitch`).
 //! - `wait`: lets host time go by, and says whether the host could.
 //! - `fat_options`: the FAT mount options that carry the host's local time.
 //! - `save_text`: puts a text where the user can read it.
@@ -28,8 +30,26 @@
 
 mod native;
 
+use winit::event::MouseButton;
+use winit::keyboard::KeyCode;
+
 pub use native::*;
 pub use web_time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// How the user shows and hides the overlay on a host: with a key, with a
+/// button of the pointer, or with either.
+pub struct OverlaySwitch {
+    /// The key that does it. It is the window's: neither the overlay nor
+    /// the guest sees it.
+    pub key: Option<KeyCode>,
+    /// The button of the pointer that does it, pressed on the picture. Where
+    /// the overlay has something under the pointer, the press is the
+    /// overlay's own.
+    pub button: Option<MouseButton>,
+    /// What the overlay calls the switch, in its hint and in its About
+    /// panel.
+    pub name: &'static str,
+}
 
 #[cfg(test)]
 mod tests;

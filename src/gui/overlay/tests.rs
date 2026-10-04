@@ -53,6 +53,10 @@ fn asked(shell: &mut Driver<Shell>) -> Vec<Command> {
 
 const NOTHING: [Command; 0] = [];
 
+/// What the hint says on the host the tests run on, a desktop, whose switch
+/// is F12.
+const HINT: &str = "F12: tools";
+
 /// The number of meshes the last pass left to draw.
 fn painted(overlay: &mut Overlay) -> usize {
     let mut paint = overlay.take_paint();

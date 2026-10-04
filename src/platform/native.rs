@@ -15,9 +15,19 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::KeyCode;
 use winit::window::Window;
 
+use super::OverlaySwitch;
 use crate::Options;
+
+/// How the overlay is shown and hidden: with F12, a key no XT keyboard has,
+/// so that the guest misses nothing.
+pub const OVERLAY_SWITCH: OverlaySwitch = OverlaySwitch {
+    key: Some(KeyCode::F12),
+    button: None,
+    name: "F12",
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "emulator8086", about = "Intel 8086 emulator")]
