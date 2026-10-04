@@ -8,10 +8,11 @@
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
-//! called (`platform::OVERLAY_SWITCH`). The window gathers egui's input and calls
-//! `run`, which is lent the machine for the length of the pass and returns
-//! what the user asked the app to do (`Command`); the renderer takes what to
-//! draw (`take_paint`). The only time there is, is the time of that input.
+//! called (`platform::OVERLAY_SWITCH`). The window gathers egui's input and
+//! calls `run`, which is lent the machine for the length of the pass and
+//! returns what the user asked the app to do (`Command`); the renderer takes
+//! what to draw (`take_paint`). The only time there is, is the time of that
+//! input.
 //!
 //! The invariant: a hidden overlay costs nothing. `draws` says whether there
 //! is anything to show; while it says no, the window runs no pass and the

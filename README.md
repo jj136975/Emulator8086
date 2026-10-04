@@ -9,6 +9,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
 - A tools overlay in the window (F12): pause and resume, reset, VGA dump, the machine's drives at a glance
+- Runs in a browser as well: the same application built for WebAssembly, drawn with WebGPU or WebGL2
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
 
@@ -67,7 +68,7 @@ cargo run --release -- my-bios.bin --hd msdos.vhd --boot hd0
 
 | Key | Action |
 |-----|--------|
-| F12 | Show or hide the tools overlay |
+| F12 | Show or hide the tools overlay (in a browser: a right-click on the picture, see [Web build](#web-build)) |
 | Any other key | Goes to the guest, with the exceptions below while the overlay is shown |
 
 Closing the window quits the emulator.
@@ -80,7 +81,7 @@ F12 puts a menu bar over the picture; for the first seconds after start a hint i
 |------|-------|--------------|
 | Machine | Pause / Resume | Holds the guest still while the window goes on drawing. The menu bar and the window title say so. The guest's timer is not owed the time it stood paused |
 | Machine | Reset | Reboots the guest |
-| Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory |
+| Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory (in a browser: offers it as a download) |
 | View | About | A panel with the key bindings, the version, and the machine: the image in each drive, whether it can be written, and the boot order |
 
 A panel is a window over the picture that can be moved and closed. What a tool did, or why it failed, shows for a few seconds below the menu bar.
@@ -93,11 +94,55 @@ Disk tools (swapping and saving disks, copying host files onto them) are to come
 
 The window sends the physical key positions, like a real keyboard: with a non-US keyboard, load the matching layout in DOS (`KEYB`).
 
+## Web build
+
+The same application builds for `wasm32-unknown-unknown` and runs in a browser, in a page that holds nothing but the emulator's picture, as large as the browser's window.
+
+### Requirements
+
+- The `wasm32-unknown-unknown` target. `rust-toolchain` lists it, so rustup installs it with the toolchain
+- [trunk](https://trunkrs.dev/) 0.21 (`cargo install trunk`). On its first build it fetches the `wasm-bindgen` tool of the version the project is locked to, and `wasm-opt` for a release build
+
+### Build and serve
+
+```bash
+# Build, serve on http://127.0.0.1:8080 and rebuild on every change
+trunk serve
+
+# The same with the optimised build, the one to run a guest in
+trunk serve --release
+
+# Only build: the page and its files go to dist/, for any web server
+trunk build --release
+```
+
+`index.html` at the root of the repository is the page trunk builds the application into.
+
+### Browsers
+
+The picture is drawn with WebGPU where the browser has a working one, and with WebGL2 where it has not. Which of the two is in use is logged to the browser's console at start ("Drawing with ...").
+
+### What is different in a browser
+
+| | On a desktop | In a browser |
+|---|---|---|
+| The machine at start | What the command line asks for | The built-in BIOS and no disk: the BIOS reports that there is nothing to boot |
+| The tools overlay | F12 | A right-click on the picture. F12 stays the browser's key, for its developer tools; the hint and the About panel name the right-click |
+| Machine > Dump VGA state | Writes `vga_dump.txt` | Offers `vga_dump.txt` as a download |
+| The log, and errors | stderr, at the levels `RUST_LOG` names | The browser's console, from the `info` level up. A panic is told there too |
+| Time stamps on FAT volumes | The local time of the host | The local time of the browser |
+
+The keys go to the guest while the picture has the keyboard: click it once. The page takes them from the browser, so that F5 or Tab reach the guest instead of reloading the page or leaving the picture. It leaves the browser the two keys no XT keyboard has, F11 (full screen) and F12 (developer tools), and the keys a browser gives to no page (Ctrl+W, Ctrl+T and the like) do not reach the guest either.
+
+The machine runs with the frames of the page. An idle or paused guest gives the page its thread back until the next frame. A tab in the background gets no frames: the machine stands still until the tab is shown again, and the guest's timer is then owed a quarter of a second at most, as after any stall.
+
+Not in the browser yet: disks. A page has no command line to name images on; loading them through the overlay is to come with its disk tools.
+
 ## Technical Details
 
 ### Layout
 
-The repository is a Cargo workspace of two crates. `crates/emu8086_core` is the machine as a library: the CPU, the devices, the disks and the BIOS it embeds. It opens no window, uses no GPU and reads no clock, and builds for `wasm32-unknown-unknown` as it is. The root package is the application around it: the command line and the window, which shows the machine's picture, sends it the keys and tells it the time, and draws the tools overlay over the picture (egui). `cargo build` and `cargo run` at the root build and run the application.
+The repository is a Cargo workspace of two crates. `crates/emu8086_core` is the machine as a library: the CPU, the devices, the disks and the BIOS it embeds. It opens no window, uses no GPU and reads no clock, and builds for `wasm32-unknown-unknown` as it is. The root package is the application around it: the command line and the window, which shows the machine's picture, sends it the keys and tells it the time, and draws the tools overlay over the picture (egui). `cargo build` and `cargo run` at the root build and run the application. It builds for a desktop and for a browser; what differs between the two is in one module, `src/platform`, and nothing else in the application asks which of them it runs on.
 
 ### CPU
 
@@ -158,7 +203,7 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 ### Testing
 
-The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking through it with hand-made input.
+The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking through it with hand-made input. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, the time stamps, and the frame drawn within the limits WebGL2 guarantees. The page itself is outside the suite.
 
 ```bash
 # Fetch the CPU test vectors (git submodule)

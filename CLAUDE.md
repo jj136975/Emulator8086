@@ -4,9 +4,11 @@ An Intel 8086 PC emulator in Rust: a real-mode CPU interpreter, the PC/XT
 devices around it and a BIOS written in NASM. It boots MS-DOS 6.22 and runs
 DOOM8088. One Cargo workspace of two crates in one configuration (no cargo
 features): the machine, and the app around it with a winit + wgpu window as
-its only frontend and an egui overlay of tools over the picture. `README.md`
-is the user-facing description (options, controls, what is and is not
-emulated).
+its only frontend and an egui overlay of tools over the picture. The app
+builds for two hosts, a desktop (the native targets) and a browser
+(wasm32-unknown-unknown, built with trunk); what differs between them is in
+`src/platform` and nowhere else. `README.md` is the user-facing description
+(options, controls, the web build, what is and is not emulated).
 
 The coding style and conventions are the ones of the sibling project
 `bettervoxel_engine` (its `CLAUDE.md`, "Writing conventions" and "Hard
@@ -17,22 +19,29 @@ rules"), restated below as far as they apply here.
 | crate | role |
 |---|---|
 | `crates/emu8086_core` | the machine: the CPU, the devices, the disks, the BIOS ROM it embeds (`BIOS_ROM`) with the build script that assembles it, and every test of the machine. A library with no window, no GPU and no clock: it builds for wasm32-unknown-unknown on its own |
-| root package `emulator_8086` | the app: the command line, the winit window, the wgpu renderer, the key map, the overlay of tools (egui). It owns the machine, measures host time for it and is its wall clock. `cargo run` at the root runs it |
+| root package `emulator_8086` | the app: the start-up, the winit window, the wgpu renderer, the key map, the overlay of tools (egui), and what depends on the host (`src/platform`). It owns the machine, measures host time for it and is its wall clock. `cargo run` at the root runs it on the desktop; `trunk serve` at the root builds it for wasm32 and serves it in `index.html` |
 
 The root `Cargo.toml` is the version authority for every dependency
 (`[workspace.dependencies]`; a member only adds features, as the app adds
 `chrono` to fatfs), and holds `[workspace.lints]`, the edition and the
 profiles. `assets/rom/` (the BIOS sources and image) and `8086/` (the CPU
 vectors, a submodule) stay at the root of the repository; the core reaches
-them from its own directory.
+them from its own directory. `index.html` at the root is the page trunk
+builds the browser build into; `dist/`, where trunk puts the result, is
+ignored.
 
 The app, in `src/`:
 
 | path | role |
 |---|---|
-| `main.rs` | the command line and start-up: builds the machine the options describe and loads its ROM, the image the command line names or the core's `BIOS_ROM` |
-| `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, through fatfs's `chrono` feature |
-| `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, keeps the overlay's key (F12), runs and draws a frame per redraw |
+| `main.rs` | start-up: `Options`, what a start asks of the machine (the host says what: `platform::options`); builds the machine they describe and loads its ROM, the image they name or the core's `BIOS_ROM` |
+| `platform/mod.rs` | THE names for what depends on the host, each defined by both sides with one meaning (the list is in its header), and `OverlaySwitch` |
+| `platform/native.rs` | the desktop side: the command line (`Cli`; its doc comments are the `--help` text), env_logger, the blocking event loop, the sleep, the files, egui-winit |
+| `platform/web.rs` | the browser side: the console logger and the panic hook, the spawned event loop, the canvas in the page, the download, the page's `Date` |
+| `platform/egui_events.rs`, `fat_stamp.rs` | the parts of the browser side that know nothing of a browser, built on the desktop for their tests alone: winit's events as egui's input (egui-winit does not build for wasm32), and a `Date` as a FAT time stamp |
+| `platform/tests.rs` | the rule of `platform` as a test: a sweep of the app's sources |
+| `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, as `platform::fat_options` carries it |
+| `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw |
 | `gui/session.rs` | `Session`: the machine, the pacer, the guest's keyboard and the overlay, without a window. Decides whose a key is, and carries out the overlay's `Command`s on the machine |
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause |
 | `gui/renderer.rs` | wgpu: `FrameBlit` (frame texture and blit pipeline), `OverlayPass` (egui's meshes), `record_frame` (both in one render pass, no surface needed) and `Renderer` (the window's surface) |
@@ -101,23 +110,43 @@ box is never replaced).
   The one reader of the host clock for the machine is the app's `Pacer`
   (`src/gui/pacer.rs`): it samples every 256 instructions while the guest
   runs and at once when it halts. A paused guest (`Pacer::set_paused`) is
-  not run, and the time it stands still is credited to nobody. The window's
-  cursor blink is the one thing drawn on host time, and the overlay's only
-  time is that of egui's input. A test states the time: `credit_pit_time`,
-  then `step_frame`.
+  not run, and the time it stands still is credited to nobody. The pacer's
+  clock and its wait are the host's (`platform::Instant`, `platform::wait`):
+  a desktop sleeps a millisecond at a time; a browser cannot wait, so there
+  the slice of a halted or paused guest ends at once and the page's next
+  frame comes back to it, the time between the two credited by the next
+  slice like any other. The window's cursor blink is the one thing drawn on
+  host time, and the overlay's only time is that of egui's input. A test
+  states the time: `credit_pit_time`, then `step_frame`.
 - **The wall clock**: `io::disk::WallClock`, an argument of whatever formats
   a disk or copies a file onto one. The app passes `HostClock`
-  (`src/wall_clock.rs`), a test `FixedClock`.
+  (`src/wall_clock.rs`), a test `FixedClock`. How a host tells its local
+  time is `platform::fat_options`: fatfs's own chrono clock on a desktop,
+  the page's `Date` in a browser (`platform/fat_stamp.rs`).
+- **What depends on the host**: a name in the list of `src/platform/mod.rs`,
+  defined in `native.rs` and in `web.rs` with the same signature and the
+  same meaning, and called from the rest of the app without a `cfg`. Logic
+  of the browser side that needs no browser goes in a file of its own,
+  built under `cfg(any(target_arch = "wasm32", test))` and tested on the
+  desktop (`egui_events.rs`, `fat_stamp.rs`); where the two hosts differ in
+  what a caller does next, the name says so in what it returns
+  (`platform::wait`) and a test puts the other host's answer in its place
+  (`Pacer::waiting_with`).
 - **Keys**: the window sends `EmulatorEvent`s down a channel to
   `KeyboardController`: the scancode of the physical key (`src/gui/keys.rs`),
-  so the layout is the guest's business. F12 is the window's
-  (`gui::OVERLAY_KEY`): it shows and hides the overlay, and neither egui nor
-  the guest sees it. Every other event of the window goes to egui first. A
-  key then goes on to the guest unless egui kept it (Tab) or the overlay
-  has the keyboard: one of its widgets has the focus or one of its menus is
-  open (`Overlay::wants_keyboard`, `Session::key`). The guest gets the
-  release of a key if and only if it got its press: when the overlay takes
-  the keyboard, or the window loses it, the keys the guest holds are let go
+  so the layout is the guest's business. The overlay's switch is the
+  host's (`platform::OVERLAY_SWITCH`). On a desktop it is F12, which the
+  window keeps: neither egui nor the guest sees it. In a browser F12 stays
+  the browser's key (the developer tools; `platform/web.rs` keeps F11 and
+  F12, which no XT keyboard has, from the canvas), and the switch is the
+  secondary button of the pointer: the press is offered to egui first and
+  works the switch only on the picture (`Session::overlay_button`). Every
+  other event of the window goes to egui first. A key then goes on to the
+  guest unless egui kept it (Tab) or the overlay has the keyboard: one of
+  its widgets has the focus or one of its menus is open
+  (`Overlay::wants_keyboard`, `Session::key`). The guest gets the release
+  of a key if and only if it got its press: when the overlay takes the
+  keyboard, or the window loses it, the keys the guest holds are let go
   (`GuestKeys::release_all`).
 - **An overlay panel**: ONE row in THE panel table
   (`src/gui/overlay/panels.rs`: a variant of `Panel`, its place in `ALL`,
@@ -142,8 +171,9 @@ box is never replaced).
 - **A machine action of the overlay**: a variant of `Command`
   (`src/gui/overlay/mod.rs`), its entry in the menu bar, and its arm in
   `Session::execute` (`src/gui/session.rs`), which reports through
-  `Overlay::messages`. What touches the host (the file of the VGA dump) is
-  in the session, never in the overlay.
+  `Overlay::messages`. What touches the host goes from the session to
+  `platform` (the VGA dump: `platform::save_text`, a file on a desktop and a
+  download in a browser), never from the overlay.
 - **A colour of the overlay**: a slot of `PALETTE` in
   `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
   under `src/gui/overlay/` spells a colour.
@@ -169,6 +199,8 @@ cargo test --workspace --release -- --include-ignored         # everything, the 
 cargo clippy --workspace --all-targets                        # 0 warnings
 cargo doc --workspace --no-deps                               # 0 warnings
 cargo check -p emu8086_core --target wasm32-unknown-unknown   # the core builds for the browser on its own, 0 warnings
+cargo clippy --workspace --target wasm32-unknown-unknown      # the browser build, 0 warnings (no --all-targets: the tests are the desktop's)
+trunk build                                                   # the browser build links and binds, into dist/
 cargo fmt --all                                               # run before every commit
 ```
 
@@ -176,6 +208,14 @@ Without `--workspace` cargo acts on the root package alone: that is what
 makes `cargo run --release -- ...` run the app, and it makes a bare
 `cargo test` skip every test of the machine. `-p emu8086_core` runs the
 core's alone. There is one configuration: no cargo feature selects anything.
+What selects is the target: the dependencies only one host has stand in the
+target tables of the root manifest.
+
+The browser build is trunk's (0.21, `cargo install trunk`): `trunk serve`
+builds it, serves it on http://127.0.0.1:8080 and rebuilds on change, and
+`--release` gives the optimised build. Trunk fetches the wasm-bindgen CLI of
+the version locked in `Cargo.lock`, and wasm-opt for a release build, on
+first use.
 
 The CPU is validated against real hardware: a change under the core's
 `src/vm/` runs the suite with `--include-ignored`. Never judge a suite
@@ -201,8 +241,29 @@ a window on hand-made input (`gui::overlay::tests`, `gui::session::tests`).
 The pacer runs on the host's real clock in `gui::pacer::tests`. The window
 itself is compile-checked only and needs the user's eyes: the surface and
 its presentation, the winit event loop, and `gui/mod.rs`, which is where
-egui-winit turns the window's events into egui's input and where F12 is
+the window's events become egui's input and where the overlay's switch is
 picked out.
+
+Of the browser build the suite covers, on the desktop, what needs no
+browser: the pacer on a host that cannot wait (`gui::pacer::tests`), the
+window's events as egui's input (`platform::egui_events::tests`), the FAT
+stamp of a date (`platform::fat_stamp::tests`), the overlay's button
+(`gui::session::tests`), and the frame drawn on a device that has no more
+than WebGL2 guarantees
+(`gui::renderer::tests::the_frame_is_drawn_within_the_limits_of_webgl2`;
+with `WGPU_BACKEND=gl` it runs on the backend WebGL2 shares its shader
+translation with). `platform/web.rs` and the page are compile-checked only.
+The page is looked at through the Playwright MCP server alone (tools named
+`mcp__playwright__*`), never through another browser: serve it with
+`trunk serve --address 0.0.0.0`, and the server's browser, which runs in a
+container, reaches it at `http://host.docker.internal:8080`. That browser
+has no GPU, so what it shows is the WebGL2 path; WebGPU needs the user's
+own browser. Without those tools, say that the page was not looked at.
+
+Known trap of the browser build: `DiskImage::save_to_file` in the core
+names its temporary file with `std::process::id()`, which panics on wasm32.
+Nothing in a browser reaches it yet; whatever saves a disk there must not
+go through it.
 
 ## Writing conventions
 
@@ -247,6 +308,18 @@ paths, local build dirs) go in `CLAUDE.local.md` (gitignored), never here.
 - Both rules are tests (`crate_rules_tests` in the core). The wasm32 check
   alone does not hold the first: a clock read compiles for that target and
   panics when it runs.
+- **Only `src/platform` knows the host.** Outside that directory no source
+  file of the app names `cfg(target_arch` (or `target_os`,
+  `target_family`), `wasm_bindgen`, `web_sys` or `js_sys`, and none sleeps
+  (`thread::sleep`), blocks on a future (`block_on`) or names a clock of
+  `std::time` (`Instant`, `SystemTime`, `UNIX_EPOCH`): a browser has one
+  thread, which must return to the page, and no clock std can read. What
+  depends on the host is a name of `platform` that both sides define; the
+  clocks are `platform::Instant` and `platform::SystemTime`. The rule is a
+  test: `platform::tests::only_platform_knows_the_host` sweeps `src/`. A
+  test source may sleep and block, since the tests run on the desktop
+  alone; it may not ask for the host. Nothing blocks in `platform/web.rs`
+  either: what takes time there is a task or a callback of the page.
 - **The overlay has no thread, and nothing in it blocks or reads a
   clock.** It has the machine as `&mut Runtime` for the length of its pass,
   on the thread that draws: there is no channel to a machine elsewhere.
@@ -281,20 +354,35 @@ not listed has not been asked: ask first, and add the answer here.
 | date | crate or tool | answer | scope |
 |---|---|---|---|
 | 2026-10-04 | `wgpu` 24 → 30, `winit` 0.30.13 | approved | the window; the versions `egui-wgpu` 0.36 requires |
-| 2026-10-04 | `egui` 0.36, `egui-wgpu`, `egui-winit` | approved | the overlay in the window. In use, in the app only, with egui's `default_fonts` and no other feature: no system clipboard (`arboard`), no screen-reader adapter (`accesskit_winit`), no opening of links (`webbrowser`), none of which a browser has |
+| 2026-10-04 | `egui` 0.36, `egui-wgpu`, `egui-winit` | approved | the overlay in the window. In use, in the app only, with egui's `default_fonts` and no other feature: no system clipboard (`arboard`), no screen-reader adapter (`accesskit_winit`), no opening of links (`webbrowser`), none of which a browser has. `egui-winit` is a dependency of the native targets only: 0.36.2 does not build for wasm32 (see below) |
 | 2026-10-04 | `rfd` 0.17 | approved | file dialogs, native and in the browser |
-| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build |
-| 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate |
-| 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand |
+| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other |
+| 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate. In use: 0.21, with `index.html` at the root |
+| 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
 
 Approved does not mean added: the manifests say what is in use, the root
 one at which version and each crate's own which of them it takes.
-`crossterm` left with the terminal frontend on the same date. chrono is a
-direct dependency of neither crate: the app gets the local time through
-fatfs's `chrono` feature. egui depends on the `accesskit` crate (the data
-types a screen reader is described the screen with) whatever its features:
-it is in the lock file because egui brings it, and the overlay's tests read
-the screen through it (`egui::accesskit`, no dependency of its own).
+`crossterm` left with the terminal frontend on the same date. clap,
+env_logger and pollster are dependencies of the native targets only, and
+wgpu takes its `webgl` feature for wasm32 only (WebGPU is among its default
+features). chrono is a direct dependency of neither crate: on a desktop the
+app gets the local time through fatfs's `chrono` feature, which it turns on
+for the native targets only; in a browser the time is the page's `Date`.
+
+egui-winit 0.36.2 does not compile for wasm32: its `NativeFile` implements
+`egui::DroppedFile::bytes`, which egui declares only off wasm32 (the trait
+has `bytes_async` there), and upstream's main branch was the same on
+2026-10-04. In a browser the app therefore turns winit's events into egui's
+input itself (`src/platform/egui_events.rs`: pointer, wheel, keys, text,
+modifiers, focus, cursor; no touch, IME, dropped files or clipboard). Once
+an egui-winit builds for wasm32, that file can go and `OverlayInput` can be
+egui-winit's state on both hosts. A patched copy of egui-winit in the tree
+was not taken: it has not been asked.
+
+egui depends on the `accesskit` crate (the data types a screen reader is
+described the screen with) whatever its features: it is in the lock file
+because egui brings it, and the overlay's tests read the screen through it
+(`egui::accesskit`, no dependency of its own).
 
 When a version of the GPU stack changes, check that `Cargo.lock` holds one
 `windows` crate. `gpu-allocator` accepts a range of them and cargo leaves it
