@@ -120,7 +120,7 @@ trunk build --release
 
 ### Browsers
 
-The picture is drawn with WebGPU where the browser has a working one, and with WebGL2 where it has not. Which of the two is in use is logged to the browser's console at start ("Drawing with ...").
+The picture is drawn with WebGPU where the browser has a working one, and with WebGL2 where it has not. Which of the two is in use is logged to the browser's console at start ("Drawing with ..."). A browser offers WebGPU to secure pages only: `http://127.0.0.1:8080` and `https` are, the same server reached over plain `http` from another machine is not, and is drawn with WebGL2.
 
 ### What is different in a browser
 
