@@ -643,21 +643,17 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// Starts a renderer for `window`. `display` is the event loop's
-    /// display handle, the one `window` was created on.
-    ///
-    /// The adapter and the device are asked for and awaited: a host that
-    /// may block has them at once, another only after it has gone back to
-    /// its event loop (`platform::spawn`). Until then the window is there
-    /// without a renderer.
+    /// Starts a renderer for `window`; `display` is the event loop's
+    /// display handle, the one `window` was created on. The adapter and
+    /// the device are awaited: a host that may block has them at once,
+    /// another only after it went back to its event loop
+    /// (`platform::spawn`), and until then the window has no renderer.
     pub async fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
         // Every backend the build has. The GL backend presents through the
-        // display the instance was given, so it gets the event loop's.
-        //
-        // A browser has two, WebGPU and WebGL2, and an instance is of one
-        // or the other for good: whether WebGPU works there has to be found
-        // out first, by asking it for an adapter. Outside a browser there
-        // is nothing to find out.
+        // display the instance was given, so it gets the event loop's. A
+        // browser has two, WebGPU and WebGL2, and an instance is of one for
+        // good: whether WebGPU works there is found out first, by asking it
+        // for an adapter. Elsewhere there is nothing to find out.
         let instance = wgpu::util::new_instance_with_webgpu_detection(
             wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display)),
         )
