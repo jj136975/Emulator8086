@@ -112,6 +112,15 @@ bios_entry:
     mov al, 0xFC
     out 0x21, al
 
+    ; Reset the keyboard interface: pulse PB7 to clear the scancode latch and
+    ; any IRQ1 raised before the PIC was programmed (it would never be
+    ; serviced, and the keyboard would stay blocked), and leave PB6 high so
+    ; the keyboard clock is enabled.
+    mov al, 0xC8
+    out 0x61, al
+    mov al, 0x48
+    out 0x61, al
+
     ; Init PIT
     mov al, 0x36
     out 0x43, al

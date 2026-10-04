@@ -32,12 +32,18 @@ struct Machine {
 }
 
 impl Machine {
-    /// Powers on with the given disks and runs until the CPU halts: either a
-    /// boot sector parked it, or the BIOS is waiting for a key.
-    fn boot(disks: DiskController) -> Self {
+    /// A machine with the given disks and the ROM loaded, about to execute
+    /// its first instruction.
+    fn power_on(disks: DiskController) -> Self {
         let (mut rt, keys) = Runtime::new_test_machine(disks);
         rt.load_rom_image(BIOS_BIN);
-        let mut machine = Self { rt, keys };
+        Self { rt, keys }
+    }
+
+    /// Powers on and runs until the CPU halts: either a boot sector parked
+    /// it, or the BIOS is waiting for a key.
+    fn boot(disks: DiskController) -> Self {
+        let mut machine = Self::power_on(disks);
         machine.run_until(|rt| rt.cpu.halted);
         machine
     }
@@ -239,6 +245,27 @@ fn boot_is_retried_after_a_keypress() {
     machine.run_until(Machine::parked);
 
     assert_eq!(machine.booted_drive(), Some(0x00));
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard
+// ---------------------------------------------------------------------------
+
+/// Regression: a scancode that arrived before the BIOS programmed the
+/// interrupt controller lost its IRQ1 and was never acknowledged, which
+/// blocked every later key for the whole session.
+#[test]
+fn key_pressed_before_boot_does_not_block_the_keyboard() {
+    let mut machine = Machine::power_on(disks(vec![]));
+    machine.press(0x1E); // 'a', before the first instruction runs
+    machine.run_until(|rt| rt.cpu.halted);
+
+    machine.press(0x1F); // 's'
+    machine.run_stub(&[
+        0xB4, 0x00, // MOV AH,00h   (wait for a key)
+        0xCD, 0x16, // INT 16h
+    ]);
+    assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1F73, "scancode 1Fh, ASCII 's'");
 }
 
 // ---------------------------------------------------------------------------
