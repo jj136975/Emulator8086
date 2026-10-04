@@ -54,13 +54,10 @@ fn run_slice_lasts_the_whole_slice_when_halted() {
     assert_eq!(rt.instruction_count, 0);
 }
 
-/// Within a time slice a guest idling in HLT is looked at every millisecond,
-/// not once per displayed frame, and is credited with the host time that
-/// has passed: its timer keeps ticking at its own rate.
-#[test]
-fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
-    // The BIOS programs 18.2 Hz, finds no disk to boot and waits for a key
-    // in HLT. It gets there without any time passing.
+/// A machine on which the BIOS has programmed the timer for 18.2 Hz, found
+/// no disk to boot and waits for a key in HLT, with interrupts on. It gets
+/// there without any time passing.
+fn machine_idling_in_the_bios() -> Runtime {
     let mut rt = machine(BIOS_ROM);
     for _ in 0..2000 {
         rt.run(50_000);
@@ -69,17 +66,52 @@ fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
         }
     }
     assert!(rt.cpu.halted, "the BIOS waits for a key");
+    rt
+}
 
-    // The BIOS tick counter at 0040:006C, incremented by every INT 08h.
-    let timer_ticks = |rt: &Runtime| {
-        let memory = &rt.cpu.memory;
-        memory.read_word(0x046C) as u32 | (memory.read_word(0x046E) as u32) << 16
-    };
-    let before = timer_ticks(&rt);
-    Pacer::new().run_slice(&mut rt, Duration::from_millis(250));
-    let ticks = timer_ticks(&rt) - before;
+/// The BIOS tick counter at 0040:006C, incremented by every INT 08h.
+fn timer_ticks(rt: &Runtime) -> u32 {
+    let memory = &rt.cpu.memory;
+    memory.read_word(0x046C) as u32 | (memory.read_word(0x046E) as u32) << 16
+}
+
+/// The timer interrupts a 250 ms slice brings to the guest.
+fn ticks_in_a_quarter_second(rt: &mut Runtime) -> u32 {
+    let before = timer_ticks(rt);
+    Pacer::new().run_slice(rt, Duration::from_millis(250));
+    timer_ticks(rt) - before
+}
+
+/// Within a time slice a guest idling in HLT is looked at every millisecond,
+/// not once per displayed frame, and is credited with the host time that
+/// has passed: its timer keeps ticking at its own rate.
+#[test]
+fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
+    let mut rt = machine_idling_in_the_bios();
+    let ticks = ticks_in_a_quarter_second(&mut rt);
     assert!(
         (3..=6).contains(&ticks),
         "{ticks} ticks in 250 ms, expected 4 or 5"
     );
+}
+
+/// A guest that never halts is credited with the host time between two
+/// samples of the clock, a few hundred instructions apart: its timer ticks
+/// at the same rate as an idle guest's, however many instructions it runs.
+#[test]
+fn timer_ticks_reach_a_busy_guest_at_the_same_rate() {
+    let mut rt = machine_idling_in_the_bios();
+    // JMP $ at 1000:0000, with interrupts on as the BIOS left them.
+    rt.cpu.memory.write_byte(0x10000, 0xEB);
+    rt.cpu.memory.write_byte(0x10001, 0xFE);
+    rt.cpu.registers.cs.reg_mut().set(0x1000);
+    rt.cpu.registers.pc.set(0);
+    rt.cpu.halted = false;
+
+    let ticks = ticks_in_a_quarter_second(&mut rt);
+    assert!(
+        (3..=6).contains(&ticks),
+        "{ticks} ticks in 250 ms, expected 4 or 5"
+    );
+    assert!(!rt.cpu.halted, "the guest was busy all along");
 }
