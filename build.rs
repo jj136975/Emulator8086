@@ -1,7 +1,7 @@
 //! Build script for the 8086 emulator.
 //!
 //! Two jobs:
-//!   1. If `bios.asm` (or any included .inc) is newer than `bios.bin` AND
+//!   1. If `bios.asm` or any `.inc` beside it is newer than `bios.bin` AND
 //!      `nasm` is on PATH, reassemble `bios.bin` from source.
 //!   2. Patch the checksum byte at offset 0xFFFF so the 8-bit sum of the
 //!      ROM image is 0, as required by IBM PC POST.
@@ -10,34 +10,26 @@
 //! (skipped with a warning if `nasm` isn't available).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
-fn main() {
-    // Watch the assembly sources; cargo will re-run this script when any of
-    // them change. Do NOT watch bios.bin itself — we write to it below and
-    // watching it would loop.
-    for name in [
-        "bios.asm",
-        "bda.inc",
-        "utils.inc",
-        "int08_timer.inc",
-        "int09_kbd.inc",
-        "int10_video.inc",
-        "int13_disk.inc",
-        "int16_kbd.inc",
-        "int19_boot.inc",
-        "int1a_time.inc",
-    ] {
-        println!("cargo:rerun-if-changed=assets/rom/{}", name);
-    }
-    println!("cargo:rerun-if-changed=build.rs");
+const ROM_DIR: &str = "assets/rom";
 
+fn main() {
     let asm = Path::new("assets/rom/bios.asm");
     let bin = Path::new("assets/rom/bios.bin");
 
-    if let Err(e) = try_rebuild_rom(asm, bin) {
+    // Watch the assembly sources; cargo will re-run this script when any of
+    // them change. Do NOT watch bios.bin itself — we write to it below and
+    // watching it would loop.
+    let sources = rom_sources(Path::new(ROM_DIR)).unwrap_or_else(|_| vec![asm.to_path_buf()]);
+    for source in &sources {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
+    println!("cargo:rerun-if-changed=build.rs");
+
+    if let Err(e) = try_rebuild_rom(&sources, asm, bin) {
         println!("cargo:warning=ROM reassembly skipped: {}", e);
     }
 
@@ -53,25 +45,44 @@ fn main() {
     }
 }
 
-/// Reassemble bios.bin from bios.asm if the source is newer and nasm is
+/// The ROM's assembly sources: bios.asm and every .inc file beside it.
+fn rom_sources(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if matches!(path.extension().and_then(|e| e.to_str()), Some("asm" | "inc")) {
+            sources.push(path);
+        }
+    }
+    sources.sort();
+    Ok(sources)
+}
+
+/// Reassemble bios.bin from bios.asm if any source is newer and nasm is
 /// available. Returns Err(...) (logged as a warning, not a hard error) if
 /// nasm isn't on PATH or assembly fails.
-fn try_rebuild_rom(asm: &Path, bin: &Path) -> std::io::Result<()> {
+fn try_rebuild_rom(sources: &[PathBuf], asm: &Path, bin: &Path) -> std::io::Result<()> {
     if !asm.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "bios.asm missing",
         ));
     }
-    if bin.exists() && !is_newer(asm, bin)? {
-        return Ok(()); // bin is up to date
+    if bin.exists() {
+        let mut stale = false;
+        for source in sources {
+            stale |= is_newer(source, bin)?;
+        }
+        if !stale {
+            return Ok(()); // bin is up to date
+        }
     }
 
     let status = Command::new("nasm")
         .arg("-f")
         .arg("bin")
         .arg("-I")
-        .arg("assets/rom/")
+        .arg(format!("{}/", ROM_DIR))
         .arg(asm)
         .arg("-o")
         .arg(bin)
