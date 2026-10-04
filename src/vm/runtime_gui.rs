@@ -1,3 +1,13 @@
+//! The window frontend's main loop: a winit event loop that owns the
+//! machine. Each redraw runs the CPU for `CPU_SLICE`, draws the frame and
+//! asks for the next redraw; key presses and releases go to the keyboard
+//! controller as scancodes, and F12 asks for a VGA dump.
+//!
+//! The invariant: the guest runs only inside `RedrawRequested`, so a redraw
+//! must always be pending. The loop asks for one after every frame and
+//! whenever it is about to wait; a path that stops asking stops the
+//! machine.
+
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -89,19 +99,16 @@ impl ApplicationHandler for EmulatorApp {
             }
 
             WindowEvent::RedrawRequested => {
-                // Run the CPU for one time slice
                 if !self.runtime.run_slice(CPU_SLICE) {
                     event_loop.exit();
                     return;
                 }
 
-                // Render VGA
                 if let (Some(renderer), Some(vga)) = (&mut self.renderer, &self.runtime.vga) {
                     let vga = vga.borrow();
                     renderer.render(&vga, &self.runtime.cpu.memory);
                 }
 
-                // Request next frame
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }

@@ -1,3 +1,13 @@
+//! The window renderer: a wgpu surface on the winit window, one texture
+//! that takes the frame `raster` draws on the CPU, and a fullscreen-triangle
+//! blit that scales it by a whole number, centres it and leaves the rest of
+//! the window black.
+//!
+//! The invariant: the frame holds display-encoded DAC colours that must
+//! reach the screen unchanged, so the texture's encoding follows the
+//! surface's (`framebuffer_format`). A mismatch decodes without encoding
+//! again, or encodes what was never decoded: too dark or too bright.
+
 use std::sync::Arc;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
@@ -16,119 +26,6 @@ const GFX_HEIGHT: u32 = raster::GFX_HEIGHT as u32;
 /// is also the mode 13h frame times four, so both fill the window.
 pub const DEFAULT_WINDOW_WIDTH: u32 = 2 * TEXT_WIDTH;
 pub const DEFAULT_WINDOW_HEIGHT: u32 = 2 * TEXT_HEIGHT;
-
-#[cfg(test)]
-mod inspection_tests {
-    use super::*;
-
-    /// Regression: the default window was 960x600, which holds the 640x400
-    /// text frame only at scale 1 and left more than half of it black.
-    #[test]
-    fn default_window_is_filled_by_both_frame_sizes() {
-        let filled = (
-            0.0,
-            0.0,
-            DEFAULT_WINDOW_WIDTH as f32,
-            DEFAULT_WINDOW_HEIGHT as f32,
-        );
-        assert_eq!(
-            compute_viewport_math(
-                DEFAULT_WINDOW_WIDTH,
-                DEFAULT_WINDOW_HEIGHT,
-                TEXT_WIDTH,
-                TEXT_HEIGHT
-            ),
-            filled
-        );
-        assert_eq!(
-            compute_viewport_math(
-                DEFAULT_WINDOW_WIDTH,
-                DEFAULT_WINDOW_HEIGHT,
-                GFX_WIDTH,
-                GFX_HEIGHT
-            ),
-            filled
-        );
-    }
-
-    /// Regression: the frame texture was always sRGB. On a surface without
-    /// an sRGB format the decoded values were written back unencoded and
-    /// the picture came out too dark.
-    #[test]
-    fn frame_texture_matches_the_colour_encoding_of_the_surface() {
-        use wgpu::TextureFormat::*;
-        assert_eq!(framebuffer_format(Bgra8UnormSrgb), Rgba8UnormSrgb);
-        assert_eq!(framebuffer_format(Rgba8UnormSrgb), Rgba8UnormSrgb);
-        assert_eq!(framebuffer_format(Bgra8Unorm), Rgba8Unorm);
-        assert_eq!(framebuffer_format(Rgba8Unorm), Rgba8Unorm);
-    }
-
-    /// The blit shader parses and validates, including the check that
-    /// implicit-derivative sampling is not used after a conditional return.
-    #[test]
-    fn blit_shader_is_valid_wgsl() {
-        use wgpu::naga;
-        let module = naga::front::wgsl::parse_str(SHADER_SRC).expect("shader parses");
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .expect("shader validates");
-        assert!(!SHADER_SRC.contains("textureSample("));
-    }
-
-    /// Regression: when the window is at least as large as the framebuffer,
-    /// the viewport is integer-scaled and centered.
-    #[test]
-    fn viewport_integer_scales_and_centers() {
-        // 960x600 window, 320x200 framebuffer (mode 13h). Integer scale = 3.
-        let (ox, oy, w, h) = compute_viewport_math(960, 600, 320, 200);
-        assert_eq!(w, 960.0); // 320 * 3
-        assert_eq!(h, 600.0); // 200 * 3
-        assert_eq!(ox, 0.0);
-        assert_eq!(oy, 0.0);
-    }
-
-    /// Regression: asymmetric windows letterbox on the limiting axis.
-    #[test]
-    fn viewport_letterboxes_on_constrained_axis() {
-        // Window is much wider than tall; scale limited by height.
-        let (ox, oy, w, h) = compute_viewport_math(2000, 400, 320, 200);
-        // height allows scale 2, width would allow 6 — min is 2.
-        assert_eq!(w, 640.0);
-        assert_eq!(h, 400.0);
-        assert_eq!(ox, (2000.0 - 640.0) / 2.0);
-        assert_eq!(oy, 0.0);
-    }
-
-    /// Regression: when the window is smaller than the framebuffer, the
-    /// viewport offset is a plain negative number (no u32 underflow that
-    /// would push the viewport off-screen).
-    #[test]
-    fn viewport_underflow_when_window_smaller_than_framebuffer() {
-        // 200x150 window, 320x200 framebuffer.
-        let (ox, oy, w, h) = compute_viewport_math(200, 150, 320, 200);
-        // scale clamped to 1; framebuffer drawn at native size, centered
-        // with negative offsets (visible part is clipped by the window).
-        assert_eq!(w, 320.0);
-        assert_eq!(h, 200.0);
-        assert_eq!(ox, (200.0 - 320.0) / 2.0); // -60.0
-        assert_eq!(oy, (150.0 - 200.0) / 2.0); // -25.0
-        assert!(ox < 0.0, "offset_x should be negative, got {}", ox);
-        assert!(oy < 0.0, "offset_y should be negative, got {}", oy);
-    }
-
-    /// Regression: degenerate zero-sized framebuffer doesn't divide by zero.
-    #[test]
-    fn viewport_handles_zero_framebuffer_dimensions() {
-        let (_, _, w, h) = compute_viewport_math(960, 600, 0, 0);
-        // With fb clamped to 1, the scale saturates huge but we still get
-        // finite numbers out instead of a panic.
-        assert!(w.is_finite());
-        assert!(h.is_finite());
-    }
-}
 
 /// Compute an integer-scaled viewport centered in the window.
 ///
@@ -203,7 +100,7 @@ fn create_framebuffer_texture(
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct BlitUniforms {
-    /// Viewport offset (in pixels) and scale factor, packed as [offset_x, offset_y, scaled_w, scaled_h].
+    /// The viewport in pixels: offset_x, offset_y, scaled_w, scaled_h.
     viewport: [f32; 4],
     /// Window size.
     window_size: [f32; 2],
@@ -229,10 +126,10 @@ pub struct WgpuRenderer {
     fb_height: u32,
     fb_format: wgpu::TextureFormat,
 
-    // Current mode tracking
+    /// The video mode the frame texture is sized for.
     current_mode: VideoMode,
 
-    // Window dimensions
+    // Window size in physical pixels, never zero.
     win_width: u32,
     win_height: u32,
 
@@ -277,18 +174,17 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOutput {
 
 @fragment
 fn fs_main(in: VsOutput) -> @location(0) vec4<f32> {
-    // Map pixel position to the viewport area
+    // uv spans the window from 0 (top left) to 1 (bottom right).
     let pixel = in.uv * uniforms.window_size;
     let vp = uniforms.viewport; // offset_x, offset_y, scaled_w, scaled_h
 
-    // Check if pixel is inside the viewport
     if pixel.x < vp.x || pixel.x >= vp.x + vp.z ||
        pixel.y < vp.y || pixel.y >= vp.y + vp.w {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0); // black border
     }
 
-    // Map to texture UV. The texture has a single level, and naming it
-    // keeps the lookup legal after the conditional return above.
+    // The texture has a single level, and naming it keeps the lookup legal
+    // after the conditional return above.
     let tex_uv = (pixel - vp.xy) / vp.zw;
     return textureSampleLevel(tex, tex_sampler, tex_uv, 0.0);
 }
@@ -343,7 +239,7 @@ impl WgpuRenderer {
         };
         surface.configure(&device, &surface_config);
 
-        // Create framebuffer texture (start with text mode size)
+        // Sized for text mode, the mode `current_mode` starts in.
         let fb_width = TEXT_WIDTH;
         let fb_height = TEXT_HEIGHT;
         let framebuffer = vec![0u8; (fb_width * fb_height * 4) as usize];
@@ -534,7 +430,7 @@ impl WgpuRenderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Rebuild bind group with new texture view
+        // The bind group holds the texture view, so it is rebuilt with it.
         self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Blit BG"),
             layout: &self.bind_group_layout,
@@ -559,7 +455,6 @@ impl WgpuRenderer {
 
     /// Render current VGA state to the window.
     pub fn render(&mut self, vga: &VgaDevice, memory: &Memory) {
-        // Handle mode changes
         if vga.video_mode != self.current_mode {
             self.current_mode = vga.video_mode;
             match self.current_mode {
@@ -568,7 +463,6 @@ impl WgpuRenderer {
             }
         }
 
-        // Rasterize to CPU framebuffer
         match self.current_mode {
             VideoMode::Text80x25 => {
                 let phase = raster::BlinkPhase::at(self.started.elapsed());
@@ -577,7 +471,6 @@ impl WgpuRenderer {
             VideoMode::Mode13h => raster::rasterize_mode13h(&mut self.framebuffer, vga, memory),
         }
 
-        // Upload to GPU texture
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -598,7 +491,6 @@ impl WgpuRenderer {
             },
         );
 
-        // Render to screen
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -644,3 +536,7 @@ impl WgpuRenderer {
         output.present();
     }
 }
+
+#[cfg(test)]
+#[path = "renderer_wgpu_tests.rs"]
+mod tests;
