@@ -9,8 +9,9 @@
 //! the tests cover every device and every pixel.
 //!
 //! A module is public when the app reaches into it: for the disks, the
-//! keyboard, the picture, and the interrupt controller the `Cpu` holds. The
-//! port bus and the devices only it talks to stay inside the crate.
+//! keyboard, the picture, the interrupt controller the `Cpu` holds, and the
+//! timer, which the app only reads. The port bus and the devices only it
+//! talks to stay inside the crate.
 
 pub(crate) mod bus;
 pub(crate) mod console;
@@ -22,6 +23,6 @@ pub(crate) mod font_cp437;
 pub(crate) mod hdc;
 pub mod keyboard;
 pub mod pic;
-pub(crate) mod pit;
+pub mod pit;
 pub mod raster;
 pub mod vga;

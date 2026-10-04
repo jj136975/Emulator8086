@@ -6,6 +6,10 @@
 //! attached. Channel 2 is the speaker's tone: the keyboard PPI sets its
 //! gate and reads its output back (ports 61h and 62h).
 //!
+//! Outside the crate the timer is only read: `Pit::channels` describes each
+//! channel in its datasheet's terms, without the latch command or the byte
+//! sequencing a read of the count ports goes through.
+//!
 //! The invariant: `advance` returns right after the clock on which channel
 //! 0's output rises, before more timer time goes by. The run loop raises
 //! IRQ0 on that edge, and a pending request holds one edge: run past a
@@ -14,8 +18,12 @@
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
 
+/// The input clock of the three channels, in Hz: the PC's 14.31818 MHz
+/// crystal divided by 12.
+pub const INPUT_HZ: u64 = 1_193_182;
+
 /// Outcome of `Pit::advance`.
-pub struct PitAdvance {
+pub(crate) struct PitAdvance {
     /// Input clocks actually consumed.
     pub clocks: u32,
     /// Channel 0's output went from low to high on the last clock consumed.
@@ -26,12 +34,61 @@ pub struct Pit {
     channels: [PitChannel; 3],
 }
 
-/// Which bytes of the 16-bit count a read or write of the data port moves.
-#[derive(Clone, Copy, PartialEq)]
-enum AccessMode {
+/// Which bytes of the 16-bit count a read or write of the data port moves
+/// (RL1 and RL0 of the control word).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessMode {
+    /// The low byte alone.
     Low,
+    /// The high byte alone.
     High,
+    /// The low byte, then the high byte.
     LowThenHigh,
+}
+
+/// One channel of the 8253 as its datasheet describes it. A copy: holding
+/// one changes nothing in the timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PitChannelView {
+    /// The mode of the control word, 0 to 5.
+    pub mode: u8,
+    /// How the count is moved through the channel's port.
+    pub access: AccessMode,
+    /// The count is four BCD digits rather than sixteen bits.
+    pub bcd: bool,
+    /// The count register: the count the guest wrote last, which modes 2
+    /// and 3 reload at every period.
+    pub reload: u16,
+    /// The counting element: the count as it runs down.
+    pub count: u16,
+    /// The OUT pin.
+    pub output: bool,
+    /// The GATE pin.
+    pub gate: bool,
+    /// A count was written since the mode was: the counter runs, or would
+    /// with its gate high.
+    pub counting: bool,
+    /// A count frozen by the latch command, until the guest has read it.
+    pub latched: Option<u16>,
+}
+
+impl PitChannelView {
+    /// The clocks the reload value stands for: one period of modes 2 and 3.
+    /// A zero stands for the largest count, 65536, or 10000 in BCD.
+    pub fn divisor(&self) -> u32 {
+        full_count(self.reload, self.bcd)
+    }
+}
+
+/// The clocks `count` stands for, binary or BCD: its value, but for zero,
+/// which a counter takes as the count after its largest.
+fn full_count(count: u16, bcd: bool) -> u32 {
+    match (bcd, count) {
+        (true, 0) => 10000,
+        (true, _) => PitChannel::bcd_to_binary(count),
+        (false, 0) => 0x10000,
+        (false, _) => count as u32,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -133,14 +190,21 @@ impl PitChannel {
 
     /// Get the effective reload value, handling BCD and the "0 means max" rule.
     fn effective_reload(&self) -> u32 {
-        let max_count = if self.bcd { 10000u32 } else { 0x10000u32 };
-        if self.bcd {
-            let r = Self::bcd_to_binary(self.count_register);
-            if r == 0 { max_count } else { r }
-        } else if self.count_register == 0 {
-            max_count
-        } else {
-            self.count_register as u32
+        full_count(self.count_register, self.bcd)
+    }
+
+    /// The channel as a reader sees it.
+    fn view(&self) -> PitChannelView {
+        PitChannelView {
+            mode: self.mode,
+            access: self.access,
+            bcd: self.bcd,
+            reload: self.count_register,
+            count: self.counting_element,
+            output: self.output,
+            gate: self.gate,
+            counting: self.enabled,
+            latched: self.count_is_latched.then_some(self.output_latch),
         }
     }
 
@@ -440,7 +504,7 @@ impl PitChannel {
 }
 
 impl Pit {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             // Channel 0 & 1 have gate tied high; channel 2 gate is controlled by port 0x61
             channels: [
@@ -451,10 +515,17 @@ impl Pit {
         }
     }
 
+    /// The three channels as a reader sees them. Nothing is latched or
+    /// read: the guest's next read of a count port finds what it would
+    /// have found.
+    pub fn channels(&self) -> [PitChannelView; 3] {
+        self.channels.each_ref().map(PitChannel::view)
+    }
+
     /// Advances all channels by up to `max_clocks` input clocks (1,193,182 Hz),
     /// one clock at a time, stopping right after a rising edge of channel 0's
     /// output so the caller can raise IRQ0 before more timer time goes by.
-    pub fn advance(&mut self, max_clocks: u32) -> PitAdvance {
+    pub(crate) fn advance(&mut self, max_clocks: u32) -> PitAdvance {
         let mut clocks = 0;
         while clocks < max_clocks {
             let ch0_rising_edge = self.channels[0].tick_one();
@@ -475,13 +546,13 @@ impl Pit {
     }
 
     /// Get channel 2 output state (used by port 0x61 bit 5).
-    pub fn channel2_output(&self) -> bool {
+    pub(crate) fn channel2_output(&self) -> bool {
         self.channels[2].output
     }
 
     /// Set the gate input for a channel.
     /// Gate rising edges trigger special behavior in modes 1, 2, 3, and 5.
-    pub fn set_gate(&mut self, channel: usize, state: bool) {
+    pub(crate) fn set_gate(&mut self, channel: usize, state: bool) {
         if channel >= 3 {
             return;
         }

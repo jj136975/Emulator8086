@@ -370,3 +370,83 @@ fn mode_5_strobes_after_a_gate_trigger() {
     }
     assert_eq!(levels, "HHHLHH");
 }
+
+/// The view shows each channel as the guest programmed it: channel 0 as
+/// the BIOS sets it up (mode 3, low byte then high byte, binary, a count
+/// of zero that stands for 65536), counting down two clocks at a time;
+/// channel 2 with its gate low until port 61h raises it; a channel that
+/// was given a mode but no count yet, not counting.
+#[test]
+fn the_view_shows_each_channel_as_programmed() {
+    let mut bench = Bench::new();
+    let [ch0, ch1, ch2] = bench.pit.channels();
+    assert!(!ch0.counting && !ch1.counting && !ch2.counting, "power-on");
+    assert!(ch0.gate && ch1.gate && !ch2.gate);
+
+    bench.program(0x36, 0x0000);
+    bench.pit.advance(10);
+    let ch0 = bench.pit.channels()[0];
+    assert_eq!(
+        ch0,
+        PitChannelView {
+            mode: 3,
+            access: AccessMode::LowThenHigh,
+            bcd: false,
+            reload: 0x0000,
+            count: 0xFFEC,
+            output: true,
+            gate: true,
+            counting: true,
+            latched: None,
+        }
+    );
+    assert_eq!(ch0.divisor(), 65536);
+
+    bench.out(0x43, 0xB6); // channel 2, mode 3, no count yet
+    let ch2 = bench.pit.channels()[2];
+    assert_eq!((ch2.mode, ch2.counting, ch2.gate), (3, false, false));
+    bench.out(0x42, 0xA9);
+    bench.out(0x42, 0x04); // 1193: a tone of 1 kHz
+    let ch2 = bench.pit.channels()[2];
+    assert_eq!(
+        (ch2.reload, ch2.divisor(), ch2.counting),
+        (1193, 1193, true)
+    );
+
+    bench.out(0x43, 0x50); // channel 1, mode 0, low byte only
+    bench.out(0x41, 0x12);
+    let ch1 = bench.pit.channels()[1];
+    assert_eq!(
+        (ch1.access, ch1.reload, ch1.output),
+        (AccessMode::Low, 0x12, false)
+    );
+}
+
+/// A BCD count stands for its decimal digits, and a zero for 10000. A
+/// latched count shows until the guest has read both its bytes, and the
+/// view itself latches nothing.
+#[test]
+fn the_view_shows_bcd_counts_and_a_latched_count() {
+    let mut bench = Bench::new();
+    bench.program(0x35, 0x0000); // channel 0, mode 2, BCD
+    assert_eq!(bench.pit.channels()[0].divisor(), 10000);
+    bench.program(0x35, 0x1234);
+    assert!(bench.pit.channels()[0].bcd);
+    assert_eq!(bench.pit.channels()[0].divisor(), 1234);
+
+    bench.program(0x34, 0x1000);
+    bench.pit.advance(0x10);
+    assert_eq!(bench.pit.channels()[0].latched, None, "nothing latched yet");
+    bench.out(0x43, 0x00); // latch channel 0 at 0FF0h
+    bench.pit.advance(0x10);
+    let ch0 = bench.pit.channels()[0];
+    assert_eq!((ch0.latched, ch0.count), (Some(0x0FF0), 0x0FE0));
+    bench.inp(0x40);
+    assert_eq!(
+        bench.pit.channels()[0].latched,
+        Some(0x0FF0),
+        "one byte read"
+    );
+    bench.inp(0x40);
+    assert_eq!(bench.pit.channels()[0].latched, None);
+}

@@ -25,7 +25,7 @@ use crate::io::fdc::FdcStub;
 use crate::io::hdc::HdcStub;
 use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
-use crate::io::pit::Pit;
+use crate::io::pit::{self, Pit};
 use crate::io::vga::VgaDevice;
 use crate::vm::cpu::Cpu;
 use crate::vm::instructions::process;
@@ -33,7 +33,7 @@ use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
 use log::debug;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::path::PathBuf;
@@ -99,7 +99,7 @@ const FRAME_INSTRUCTIONS: u64 = 50_000;
 const ROM_MAX_SIZE: usize = 0x10000;
 
 /// Input clock of the 8253 timer, in Hz.
-const PIT_CLOCK_HZ: u64 = 1_193_182;
+const PIT_CLOCK_HZ: u64 = pit::INPUT_HZ;
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 /// Timer clocks handed to the 8253 per executed instruction while it is
 /// behind: few enough that the guest gets to service every timer interrupt,
@@ -370,6 +370,12 @@ impl Runtime {
     pub fn vga_dump(&self) -> Option<String> {
         let vga = self.vga.as_ref()?;
         Some(vga.borrow().dump_text(&self.cpu.memory))
+    }
+
+    /// The 8253, lent to be read (`Pit::channels`). The loan borrows the
+    /// machine: nothing runs while it is out.
+    pub fn pit(&self) -> Ref<'_, Pit> {
+        self.pit.borrow()
     }
 
     /// Tells the machine that `nanos` of host time have passed (at most one

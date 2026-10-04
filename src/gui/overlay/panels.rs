@@ -24,7 +24,7 @@
 //! compile until a new one is named there:
 //! `every_panel_has_a_title_a_checkbox_and_a_window`.
 
-use super::{Cx, about, memory, pic};
+use super::{Cx, about, memory, pic, pit};
 
 /// The panels of the overlay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,11 +32,12 @@ pub enum Panel {
     About,
     Memory,
     Interrupts,
+    Timer,
 }
 
 impl Panel {
     /// Every panel, in the order of the View menu.
-    pub const ALL: [Self; 3] = [Self::About, Self::Memory, Self::Interrupts];
+    pub const ALL: [Self; 4] = [Self::About, Self::Memory, Self::Interrupts, Self::Timer];
 
     /// What the View menu and the window's title bar call the panel. The
     /// window is found again by its title from frame to frame, so two
@@ -46,6 +47,7 @@ impl Panel {
             Self::About => "About",
             Self::Memory => "Memory",
             Self::Interrupts => "Interrupts (8259A)",
+            Self::Timer => "Timer (8253)",
         }
     }
 
@@ -55,6 +57,7 @@ impl Panel {
             Self::About => about::body(ui, cx),
             Self::Memory => memory::body(ui, cx),
             Self::Interrupts => pic::body(ui, cx),
+            Self::Timer => pit::body(ui, cx),
         }
     }
 }

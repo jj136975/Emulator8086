@@ -15,6 +15,7 @@ use std::sync::mpsc::Sender;
 use crate::BIOS_ROM;
 use crate::io::disk::{DiskController, DiskImage, FLOPPY_144_SIZE, FixedClock};
 use crate::io::keyboard::{EmulatorEvent, KeyboardController};
+use crate::io::pit::AccessMode;
 use crate::vm::runtime::{CpuFlag, Prefixes, Runtime};
 
 /// Segment where guest stubs are loaded.
@@ -2239,4 +2240,28 @@ fn timer_hook_is_not_re_entered_by_the_next_tick() {
         (0x01, 1),
         "(IRQ0 in service while the hook runs, hooks running at once)"
     );
+}
+
+// ===========================================================================
+// The devices as a reader finds them after POST
+// ===========================================================================
+
+/// The machine lends its 8253 to be read, as POST left it: channel 0 in
+/// mode 3, its count written low byte then high byte, zero, which stands
+/// for 65536; channel 2 with its gate low, given no count.
+#[test]
+fn the_machine_lends_its_timer_to_be_read() {
+    let machine = Machine::booted();
+    let [ch0, _, ch2] = machine.rt.pit().channels();
+    assert_eq!(
+        (
+            ch0.mode,
+            ch0.access,
+            ch0.reload,
+            ch0.divisor(),
+            ch0.counting
+        ),
+        (3, AccessMode::LowThenHigh, 0x0000, 65536, true)
+    );
+    assert_eq!((ch2.gate, ch2.counting), (false, false));
 }
