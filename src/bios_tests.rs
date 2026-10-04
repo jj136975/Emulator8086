@@ -247,6 +247,20 @@ fn boot_is_retried_after_a_keypress() {
     assert_eq!(machine.booted_drive(), Some(0x00));
 }
 
+/// The monitor's `reset` command: the guest starts over from the reset
+/// vector and boots again.
+#[test]
+fn reset_reboots_the_guest() {
+    let mut machine = Machine::boot(disks(vec![(0x00, bootable_floppy())]));
+    assert_eq!(machine.booted_drive(), Some(0x00));
+    machine.rt.cpu.memory.write_byte(BOOT_MARKER_ADDR, 0);
+
+    machine.rt.reset();
+    machine.run_until(Machine::parked);
+
+    assert_eq!(machine.booted_drive(), Some(0x00), "the boot sector must run again");
+}
+
 // ---------------------------------------------------------------------------
 // Keyboard
 // ---------------------------------------------------------------------------
@@ -274,7 +288,7 @@ fn key_pressed_before_boot_does_not_block_the_keyboard() {
 fn machine_uses_the_keyboard_supplied_by_the_frontend() {
     let (keys, key_events) = std::sync::mpsc::channel();
     let keyboard = KeyboardController::with_receiver(key_events);
-    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard);
+    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard).unwrap();
     rt.load_rom_image(BIOS_BIN);
     let mut machine = Machine { rt, keys };
     machine.run_until(|rt| rt.cpu.halted);
@@ -321,7 +335,7 @@ fn int13_returns_with_interrupts_enabled() {
     let mut machine = Machine::boot(disks(vec![]));
     machine.run_stub(&[
         0xB4, 0x08, // MOV AH,08h   (get drive parameters)
-        0xB2, 0x00, // MOV DL,00h   (no such drive)
+        0xB2, 0x80, // MOV DL,80h   (no such drive)
         0xCD, 0x13, // INT 13h
         0x9C, // PUSHF
         0x5B, // POP BX

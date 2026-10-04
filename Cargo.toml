@@ -13,7 +13,9 @@ clap = { version = "4.5.58", features = ["derive"] }
 log = "0.4.29"
 env_logger = "0.11.9"
 crossterm = "0.29.0"
-fatfs = "0.3"
+# Without fatfs's "alloc" feature no VFAT long-name entries are written:
+# MS-DOS 6 shows such an entry as the volume label of a disk that has none.
+fatfs = { version = "0.3", default-features = false, features = ["std", "chrono"] }
 
 # GUI-only dependencies
 wgpu = { version = "24", optional = true }

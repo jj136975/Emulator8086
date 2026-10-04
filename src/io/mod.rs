@@ -1,6 +1,7 @@
 pub mod bus;
 pub mod pic;
 pub mod disk;
+pub mod disk_spec;
 pub mod dma;
 pub mod console;
 pub mod fdc;

@@ -1,16 +1,14 @@
 use crate::io::bus::IoBus;
 use crate::io::console::DebugConsole;
-use crate::io::disk::{
-    DiskController, DiskImage, DiskSource, DiskSpec, BOOT_ORDER_PORT, DISK_TRAP_PORT,
-    HD_DEFAULT_SIZE_MB,
-};
+use crate::io::disk::{DiskController, DiskSpec, BOOT_ORDER_PORT, DISK_TRAP_PORT};
+use crate::io::disk_spec::open_drives;
 use crate::io::dma::{DmaController, DmaPageRegisters};
 use crate::io::fdc::FdcStub;
 use crate::io::hdc::HdcStub;
 use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
 use crate::io::vga::VgaDevice;
-use crate::vm::cli::enter_monitor;
+use crate::vm::cli::{enter_monitor, MonitorAction};
 use crate::vm::cpu::{Cpu, CpuType};
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
@@ -79,6 +77,9 @@ pub struct Prefixes {
 
 /// Instructions executed per `step_frame` call.
 const RENDER_INTERVAL: u64 = 50_000;
+
+/// Size of the ROM region, F000:0000-FFFF.
+const ROM_MAX_SIZE: usize = 0x10000;
 
 /// Input clock of the 8253 timer, in Hz.
 const PIT_CLOCK_HZ: u64 = 1_193_182;
@@ -162,51 +163,18 @@ impl Runtime {
         }
     }
 
-    /// Builds the machine. `keyboard` is supplied by the frontend, which
-    /// knows where key events come from (terminal thread or window).
+    /// Builds the machine with the disks the command line asked for. Fails,
+    /// with a message for the user, if one of the images cannot be used.
+    /// `keyboard` is supplied by the frontend, which knows where key events
+    /// come from (terminal thread or window).
     pub fn new(
         disk_specs: Vec<DiskSpec>,
         hd_specs: Vec<String>,
         boot_order: Option<Vec<u8>>,
         trace: bool,
         keyboard: KeyboardController,
-    ) -> Self {
-        let mut disk_ctrl = DiskController::new();
-
-        for spec in disk_specs {
-            let image = match &spec.source {
-                DiskSource::FilePath(path) => {
-                    if spec.drive == 0 {
-                        // Boot drive: must exist
-                        DiskImage::open(path, spec.readonly).expect("Failed to open disk image")
-                    } else {
-                        // Non-boot drive: create if it doesn't exist
-                        DiskImage::open_or_create(path, spec.readonly)
-                            .expect("Failed to open/create disk image")
-                    }
-                }
-                DiskSource::Memory(size) => {
-                    let mut img = DiskImage::new_in_memory_sized(*size, spec.readonly);
-                    if let Err(e) = img.format_fat() {
-                        eprintln!("Warning: could not format floppy: {}", e);
-                    }
-                    img
-                }
-            };
-            disk_ctrl.attach(spec.drive, image);
-        }
-
-        // Build hard disks vec
-        for (id, spec) in hd_specs.into_iter().enumerate() {
-            let image = if spec.eq_ignore_ascii_case("memory") {
-                DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB)
-            } else {
-                let path = PathBuf::from(spec);
-                DiskImage::open_or_create_hard_disk(&path, HD_DEFAULT_SIZE_MB)
-                    .expect("Failed to open/create hard disk image")
-            };
-            disk_ctrl.attach(0x80 + id as u8, image);
-        }
+    ) -> Result<Self, String> {
+        let mut disk_ctrl = open_drives(disk_specs, &hd_specs)?;
 
         if let Some(order) = boot_order {
             disk_ctrl.set_boot_order(order);
@@ -214,7 +182,7 @@ impl Runtime {
 
         let mut vm = Self::with_devices(disk_ctrl, keyboard);
         vm.trace = trace;
-        vm
+        Ok(vm)
     }
 
     /// Builds a machine with the full device set wired to the port bus.
@@ -282,18 +250,29 @@ impl Runtime {
         (vm, tx)
     }
 
-    pub(crate) fn load_rom(&mut self, path: PathBuf) {
-        let rom_data = std::fs::read(path).expect("Failed to read ROM file");
+    /// Loads the ROM image in the file `path`. Fails, with a message for the
+    /// user, if the file cannot be read or is not a ROM of at most 64 KB.
+    pub(crate) fn load_rom(&mut self, path: PathBuf) -> Result<(), String> {
+        let rom_data = std::fs::read(&path)
+            .map_err(|error| format!("cannot read ROM image '{}': {}", path.display(), error))?;
+        if rom_data.is_empty() || rom_data.len() > ROM_MAX_SIZE {
+            return Err(format!(
+                "ROM image '{}' is {} bytes; a ROM is 1 byte to 64 KB",
+                path.display(),
+                rom_data.len()
+            ));
+        }
         self.load_rom_image(&rom_data);
+        Ok(())
     }
 
-    /// Copies a ROM image to F000:0000 and write-protects the region.
+    /// Copies a ROM image to the top of the first megabyte, so that it ends
+    /// at F000:FFFF and contains the reset vector, and write-protects the
+    /// ROM region.
     pub(crate) fn load_rom_image(&mut self, rom_data: &[u8]) {
-        if rom_data.len() > 0x10000 {
-            panic!("ROM image too large (max 64KB)");
-        }
+        assert!(rom_data.len() <= ROM_MAX_SIZE, "ROM image larger than 64KB");
 
-        let load_address = 0xF0000;
+        let load_address = 0x100000 - rom_data.len();
         Memory::copy_data(&mut self.cpu.memory, load_address, rom_data);
         self.cpu.memory.enable_rom_protection();
     }
@@ -338,6 +317,7 @@ impl Runtime {
             }
 
             // Keyboard polling
+            let mut reset_requested = false;
             if self.instruction_count % 1000 == 0 || self.cpu.halted {
                 if let Some(kb) = &self.keyboard {
                     match kb.borrow_mut().poll(&mut self.cpu.pic) {
@@ -346,7 +326,8 @@ impl Runtime {
                             return false;
                         }
                         Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
-                            enter_monitor(&mut self.disks.borrow_mut());
+                            let action = enter_monitor(&mut self.disks.borrow_mut());
+                            reset_requested = action == MonitorAction::Reset;
                             if let Some(vga) = &self.vga {
                                 vga.borrow_mut().queue_full_redraw();
                             }
@@ -360,6 +341,10 @@ impl Runtime {
                         _ => {}
                     }
                 }
+            }
+            if reset_requested {
+                self.reset();
+                continue;
             }
 
             // Interrupt handling. Interrupts are not recognised between a
@@ -407,6 +392,22 @@ impl Runtime {
                 std::thread::sleep(IDLE_POLL.min(deadline - now));
             }
         }
+    }
+
+    /// Reboots the guest: the CPU continues at the reset vector in its
+    /// power-on state. Memory and devices are left as they are; the BIOS
+    /// initialises what it uses.
+    pub fn reset(&mut self) {
+        let registers = &mut self.cpu.registers;
+        registers.cs.reg_mut().set(0xFFFF);
+        registers.pc.set(0x0000);
+        registers.ds.reg_mut().set(0x0000);
+        registers.es.reg_mut().set(0x0000);
+        registers.ss.reg_mut().set(0x0000);
+        self.cpu.flags = 0xF002; // interrupts disabled
+        self.cpu.halted = false;
+        self.prefixes = Prefixes::default();
+        self.interrupt_inhibit = false;
     }
 
     /// Credits the timer with the host time elapsed since the last sample.
@@ -662,6 +663,67 @@ mod tests {
         assert!(rt.run_slice(slice));
         assert!(started.elapsed() >= slice);
         assert_eq!(rt.instruction_count, 0);
+    }
+
+    #[test]
+    fn reset_restarts_the_cpu_at_the_reset_vector() {
+        let mut rt = Runtime::new_test();
+        rt.cpu.registers.cs.reg_mut().set(0x1234);
+        rt.cpu.registers.pc.set(0x5678);
+        rt.cpu.registers.ds.reg_mut().set(0x1111);
+        rt.cpu.registers.es.reg_mut().set(0x2222);
+        rt.cpu.registers.ss.reg_mut().set(0x3333);
+        rt.cpu.flags = 0x0FD5;
+        rt.cpu.halted = true;
+        rt.interrupt_inhibit = true;
+        rt.prefixes.rep = Some(true);
+        rt.prefixes.pending = true;
+
+        rt.reset();
+
+        assert_eq!(rt.cpu.registers.cs.reg().word(), 0xFFFF);
+        assert_eq!(rt.cpu.registers.pc.word(), 0x0000);
+        assert_eq!(rt.cpu.registers.ds.reg().word(), 0x0000);
+        assert_eq!(rt.cpu.registers.es.reg().word(), 0x0000);
+        assert_eq!(rt.cpu.registers.ss.reg().word(), 0x0000);
+        assert_eq!(rt.cpu.flags, 0xF002);
+        assert!(!rt.cpu.halted);
+        assert!(!rt.interrupt_inhibit);
+        assert!(rt.prefixes.rep.is_none() && !rt.prefixes.pending);
+    }
+
+    /// A ROM shorter than 64 KB ends at the top of the first megabyte, so
+    /// that the reset vector at F000:FFF0 lies inside it.
+    #[test]
+    fn short_rom_image_is_loaded_top_aligned() {
+        let mut rt = Runtime::new_test();
+        let mut rom = vec![0x90u8; 0x2000]; // 8 KB
+        rom[0x1FF0] = 0xEA; // far jump at the reset vector
+        rt.load_rom_image(&rom);
+
+        assert_eq!(rt.cpu.memory.read_byte(0xFFFF0), 0xEA);
+        assert_eq!(rt.cpu.memory.read_byte(0xFE000), 0x90);
+        assert_eq!(rt.cpu.memory.read_byte(0xFDFFF), 0x00, "nothing below the image");
+    }
+
+    #[test]
+    fn unusable_rom_file_is_an_error_that_names_the_file() {
+        let mut rt = Runtime::new_test();
+
+        let error = rt.load_rom(PathBuf::from("no-such-rom.bin")).unwrap_err();
+        assert!(error.contains("no-such-rom.bin"), "{}", error);
+
+        let path = std::env::temp_dir().join(format!("emu8086-rom-{}.bin", std::process::id()));
+        for size in [0usize, ROM_MAX_SIZE + 1] {
+            std::fs::write(&path, vec![0xFFu8; size]).unwrap();
+            let error = rt.load_rom(path.clone()).unwrap_err();
+            assert!(error.contains("emu8086-rom-"), "{}", error);
+        }
+
+        std::fs::write(&path, vec![0xEAu8; ROM_MAX_SIZE]).unwrap();
+        assert_eq!(rt.load_rom(path.clone()), Ok(()));
+        assert_eq!(rt.cpu.memory.read_byte(0xF0000), 0xEA);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

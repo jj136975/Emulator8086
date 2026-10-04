@@ -64,9 +64,9 @@ pub struct KeyboardController {
 }
 
 impl KeyboardController {
-    /// Create with an externally-provided event channel.
-    /// The caller is responsible for sending `EmulatorEvent` values.
-    /// Used by the GUI backend where winit provides keyboard events.
+    /// Create with the receiving end of an event channel. The frontend sends
+    /// `EmulatorEvent` values through the other end: from its window in GUI
+    /// builds, from `spawn_terminal_reader` otherwise.
     pub fn with_receiver(rx: mpsc::Receiver<EmulatorEvent>) -> Self {
         Self {
             kb_byte: 0,
@@ -81,11 +81,10 @@ impl KeyboardController {
         }
     }
 
-    /// Create with built-in crossterm keyboard thread (terminal mode).
+    /// Starts the thread that reads keys from the terminal and sends them
+    /// through `tx` to the controller holding the receiving end.
     #[cfg(not(feature = "gui"))]
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
-
+    pub fn spawn_terminal_reader(tx: mpsc::Sender<EmulatorEvent>) {
         thread::spawn(move || {
             let mut translator = KeyTranslator::new(cfg!(windows));
             loop {
@@ -105,8 +104,6 @@ impl KeyboardController {
                 }
             }
         });
-
-        Self::with_receiver(rx)
     }
 
     pub fn set_pit(&mut self, pit: Rc<RefCell<Pit>>) {
