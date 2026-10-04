@@ -10,11 +10,11 @@
 //!
 //! A module is public when the app reaches into it: for the disks, the
 //! keyboard, the picture, the interrupt controller the `Cpu` holds, and the
-//! timer, which the app only reads. The port bus and the devices only it
-//! talks to stay inside the crate.
+//! timer and the debug port, which the app only reads. The port bus and the
+//! devices only it talks to stay inside the crate.
 
 pub(crate) mod bus;
-pub(crate) mod console;
+pub mod console;
 pub mod disk;
 pub mod disk_spec;
 pub(crate) mod dma;

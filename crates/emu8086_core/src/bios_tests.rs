@@ -2298,3 +2298,21 @@ fn the_machine_lends_its_keyboard_to_be_read() {
     );
     assert!(Runtime::new_test().keyboard().is_none());
 }
+
+/// The machine lends its debug port to be read: what POST wrote there, its
+/// progress markers run into the copy of the message it printed when it
+/// found nothing to boot. A machine without the port lends none.
+#[test]
+fn the_machine_lends_its_debug_port_to_be_read() {
+    let machine = Machine::booted();
+    let console = machine.rt.debug_console().expect("the machine has one");
+    assert_eq!(
+        console.lines().collect::<Vec<_>>(),
+        ["BILFNo bootable disk - press any key to retry"]
+    );
+    assert_eq!(
+        (console.line_in_progress(), console.lines_finished()),
+        ("", 1)
+    );
+    assert!(Runtime::new_test().debug_console().is_none());
+}

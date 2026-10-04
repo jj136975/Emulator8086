@@ -3,7 +3,8 @@
 //! takes a call of its own), hands the 8253 timer clocks it is owed, polls
 //! the keyboard and takes a pending interrupt. Also here: the flag and
 //! segment encodings and the prefix latches the instruction code shares,
-//! interrupt entry, reset and the ROM loader.
+//! interrupt entry, reset, the ROM loader, and the devices it lends to
+//! whoever reads them (`pit`, `keyboard`, `debug_console`).
 //!
 //! The invariant: an interrupt is taken only between two whole instructions,
 //! never after a prefix byte (`prefixes.pending`) or an instruction that sets
@@ -124,6 +125,7 @@ pub struct Runtime {
     keyboard: Option<Rc<RefCell<KeyboardController>>>,
     pub vga: Option<Rc<RefCell<VgaDevice>>>,
     pit: Rc<RefCell<Pit>>,
+    debug_console: Option<Rc<RefCell<DebugConsole>>>,
 
     /// Timer clocks owed to the 8253 for host time that has already passed.
     pit_debt: u64,
@@ -158,6 +160,7 @@ impl Runtime {
             keyboard: None,
             vga: None,
             pit: Rc::new(RefCell::new(Pit::new())),
+            debug_console: None,
             pit_debt: 0,
             pit_frac: 0,
             video_clock: Rc::new(Cell::new(0)),
@@ -198,6 +201,7 @@ impl Runtime {
         let vga = Rc::new(RefCell::new(VgaDevice::new()));
         let disk_ctrl = Rc::new(RefCell::new(disk_ctrl));
         let pit = Rc::new(RefCell::new(Pit::new()));
+        let debug_console = Rc::new(RefCell::new(DebugConsole::new()));
 
         let video_clock = vga.borrow().timer_clock();
 
@@ -213,7 +217,7 @@ impl Runtime {
             BOOT_ORDER_PORT,
             Box::new(Rc::clone(&disk_ctrl)),
         );
-        io_bus.register(0xE9, 0xE9, Box::new(DebugConsole::new()));
+        io_bus.register(0xE9, 0xE9, Box::new(Rc::clone(&debug_console)));
         io_bus.register(0x320, 0x323, Box::new(HdcStub::new()));
         io_bus.register(0x3C0, 0x3DA, Box::new(Rc::clone(&vga)));
         io_bus.register(0x3F0, 0x3F7, Box::new(FdcStub::new()));
@@ -236,6 +240,7 @@ impl Runtime {
             keyboard: Some(keyboard),
             vga: Some(vga),
             pit,
+            debug_console: Some(debug_console),
             pit_debt: 0,
             pit_frac: 0,
             video_clock,
@@ -383,6 +388,13 @@ impl Runtime {
     /// nothing runs while it is out.
     pub fn keyboard(&self) -> Option<Ref<'_, KeyboardController>> {
         self.keyboard.as_ref().map(|keyboard| keyboard.borrow())
+    }
+
+    /// The debug port E9h, lent to be read (`DebugConsole::lines`), or
+    /// `None` on a machine without one. The loan borrows the machine:
+    /// nothing runs while it is out.
+    pub fn debug_console(&self) -> Option<Ref<'_, DebugConsole>> {
+        self.debug_console.as_ref().map(|console| console.borrow())
     }
 
     /// Tells the machine that `nanos` of host time have passed (at most one

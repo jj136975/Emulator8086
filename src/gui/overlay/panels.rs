@@ -24,7 +24,7 @@
 //! compile until a new one is named there:
 //! `every_panel_has_a_title_a_checkbox_and_a_window`.
 
-use super::{Cx, about, keyboard, memory, pic, pit, vga};
+use super::{Cx, about, debug_port, keyboard, memory, pic, pit, vga};
 
 /// The panels of the overlay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,17 +35,19 @@ pub enum Panel {
     Timer,
     Video,
     Keyboard,
+    DebugPort,
 }
 
 impl Panel {
     /// Every panel, in the order of the View menu.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::About,
         Self::Memory,
         Self::Interrupts,
         Self::Timer,
         Self::Video,
         Self::Keyboard,
+        Self::DebugPort,
     ];
 
     /// What the View menu and the window's title bar call the panel. The
@@ -59,6 +61,7 @@ impl Panel {
             Self::Timer => "Timer (8253)",
             Self::Video => "Video (VGA)",
             Self::Keyboard => "Keyboard (8255)",
+            Self::DebugPort => "Port E9h log",
         }
     }
 
@@ -71,6 +74,7 @@ impl Panel {
             Self::Timer => pit::body(ui, cx),
             Self::Video => vga::body(ui, cx),
             Self::Keyboard => keyboard::body(ui, cx),
+            Self::DebugPort => debug_port::body(ui, cx),
         }
     }
 }

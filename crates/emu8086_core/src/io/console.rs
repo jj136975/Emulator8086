@@ -1,9 +1,16 @@
 //! The debug port E9h. The BIOS writes its progress markers there, and a
 //! copy of everything it prints through INT 10h teletype.
 //!
-//! The invariant: the log is the only place the bytes go. They are
-//! collected into lines and logged at debug level (`RUST_LOG=debug`);
-//! nothing written to the port is printed or shown on the guest's screen.
+//! The bytes are collected into lines. Each finished line is logged at
+//! debug level (`RUST_LOG=debug`) and kept for whoever reads the console,
+//! the app's panel of the port; nothing written to the port is printed or
+//! shown on the guest's screen.
+//!
+//! The invariant: what is kept is bounded. Past `KEPT_LINES` the oldest
+//! line goes as a new one comes, as lines scroll off a screen, while
+//! `lines_finished` counts every line the guest finished.
+
+use std::collections::VecDeque;
 
 use log::debug;
 
@@ -13,15 +20,41 @@ use crate::vm::cpu::Cpu;
 /// A line longer than this is logged without waiting for its end.
 const MAX_LINE: usize = 256;
 
-/// Collects the bytes written to port E9h into lines and logs each one.
+/// The finished lines kept for a reader, the newest last.
+pub const KEPT_LINES: usize = 500;
+
+/// Collects the bytes written to port E9h into lines, logs each one and
+/// keeps the last of them.
 #[derive(Default)]
 pub struct DebugConsole {
+    /// The line being written.
     line: String,
+    /// The last lines finished, oldest first.
+    kept: VecDeque<String>,
+    /// Lines finished since the machine was built, kept or not.
+    finished: u64,
 }
 
 impl DebugConsole {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// The lines kept, oldest first: the last `KEPT_LINES` the guest
+    /// finished at most.
+    pub fn lines(&self) -> impl ExactSizeIterator<Item = &str> + DoubleEndedIterator {
+        self.kept.iter().map(String::as_str)
+    }
+
+    /// What the guest wrote since its last finished line.
+    pub fn line_in_progress(&self) -> &str {
+        &self.line
+    }
+
+    /// Every line the guest finished since the machine was built, those no
+    /// longer kept included.
+    pub fn lines_finished(&self) -> u64 {
+        self.finished
     }
 
     /// Adds one byte and returns the line it completes, if any.
@@ -36,6 +69,19 @@ impl DebugConsole {
             }
         }
     }
+
+    /// Takes a byte the guest wrote: the line it finishes, if it finishes
+    /// one, is logged and kept.
+    fn write(&mut self, byte: u8) {
+        if let Some(line) = self.push(byte) {
+            debug!("port E9h: {}", line);
+            if self.kept.len() == KEPT_LINES {
+                self.kept.pop_front();
+            }
+            self.kept.push_back(line);
+            self.finished += 1;
+        }
+    }
 }
 
 impl IoDevice for DebugConsole {
@@ -43,50 +89,10 @@ impl IoDevice for DebugConsole {
         0xFF
     }
     fn port_out_byte(&mut self, _port: u16, value: u8, _cpu: &mut Cpu) {
-        if let Some(line) = self.push(value) {
-            debug!("port E9h: {}", line);
-        }
+        self.write(value);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn feed(console: &mut DebugConsole, bytes: &[u8]) -> Vec<String> {
-        bytes
-            .iter()
-            .filter_map(|byte| console.push(*byte))
-            .collect()
-    }
-
-    /// Bytes are held until a line feed ends their line, which is then
-    /// passed on whole; a carriage return is dropped.
-    #[test]
-    fn output_is_collected_into_lines() {
-        let mut console = DebugConsole::new();
-        assert_eq!(feed(&mut console, b"BIL!"), Vec::<String>::new());
-        assert_eq!(
-            feed(&mut console, b"Starting MS-DOS...\r\n\r\nC:\\>"),
-            vec!["BIL!Starting MS-DOS...".to_string(), String::new()]
-        );
-        assert_eq!(console.line, "C:\\>", "kept until its line ends");
-    }
-
-    #[test]
-    fn control_characters_are_not_passed_on() {
-        let mut console = DebugConsole::new();
-        assert_eq!(
-            feed(&mut console, b"a\x07\x08\x1Bb\n"),
-            vec!["a...b".to_string()]
-        );
-    }
-
-    #[test]
-    fn a_line_without_an_end_is_logged_when_it_gets_long() {
-        let mut console = DebugConsole::new();
-        let lines = feed(&mut console, &[b'x'; MAX_LINE + 10]);
-        assert_eq!(lines, vec!["x".repeat(MAX_LINE)]);
-        assert_eq!(console.line.len(), 10);
-    }
-}
+#[path = "console_tests.rs"]
+mod tests;
