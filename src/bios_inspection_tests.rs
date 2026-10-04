@@ -42,28 +42,6 @@ fn rom_checksum_sums_to_zero() {
     );
 }
 
-/// FIX: INT 08h must re-enable interrupts (STI) between sending EOI and
-/// chaining to INT 1Ch so the user hook can be pre-empted by higher-
-/// priority IRQs like keyboard. Before the fix there was no STI, so
-/// INT 1Ch ran with IF=0 and blocked all IRQs for the hook's duration.
-///
-/// Regression check: search the ROM for the specific byte sequence
-///   B0 20           ; mov al, 0x20
-///   E6 20           ; out 0x20, al
-///   FB              ; sti
-///   CD 1C           ; int 0x1C
-/// If the STI gets removed again, this test fails.
-#[test]
-fn int08_handler_has_sti_between_eoi_and_int1c() {
-    let pattern: &[u8] = &[0xB0, 0x20, 0xE6, 0x20, 0xFB, 0xCD, 0x1C];
-    assert!(
-        BIOS_BIN.windows(pattern.len()).any(|w| w == pattern),
-        "INT 08h handler must contain `mov al,0x20; out 0x20,al; sti; int 0x1C` — \
-         pattern not found in bios.bin. Missing STI means INT 1Ch runs with \
-         interrupts disabled."
-    );
-}
-
 /// BIOS init points every IVT entry that is still zero (INT 1Ch, 1Bh, 14h,
 /// 17h, 05h, ...) at `iret_stub` in segment 0xF000, so no vector is left
 /// pointing at garbage. Checked by looking for the fill loop's bytes.

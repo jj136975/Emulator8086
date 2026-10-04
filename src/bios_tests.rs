@@ -466,3 +466,1426 @@ fn one_shot_timer_rearmed_with_a_new_count_interrupts_again() {
     assert_eq!(machine.timer_ticks(), 2);
     assert!(Machine::parked(&machine.rt), "the guest must get past its second HLT");
 }
+
+// ===========================================================================
+// Helpers for the BIOS service tests below
+// ===========================================================================
+
+impl Machine {
+    /// Powered on with no disks: POST has run and the BIOS is waiting for a
+    /// key before it retries the boot.
+    fn booted() -> Self {
+        Self::boot(disks(vec![]))
+    }
+
+    fn bda_byte(&self, offset: usize) -> u8 {
+        self.rt.cpu.memory.read_byte(0x0400 + offset)
+    }
+
+    fn bda_word(&self, offset: usize) -> u16 {
+        self.rt.cpu.memory.read_word(0x0400 + offset)
+    }
+
+    /// A cell of text page `page` (pages are 4096 bytes apart): character in
+    /// the low byte, attribute in the high byte.
+    fn text_cell(&self, page: usize, row: usize, col: usize) -> u16 {
+        self.rt.cpu.memory.read_word(0xB8000 + page * 4096 + (row * 80 + col) * 2)
+    }
+
+    fn set_text_cell(&mut self, page: usize, row: usize, col: usize, cell: u16) {
+        self.rt.cpu.memory.write_word(0xB8000 + page * 4096 + (row * 80 + col) * 2, cell);
+    }
+
+    /// Reads register `index` of an index/data port pair.
+    fn indexed_register(&mut self, index_port: u16, index: u8) -> u8 {
+        self.rt.port_out_byte(index_port, index);
+        self.rt.port_in_byte(index_port + 1)
+    }
+
+    /// CRTC display start address (registers 0Ch/0Dh), in character cells.
+    fn display_start(&mut self) -> u16 {
+        let high = self.indexed_register(0x3D4, 0x0C);
+        let low = self.indexed_register(0x3D4, 0x0D);
+        u16::from_be_bytes([high, low])
+    }
+
+    /// CRTC cursor location (registers 0Eh/0Fh), in character cells.
+    fn cursor_location(&mut self) -> u16 {
+        let high = self.indexed_register(0x3D4, 0x0E);
+        let low = self.indexed_register(0x3D4, 0x0F);
+        u16::from_be_bytes([high, low])
+    }
+}
+
+// ===========================================================================
+// INT 10h AH=00h — set video mode
+// ===========================================================================
+
+/// Regression: a mode set left the CRTC display start and cursor location,
+/// the cursors of pages 1-7 and the cursor shape as the previous program had
+/// them, so the screen stayed switched to another page.
+#[test]
+fn set_mode_resets_pages_and_cursors() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x01, 0x05, // MOV AX,0501h
+        0xCD, 0x10, // INT 10h   (show page 1)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x01, // MOV BH,01h
+        0xBA, 0x03, 0x02, // MOV DX,0203h
+        0xCD, 0x10, // INT 10h   (page 1 cursor to row 2, column 3)
+        0xB4, 0x01, // MOV AH,01h
+        0xB9, 0x00, 0x20, // MOV CX,2000h
+        0xCD, 0x10, // INT 10h   (hide the cursor)
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (set 80x25 text mode)
+    ]);
+    assert_eq!(machine.display_start(), 0, "CRTC display start");
+    assert_eq!(machine.cursor_location(), 0, "CRTC cursor location");
+    assert_eq!(machine.bda_byte(0x62), 0, "active page");
+    assert_eq!(machine.bda_word(0x4E), 0, "offset of the active page");
+    for page in 0..8 {
+        assert_eq!(machine.bda_word(0x50 + page * 2), 0, "cursor of page {page}");
+    }
+    assert_eq!(machine.bda_word(0x60), 0x0607, "cursor shape");
+    assert_eq!(machine.indexed_register(0x3D4, 0x0A), 0x06, "CRTC cursor start line");
+    assert_eq!(machine.indexed_register(0x3D4, 0x0B), 0x07, "CRTC cursor end line");
+}
+
+/// Regression: a program that flips pages by writing the CRTC start address
+/// itself and leaves through a mode set left the display showing the wrong
+/// part of video memory, with everything printed afterwards off screen.
+#[test]
+fn set_mode_undoes_a_display_start_written_to_the_crtc() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xBA, 0xD4, 0x03, // MOV DX,03D4h
+        0xB0, 0x0C, // MOV AL,0Ch
+        0xEE, // OUT DX,AL
+        0x42, // INC DX
+        0xB0, 0x08, // MOV AL,08h
+        0xEE, // OUT DX,AL   (CRTC start address high = 08h: display page 1)
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (set 80x25 text mode)
+    ]);
+    assert_eq!(machine.display_start(), 0);
+}
+
+/// Regression: only the 2000 cells of page 0 were blanked.
+#[test]
+fn set_mode_3_blanks_every_text_page() {
+    let mut machine = Machine::booted();
+    for page in 0..8 {
+        machine.set_text_cell(page, 0, 0, 0x4E58);
+        machine.set_text_cell(page, 24, 79, 0x4E58);
+    }
+    machine.run_stub(&[
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (set 80x25 text mode)
+    ]);
+    for page in 0..8 {
+        assert_eq!(machine.text_cell(page, 0, 0), 0x0720, "first cell of page {page}");
+        assert_eq!(machine.text_cell(page, 24, 79), 0x0720, "last cell of page {page}");
+    }
+}
+
+/// Regression: going back to text mode only cleared the 256-colour bit; the
+/// rest of the mode 13h register set stayed programmed, and the BDA copies of
+/// the CGA mode and colour registers were never written.
+#[test]
+fn set_mode_3_reprograms_the_adapter_after_mode_13h() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x13, 0x00, // MOV AX,0013h
+        0xCD, 0x10, // INT 10h   (320x200, 256 colours)
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (back to 80x25 text)
+    ]);
+    assert_eq!(machine.rt.port_in_byte(0x3CC), 0x67, "miscellaneous output");
+    assert_eq!(machine.indexed_register(0x3C4, 0x04), 0x02, "sequencer memory mode");
+    assert_eq!(machine.indexed_register(0x3CE, 0x05), 0x10, "graphics mode");
+    assert_eq!(machine.indexed_register(0x3CE, 0x06), 0x0E, "graphics miscellaneous");
+    assert_eq!(machine.bda_byte(0x49), 0x03, "video mode");
+    assert_eq!(machine.bda_word(0x4A), 80, "columns");
+    assert_eq!(machine.bda_byte(0x65), 0x29, "copy of the mode control register");
+    assert_eq!(machine.bda_byte(0x66), 0x30, "copy of the colour select register");
+}
+
+// ===========================================================================
+// INT 10h AH=00h — palette
+// ===========================================================================
+
+impl Machine {
+    /// A DAC register (red, green, blue; 6 bits each), read through ports
+    /// 3C7h/3C9h.
+    fn dac_register(&mut self, index: u8) -> [u8; 3] {
+        self.rt.port_out_byte(0x3C7, index);
+        [0; 3].map(|_| self.rt.port_in_byte(0x3C9))
+    }
+
+    /// An attribute controller register, read through ports 3C0h/3C1h.
+    fn attribute_register(&mut self, index: u8) -> u8 {
+        self.rt.port_in_byte(0x3DA); // the next write to 3C0h selects a register
+        self.rt.port_out_byte(0x3C0, index | 0x20); // bit 5 keeps the display on
+        let value = self.rt.port_in_byte(0x3C1);
+        self.rt.port_in_byte(0x3DA);
+        value
+    }
+
+    /// What text colour number `colour` (0-15) is displayed as: its attribute
+    /// controller palette register selects the DAC register.
+    fn text_colour(&mut self, colour: u8) -> [u8; 3] {
+        let index = self.attribute_register(colour) & 0x3F;
+        self.dac_register(index)
+    }
+}
+
+/// The 16 text colours, as 6-bit red, green, blue.
+const TEXT_COLOURS: [[u8; 3]; 16] = [
+    [0, 0, 0],
+    [0, 0, 42],
+    [0, 42, 0],
+    [0, 42, 42],
+    [42, 0, 0],
+    [42, 0, 42],
+    [42, 21, 0],
+    [42, 42, 42],
+    [21, 21, 21],
+    [21, 21, 63],
+    [21, 63, 21],
+    [21, 63, 63],
+    [63, 21, 21],
+    [63, 21, 63],
+    [63, 63, 21],
+    [63, 63, 63],
+];
+
+#[test]
+fn text_colours_after_power_on() {
+    let mut machine = Machine::booted();
+    for (colour, rgb) in TEXT_COLOURS.iter().enumerate() {
+        assert_eq!(machine.text_colour(colour as u8), *rgb, "text colour {colour}");
+    }
+}
+
+/// Regression: a mode set never touched the DAC, so the palette a 256-colour
+/// program had loaded stayed in effect in text mode (after leaving DOOM the
+/// DOS prompt was drawn almost black on black).
+#[test]
+fn set_mode_3_restores_the_text_colours() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x13, 0x00, // MOV AX,0013h
+        0xCD, 0x10, // INT 10h   (320x200, 256 colours)
+        0xBA, 0xC8, 0x03, // MOV DX,03C8h
+        0x30, 0xC0, // XOR AL,AL
+        0xEE, // OUT DX,AL   (start at DAC register 0)
+        0x42, // INC DX
+        0xB9, 0xC0, 0x00, // MOV CX,00C0h   (64 registers of 3 components)
+        0xB0, 0x02, // MOV AL,02h
+        // fill:
+        0xEE, // OUT DX,AL   (an almost black palette)
+        0xE2, 0xFD, // LOOP fill
+        0xBA, 0xC6, 0x03, // MOV DX,03C6h
+        0xB0, 0x0F, // MOV AL,0Fh
+        0xEE, // OUT DX,AL   (pixel mask)
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (back to 80x25 text)
+    ]);
+    for (colour, rgb) in TEXT_COLOURS.iter().enumerate() {
+        assert_eq!(machine.text_colour(colour as u8), *rgb, "text colour {colour}");
+    }
+    assert_eq!(machine.rt.port_in_byte(0x3C6), 0xFF, "DAC pixel mask");
+}
+
+/// Regression: mode 13h came up with whatever the DAC held, which after
+/// power-on is black for every colour above 31.
+#[test]
+fn set_mode_13h_loads_the_default_256_colour_palette() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x13, 0x00, // MOV AX,0013h
+        0xCD, 0x10, // INT 10h   (320x200, 256 colours)
+    ]);
+    let expected: [(u8, [u8; 3]); 14] = [
+        (0x00, [0, 0, 0]),
+        (0x06, [42, 21, 0]),
+        (0x0F, [63, 63, 63]),
+        (0x11, [5, 5, 5]),
+        (0x1F, [63, 63, 63]),
+        (0x20, [0, 0, 63]),
+        (0x28, [63, 0, 0]),
+        (0x2C, [63, 63, 0]),
+        (0x30, [0, 63, 0]),
+        (0x50, [45, 45, 63]),
+        (0x68, [0, 0, 28]),
+        (0xB0, [0, 0, 16]),
+        (0xF7, [11, 12, 16]),
+        (0xFF, [0, 0, 0]),
+    ];
+    for (index, rgb) in expected {
+        assert_eq!(machine.dac_register(index), rgb, "DAC register {index:02X}h");
+    }
+}
+
+/// Regression: the attribute controller was never programmed, so a palette
+/// or mode register changed by one program carried over into the next mode.
+#[test]
+fn set_mode_programs_the_attribute_controller() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x13, 0x00, // MOV AX,0013h
+        0xCD, 0x10, // INT 10h   (320x200, 256 colours)
+    ]);
+    assert_eq!(machine.attribute_register(0x06), 0x06, "mode 13h palette is the identity");
+    assert_eq!(machine.attribute_register(0x0F), 0x0F, "mode 13h palette is the identity");
+    assert_eq!(machine.attribute_register(0x10), 0x41, "mode control: 256-colour graphics");
+    assert_eq!(machine.attribute_register(0x13), 0x00, "pixel panning");
+
+    machine.run_stub(&[
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (80x25 text)
+    ]);
+    assert_eq!(machine.attribute_register(0x06), 0x14, "brown");
+    assert_eq!(machine.attribute_register(0x08), 0x38, "dark grey");
+    assert_eq!(machine.attribute_register(0x0F), 0x3F, "white");
+    assert_eq!(machine.attribute_register(0x10), 0x0C, "mode control: text, blink");
+    assert_eq!(machine.attribute_register(0x12), 0x0F, "colour plane enable");
+    assert_eq!(machine.attribute_register(0x13), 0x08, "pixel panning");
+}
+
+// ===========================================================================
+// INT 09h — scancode translation
+// ===========================================================================
+
+impl Machine {
+    /// Feeds raw scancodes to the keyboard: make codes, and break codes with
+    /// bit 7 set.
+    fn send_scancodes(&self, codes: &[u8]) {
+        for &code in codes {
+            let event = if code & 0x80 == 0 {
+                EmulatorEvent::Scancode(code)
+            } else {
+                EmulatorEvent::ScanRelease(code)
+            };
+            self.keys.send(event).unwrap();
+        }
+    }
+
+    /// Types `codes` while the guest idles with interrupts enabled, and
+    /// returns the keystrokes INT 09h queued (scan code in the high byte,
+    /// character in the low byte). The BIOS buffer is left empty.
+    fn typed(&mut self, codes: &[u8]) -> Vec<u16> {
+        self.load_stub(&IDLE_HALTED);
+        self.send_scancodes(codes);
+        for _ in 0..3 {
+            self.rt.step_frame();
+        }
+        self.take_keystrokes()
+    }
+
+    /// Empties the BIOS keyboard buffer and returns what was in it.
+    fn take_keystrokes(&mut self) -> Vec<u16> {
+        let (start, end) = (self.bda_word(0x80), self.bda_word(0x82));
+        let tail = self.bda_word(0x1C);
+        let mut head = self.bda_word(0x1A);
+        let mut keys = Vec::new();
+        while head != tail {
+            keys.push(self.bda_word(head as usize));
+            head += 2;
+            if head >= end {
+                head = start;
+            }
+        }
+        self.rt.cpu.memory.write_word(0x041A, tail);
+        keys
+    }
+}
+
+/// Regression: Insert toggled the insert flag but was never queued, so no
+/// program reading the keyboard through the BIOS could see the key.
+#[test]
+fn insert_key_is_queued() {
+    let mut machine = Machine::booted();
+    assert_eq!(machine.typed(&[0x52, 0xD2]), [0x5200]);
+    assert_eq!(machine.bda_byte(0x17) & 0x80, 0x80, "insert state is on");
+
+    // Auto-repeat while the key is held neither toggles nor queues again.
+    assert_eq!(machine.typed(&[0x52, 0x52, 0x52, 0xD2]), [0x5200]);
+    assert_eq!(machine.bda_byte(0x17) & 0x80, 0x00, "insert state is off");
+}
+
+/// Regression: the shifted table holds 0 for Tab and the lookup treated 0 as
+/// "no key", so Shift+Tab (back-tab, 0F00h) was dropped.
+#[test]
+fn shift_tab_is_queued_as_back_tab() {
+    let mut machine = Machine::booted();
+    assert_eq!(machine.typed(&[0x0F, 0x8F]), [0x0F09], "Tab");
+    assert_eq!(machine.typed(&[0x2A, 0x0F, 0x8F, 0xAA]), [0x0F00], "left Shift+Tab");
+    assert_eq!(machine.typed(&[0x36, 0x0F, 0x8F, 0xB6]), [0x0F00], "right Shift+Tab");
+}
+
+/// Regression: the cursor keys ignored Ctrl and were queued with their plain
+/// codes, so Ctrl+Left could not be told from Left (word movement in DOSKEY
+/// and other line editors did not work).
+#[test]
+fn ctrl_with_cursor_keys_has_its_own_scan_codes() {
+    let mut machine = Machine::booted();
+    let cases: [(u8, u16, &str); 10] = [
+        (0x4B, 0x7300, "Ctrl+Left"),
+        (0x4D, 0x7400, "Ctrl+Right"),
+        (0x4F, 0x7500, "Ctrl+End"),
+        (0x51, 0x7600, "Ctrl+PgDn"),
+        (0x47, 0x7700, "Ctrl+Home"),
+        (0x49, 0x8400, "Ctrl+PgUp"),
+        (0x48, 0x8D00, "Ctrl+Up"),
+        (0x50, 0x9100, "Ctrl+Down"),
+        (0x53, 0x9300, "Ctrl+Del"),
+        (0x4C, 0x8F00, "Ctrl+keypad 5"),
+    ];
+    for (scancode, key, name) in cases {
+        let typed = machine.typed(&[0x1D, scancode, scancode | 0x80, 0x9D]);
+        assert_eq!(typed, [key], "{name}");
+    }
+    assert_eq!(machine.typed(&[0x4B, 0xCB]), [0x4B00], "Left without Ctrl");
+}
+
+/// Regression: Ctrl with a non-letter key queued the plain character, Alt
+/// with the digit row queued the digit's own scan code instead of 78h-83h,
+/// Alt+Space and Alt+Tab were indistinguishable from other keys, and the
+/// keypad - and + keys had no character.
+#[test]
+fn ctrl_alt_and_keypad_keys_follow_the_ibm_tables() {
+    const NONE: u8 = 0;
+    const CTRL: u8 = 0x1D;
+    const ALT: u8 = 0x38;
+    const SHIFT: u8 = 0x2A;
+    let cases: &[(&str, u8, u8, &[u16])] = &[
+        ("Ctrl+A", CTRL, 0x1E, &[0x1E01]),
+        ("Ctrl+Esc", CTRL, 0x01, &[0x011B]),
+        ("Ctrl+Backspace", CTRL, 0x0E, &[0x0E7F]),
+        ("Ctrl+Enter", CTRL, 0x1C, &[0x1C0A]),
+        ("Ctrl+2", CTRL, 0x03, &[0x0300]),
+        ("Ctrl+6", CTRL, 0x07, &[0x071E]),
+        ("Ctrl+-", CTRL, 0x0C, &[0x0C1F]),
+        ("Ctrl+[", CTRL, 0x1A, &[0x1A1B]),
+        ("Ctrl+]", CTRL, 0x1B, &[0x1B1D]),
+        ("Ctrl+\\", CTRL, 0x2B, &[0x2B1C]),
+        ("Ctrl+Space", CTRL, 0x39, &[0x3920]),
+        ("Ctrl+PrtSc", CTRL, 0x37, &[0x7200]),
+        ("Ctrl+F1", CTRL, 0x3B, &[0x5E00]),
+        ("Ctrl+1", CTRL, 0x02, &[]),
+        ("Ctrl+Tab", CTRL, 0x0F, &[]),
+        ("Ctrl+;", CTRL, 0x27, &[]),
+        ("Alt+A", ALT, 0x1E, &[0x1E00]),
+        ("Alt+1", ALT, 0x02, &[0x7800]),
+        ("Alt+0", ALT, 0x0B, &[0x8100]),
+        ("Alt+=", ALT, 0x0D, &[0x8300]),
+        ("Alt+Space", ALT, 0x39, &[0x3920]),
+        ("Alt+Tab", ALT, 0x0F, &[0xA500]),
+        ("Alt+Esc", ALT, 0x01, &[0x0100]),
+        ("Alt+F1", ALT, 0x3B, &[0x6800]),
+        ("Alt+Left", ALT, 0x4B, &[0x9B00]),
+        ("Alt+keypad -", ALT, 0x4A, &[]),
+        ("keypad -", NONE, 0x4A, &[0x4A2D]),
+        ("keypad +", NONE, 0x4E, &[0x4E2B]),
+        ("keypad 5", NONE, 0x4C, &[0x4C00]),
+        ("keypad *", NONE, 0x37, &[0x372A]),
+        ("F1", NONE, 0x3B, &[0x3B00]),
+        ("Shift+F1", SHIFT, 0x3B, &[0x5400]),
+        ("a", NONE, 0x1E, &[0x1E61]),
+        ("Shift+a", SHIFT, 0x1E, &[0x1E41]),
+        ("Shift+1", SHIFT, 0x02, &[0x0221]),
+    ];
+    let mut machine = Machine::booted();
+    for &(name, modifier, scancode, expected) in cases {
+        let typed = if modifier == NONE {
+            machine.typed(&[scancode, scancode | 0x80])
+        } else {
+            machine.typed(&[modifier, scancode, scancode | 0x80, modifier | 0x80])
+        };
+        assert_eq!(typed, expected, "{name}");
+    }
+
+    // Caps Lock swaps the case of letters and leaves other keys alone.
+    assert_eq!(machine.typed(&[0x3A, 0xBA, 0x1E, 0x9E]), [0x1E41], "Caps Lock, a");
+    assert_eq!(machine.typed(&[0x2A, 0x1E, 0x9E, 0xAA]), [0x1E61], "Caps Lock, Shift+a");
+    assert_eq!(machine.typed(&[0x02, 0x82]), [0x0231], "Caps Lock, 1");
+}
+
+/// Regression: Ctrl+Scroll Lock only toggled Scroll Lock. It is the Break
+/// key: the buffer is flushed, bit 7 of 40:71 is set, INT 1Bh is called and
+/// a 0000h keystroke is queued.
+#[test]
+fn ctrl_break_calls_int_1bh() {
+    let mut machine = Machine::booted();
+    machine.load_stub(&[
+        0x31, 0xC0, // XOR AX,AX
+        0x8E, 0xD8, // MOV DS,AX
+        0xC7, 0x06, 0x6C, 0x00, 0x11, 0x00, // MOV WORD [006Ch],handler
+        0x8C, 0x0E, 0x6E, 0x00, // MOV [006Eh],CS   (INT 1Bh -> handler)
+        // idle:
+        0xF4, // HLT
+        0xEB, 0xFD, // JMP idle
+        // handler:
+        0x2E, 0xFE, 0x06, 0x80, 0x00, // INC BYTE [CS:0080h]   (count the calls)
+        0xCF, // IRET
+    ]);
+    machine.rt.step_frame(); // the stub hooks INT 1Bh and idles
+    machine.send_scancodes(&[0x1E, 0x9E]); // 'a', still unread when Break is pressed
+    machine.send_scancodes(&[0x1D, 0x46, 0xC6, 0x9D]); // Ctrl+Scroll Lock
+    for _ in 0..3 {
+        machine.rt.step_frame();
+    }
+    let int_1b_calls = machine.rt.cpu.memory.read_byte(((STUB_SEG as usize) << 4) + 0x80);
+    assert_eq!(int_1b_calls, 1, "INT 1Bh calls");
+    assert_eq!(machine.take_keystrokes(), [0x0000], "buffer flushed, dummy key queued");
+    assert_eq!(machine.bda_byte(0x71), 0x80, "break flag");
+    assert_eq!(machine.bda_byte(0x17) & 0x10, 0, "Scroll Lock state untouched");
+}
+
+/// Regression: Ctrl+Alt+Del was queued as an ordinary Del keystroke.
+#[test]
+fn ctrl_alt_del_restarts_the_machine() {
+    // A boot sector that counts how often it was started and then idles with
+    // interrupts enabled.
+    let boot_code = [
+        0xFE, 0x06, 0x02, 0x05, // INC BYTE [0502h]   (DS = 0 on entry)
+        // idle:
+        0xF4, // HLT
+        0xEB, 0xFD, // JMP idle
+    ];
+    let mut sector = vec![0u8; 512];
+    sector[..boot_code.len()].copy_from_slice(&boot_code);
+    sector[510] = 0x55;
+    sector[511] = 0xAA;
+    let mut floppy = blank_floppy();
+    floppy.write_sectors(0, 0, 1, 1, &sector).unwrap();
+
+    let mut machine = Machine::boot(disks(vec![(0x00, floppy)]));
+    assert_eq!(machine.rt.cpu.memory.read_byte(0x0502), 1, "booted once");
+
+    machine.send_scancodes(&[0x1D, 0x38, 0x53]); // Ctrl, Alt, Del held down
+    for _ in 0..10 {
+        machine.rt.step_frame();
+    }
+    assert_eq!(machine.rt.cpu.memory.read_byte(0x0502), 2, "booted again");
+    assert_eq!(machine.bda_byte(0x17), 0, "keyboard flags start afresh");
+    assert!(machine.take_keystrokes().is_empty(), "nothing queued");
+}
+
+// ===========================================================================
+// INT 10h AH=00h — which modes exist
+// ===========================================================================
+
+/// Regression: every mode number was accepted as "80x25 text" and reported
+/// back by AH=0Fh, so a program probing for a graphics or 40-column mode
+/// believed it had it.
+#[test]
+fn unsupported_video_modes_are_rejected() {
+    for mode in [0x00u8, 0x01, 0x04, 0x06, 0x07, 0x0D, 0x12, 0x7F] {
+        let mut machine = Machine::booted();
+        machine.set_text_cell(0, 5, 5, 0x4E58);
+        machine.run_stub(&[
+            0xB4, 0x00, // MOV AH,00h
+            0xB0, mode, // MOV AL,mode
+            0xCD, 0x10, // INT 10h   (set video mode)
+            0xB4, 0x0F, // MOV AH,0Fh
+            0xCD, 0x10, // INT 10h   (get video mode)
+        ]);
+        let ax = machine.rt.cpu.registers.ax.word();
+        assert_eq!(ax, 0x5003, "mode {mode:02X}h: still 80 columns, mode 3");
+        assert_eq!(machine.bda_byte(0x49), 0x03, "mode {mode:02X}h: BDA video mode");
+        assert_eq!(machine.text_cell(0, 5, 5), 0x4E58, "mode {mode:02X}h: screen untouched");
+    }
+}
+
+#[test]
+fn video_mode_2_is_80x25_text() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x02, 0x00, // MOV AX,0002h
+        0xCD, 0x10, // INT 10h   (set video mode 2)
+        0xB4, 0x0F, // MOV AH,0Fh
+        0xCD, 0x10, // INT 10h   (get video mode)
+    ]);
+    assert_eq!(machine.rt.cpu.registers.ax.word(), 0x5002);
+    assert_eq!(machine.indexed_register(0x3CE, 0x05) & 0x40, 0, "not a 256-colour mode");
+}
+
+/// Regression: bit 7 of the mode number ("keep the video memory") was stored
+/// as part of the mode, the memory was cleared anyway, and 93h selected text
+/// mode instead of mode 13h.
+#[test]
+fn set_mode_with_bit_7_keeps_video_memory() {
+    let mut machine = Machine::booted();
+    machine.set_text_cell(0, 5, 5, 0x4E58);
+    machine.run_stub(&[
+        0xB8, 0x83, 0x00, // MOV AX,0083h
+        0xCD, 0x10, // INT 10h   (mode 3, keep video memory)
+    ]);
+    assert_eq!(machine.bda_byte(0x49), 0x03, "video mode");
+    assert_eq!(machine.text_cell(0, 5, 5), 0x4E58, "text memory kept");
+
+    machine.rt.cpu.memory.write_byte(0xA0000 + 1234, 0x5A);
+    machine.run_stub(&[
+        0xB8, 0x93, 0x00, // MOV AX,0093h
+        0xCD, 0x10, // INT 10h   (mode 13h, keep video memory)
+    ]);
+    assert_eq!(machine.bda_byte(0x49), 0x13, "video mode");
+    assert_eq!(machine.indexed_register(0x3CE, 0x05) & 0x40, 0x40, "256-colour mode");
+    assert_eq!(machine.rt.cpu.memory.read_byte(0xA0000 + 1234), 0x5A, "frame buffer kept");
+}
+
+// ===========================================================================
+// INT 10h — other functions
+// ===========================================================================
+
+/// Regression: AH=0Fh loaded the BDA segment through BX and returned with
+/// BL = 40h; only BH (the active page) is a result.
+#[test]
+fn int10_get_mode_preserves_bl() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xBB, 0x55, 0x55, // MOV BX,5555h
+        0xB9, 0x78, 0x56, // MOV CX,5678h
+        0xBA, 0xBC, 0x9A, // MOV DX,9ABCh
+        0xB4, 0x0F, // MOV AH,0Fh
+        0xCD, 0x10, // INT 10h   (get video mode)
+    ]);
+    let registers = &machine.rt.cpu.registers;
+    assert_eq!(registers.ax.word(), 0x5003, "80 columns, mode 3");
+    assert_eq!(registers.bx.word(), 0x0055, "BH = active page, BL untouched");
+    assert_eq!(registers.cx.word(), 0x5678, "CX");
+    assert_eq!(registers.dx.word(), 0x9ABC, "DX");
+}
+
+/// Regression: the hardware cursor was programmed with row * 80 + column
+/// even when the displayed page does not start at the first cell.
+#[test]
+fn cursor_location_includes_the_page_start() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x01, 0x05, // MOV AX,0501h
+        0xCD, 0x10, // INT 10h   (show page 1)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x01, // MOV BH,01h
+        0xBA, 0x03, 0x02, // MOV DX,0203h
+        0xCD, 0x10, // INT 10h   (page 1 cursor to row 2, column 3)
+    ]);
+    assert_eq!(machine.display_start(), 2048, "page 1 starts 4096 bytes in");
+    assert_eq!(machine.cursor_location(), 2048 + 2 * 80 + 3);
+}
+
+/// Regression: selecting a page neither moved the hardware cursor to that
+/// page's cursor nor recorded the page's offset at 40:4E.
+#[test]
+fn selecting_a_page_shows_its_cursor() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x00, // MOV BH,00h
+        0xBA, 0x09, 0x07, // MOV DX,0709h
+        0xCD, 0x10, // INT 10h   (page 0 cursor to row 7, column 9)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x01, // MOV BH,01h
+        0xBA, 0x10, 0x05, // MOV DX,0510h
+        0xCD, 0x10, // INT 10h   (page 1 cursor to row 5, column 16)
+        0xB8, 0x01, 0x05, // MOV AX,0501h
+        0xCD, 0x10, // INT 10h   (show page 1)
+    ]);
+    assert_eq!(machine.bda_byte(0x62), 1, "active page");
+    assert_eq!(machine.bda_word(0x4E), 0x1000, "offset of the active page");
+    assert_eq!(machine.display_start(), 2048);
+    assert_eq!(machine.cursor_location(), 2048 + 5 * 80 + 16);
+
+    machine.run_stub(&[
+        0xB8, 0x00, 0x05, // MOV AX,0500h
+        0xCD, 0x10, // INT 10h   (show page 0)
+    ]);
+    assert_eq!(machine.bda_word(0x4E), 0, "offset of the active page");
+    assert_eq!(machine.display_start(), 0);
+    assert_eq!(machine.cursor_location(), 7 * 80 + 9, "the cursor page 0 had");
+}
+
+/// Regression: page numbers were not checked. AH=02h indexed past the eight
+/// cursor slots into the rest of the BDA and beyond; AH=05h stored any page.
+#[test]
+fn out_of_range_pages_are_ignored() {
+    let mut machine = Machine::booted();
+    // Everything from the BDA up, except the timer fields INT 08h updates.
+    let snapshot = |machine: &Machine| -> Vec<u8> {
+        (0x0400..0x0700)
+            .filter(|addr| !(0x046C..0x0471).contains(addr))
+            .map(|addr| machine.rt.cpu.memory.read_byte(addr))
+            .collect()
+    };
+    let before = snapshot(&machine);
+    machine.run_stub(&[
+        0xBA, 0x34, 0x12, // MOV DX,1234h
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x08, // MOV BH,08h
+        0xCD, 0x10, // INT 10h   (set cursor, page 8)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x09, // MOV BH,09h
+        0xCD, 0x10, // INT 10h   (page 9)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x58, // MOV BH,58h
+        0xCD, 0x10, // INT 10h   (page 58h)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0xFF, // MOV BH,0FFh
+        0xCD, 0x10, // INT 10h   (page FFh)
+        0xB8, 0x09, 0x05, // MOV AX,0509h
+        0xCD, 0x10, // INT 10h   (show page 9)
+    ]);
+    assert!(snapshot(&machine) == before, "memory outside the cursor table was written");
+    assert_eq!(machine.bda_byte(0x62), 0, "active page");
+    assert_eq!(machine.display_start(), 0);
+}
+
+/// Regression: teletype output always went to page 0, at page 0's cursor,
+/// so nothing printed was visible while another page was displayed.
+#[test]
+fn teletype_writes_to_the_active_page() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x00, // MOV BH,00h
+        0xBA, 0x0A, 0x0A, // MOV DX,0A0Ah
+        0xCD, 0x10, // INT 10h   (page 0 cursor to row 10, column 10)
+        0xB8, 0x01, 0x05, // MOV AX,0501h
+        0xCD, 0x10, // INT 10h   (show page 1)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x01, // MOV BH,01h
+        0xBA, 0x05, 0x03, // MOV DX,0305h
+        0xCD, 0x10, // INT 10h   (page 1 cursor to row 3, column 5)
+        0xB8, 0x5A, 0x0E, // MOV AX,0E5Ah
+        0xBB, 0x07, 0x00, // MOV BX,0007h
+        0xCD, 0x10, // INT 10h   (teletype 'Z')
+    ]);
+    assert_eq!(machine.text_cell(1, 3, 5) & 0x00FF, b'Z' as u16, "page 1, row 3, column 5");
+    assert_eq!(machine.text_cell(0, 10, 10), 0x0720, "page 0 at its own cursor");
+    assert_eq!(machine.bda_word(0x52), 0x0306, "page 1 cursor advanced");
+    assert_eq!(machine.bda_word(0x50), 0x0A0A, "page 0 cursor untouched");
+    assert_eq!(machine.cursor_location(), 2048 + 3 * 80 + 6);
+}
+
+/// Regression: a teletype scroll moved page 0 whatever page was active.
+#[test]
+fn teletype_scrolls_the_active_page() {
+    let mut machine = Machine::booted();
+    machine.set_text_cell(1, 1, 0, 0x0741);
+    machine.set_text_cell(0, 1, 0, 0x0742);
+    machine.run_stub(&[
+        0xB8, 0x01, 0x05, // MOV AX,0501h
+        0xCD, 0x10, // INT 10h   (show page 1)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x01, // MOV BH,01h
+        0xBA, 0x00, 0x18, // MOV DX,1800h
+        0xCD, 0x10, // INT 10h   (page 1 cursor to the last row)
+        0xB8, 0x0A, 0x0E, // MOV AX,0E0Ah
+        0xCD, 0x10, // INT 10h   (teletype line feed)
+    ]);
+    assert_eq!(machine.text_cell(1, 0, 0), 0x0741, "page 1 moved up a line");
+    assert_eq!(machine.text_cell(0, 1, 0), 0x0742, "page 0 did not move");
+    assert_eq!(machine.bda_word(0x52), 0x1800, "cursor stays on the last row");
+}
+
+/// Regression: the line scrolled in by teletype output was always grey on
+/// black instead of taking the attribute at the cursor, which left stripes
+/// on a screen cleared to another colour.
+#[test]
+fn teletype_scroll_keeps_the_screen_attribute() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x00, 0x06, // MOV AX,0600h
+        0xB7, 0x1F, // MOV BH,1Fh
+        0x31, 0xC9, // XOR CX,CX
+        0xBA, 0x4F, 0x18, // MOV DX,184Fh
+        0xCD, 0x10, // INT 10h   (clear the screen to white on blue)
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x00, // MOV BH,00h
+        0xBA, 0x00, 0x18, // MOV DX,1800h
+        0xCD, 0x10, // INT 10h   (cursor to the last row)
+        0xB8, 0x0A, 0x0E, // MOV AX,0E0Ah
+        0xCD, 0x10, // INT 10h   (teletype line feed)
+    ]);
+    assert_eq!(machine.text_cell(0, 23, 0), 0x1F20);
+    assert_eq!(machine.text_cell(0, 24, 0), 0x1F20, "first cell of the new line");
+    assert_eq!(machine.text_cell(0, 24, 79), 0x1F20, "last cell of the new line");
+}
+
+// ===========================================================================
+// INT 10h AH=13h — write string
+// ===========================================================================
+
+/// Regression: without AL bit 0 the cursor was left at the start of the
+/// string instead of where it was before the call, AH came back as 02h, and
+/// an empty string still moved the cursor.
+#[test]
+fn write_string_moves_the_cursor_only_when_asked() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xEB, 0x03, // JMP SHORT start
+        // msg:
+        0x41, 0x42, 0x43, // DB 'ABC'
+        // start:
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x00, // MOV BH,00h
+        0xBA, 0x0A, 0x0A, // MOV DX,0A0Ah
+        0xCD, 0x10, // INT 10h   (cursor to row 10, column 10)
+        0x0E, // PUSH CS
+        0x07, // POP ES
+        0xBD, 0x02, 0x00, // MOV BP,msg
+        0xB8, 0x00, 0x13, // MOV AX,1300h   (write string, cursor does not move)
+        0xBB, 0x4E, 0x00, // MOV BX,004Eh   (page 0, yellow on red)
+        0xB9, 0x03, 0x00, // MOV CX,0003h
+        0xBA, 0x03, 0x02, // MOV DX,0203h   (at row 2, column 3)
+        0xCD, 0x10, // INT 10h
+    ]);
+    assert_eq!(machine.text_cell(0, 2, 3), 0x4E41);
+    assert_eq!(machine.text_cell(0, 2, 4), 0x4E42);
+    assert_eq!(machine.text_cell(0, 2, 5), 0x4E43);
+    assert_eq!(machine.bda_word(0x50), 0x0A0A, "cursor where it was before the call");
+    assert_eq!(machine.cursor_location(), 10 * 80 + 10);
+    assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1300, "AX preserved");
+
+    machine.run_stub(&[
+        0xEB, 0x03, // JMP SHORT start
+        // msg:
+        0x41, 0x42, 0x43, // DB 'ABC'
+        // start:
+        0x0E, // PUSH CS
+        0x07, // POP ES
+        0xBD, 0x02, 0x00, // MOV BP,msg
+        0xB8, 0x01, 0x13, // MOV AX,1301h   (write string, cursor follows)
+        0xBB, 0x4E, 0x00, // MOV BX,004Eh
+        0xB9, 0x03, 0x00, // MOV CX,0003h
+        0xBA, 0x03, 0x04, // MOV DX,0403h   (at row 4, column 3)
+        0xCD, 0x10, // INT 10h
+    ]);
+    assert_eq!(machine.text_cell(0, 4, 3), 0x4E41);
+    assert_eq!(machine.bda_word(0x50), 0x0406, "cursor after the string");
+
+    machine.run_stub(&[
+        0xEB, 0x03, // JMP SHORT start
+        // msg:
+        0x41, 0x42, 0x43, // DB 'ABC'
+        // start:
+        0x0E, // PUSH CS
+        0x07, // POP ES
+        0xBD, 0x02, 0x00, // MOV BP,msg
+        0xB8, 0x01, 0x13, // MOV AX,1301h
+        0xBB, 0x4E, 0x00, // MOV BX,004Eh
+        0x31, 0xC9, // XOR CX,CX   (no characters)
+        0xBA, 0x0C, 0x0C, // MOV DX,0C0Ch
+        0xCD, 0x10, // INT 10h
+    ]);
+    assert_eq!(machine.bda_word(0x50), 0x0406, "an empty string does nothing");
+}
+
+/// Regression: the string was read with LODSB without clearing the
+/// direction flag first.
+#[test]
+fn write_string_reads_forward_whatever_the_direction_flag() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xEB, 0x03, // JMP SHORT start
+        // msg:
+        0x41, 0x42, 0x43, // DB 'ABC'
+        // start:
+        0x0E, // PUSH CS
+        0x07, // POP ES
+        0xBD, 0x02, 0x00, // MOV BP,msg
+        0xB8, 0x01, 0x13, // MOV AX,1301h
+        0xBB, 0x07, 0x00, // MOV BX,0007h
+        0xB9, 0x03, 0x00, // MOV CX,0003h
+        0xBA, 0x03, 0x02, // MOV DX,0203h
+        0xFD, // STD
+        0xCD, 0x10, // INT 10h   (write string with the direction flag set)
+        0xFC, // CLD
+    ]);
+    assert_eq!(machine.text_cell(0, 2, 3), 0x0741);
+    assert_eq!(machine.text_cell(0, 2, 4), 0x0742);
+    assert_eq!(machine.text_cell(0, 2, 5), 0x0743);
+}
+
+/// Regression: BH was ignored and the string always went to page 0.
+#[test]
+fn write_string_writes_to_the_requested_page() {
+    let mut machine = Machine::booted();
+    let page_0_cursor = machine.bda_word(0x50);
+    machine.run_stub(&[
+        0xEB, 0x03, // JMP SHORT start
+        // msg:
+        0x41, 0x42, 0x43, // DB 'ABC'
+        // start:
+        0x0E, // PUSH CS
+        0x07, // POP ES
+        0xBD, 0x02, 0x00, // MOV BP,msg
+        0xB8, 0x01, 0x13, // MOV AX,1301h
+        0xBB, 0x4E, 0x01, // MOV BX,014Eh   (page 1)
+        0xB9, 0x03, 0x00, // MOV CX,0003h
+        0xBA, 0x03, 0x02, // MOV DX,0203h
+        0xCD, 0x10, // INT 10h
+    ]);
+    assert_eq!(machine.text_cell(1, 2, 3), 0x4E41);
+    assert_eq!(machine.text_cell(1, 2, 5), 0x4E43);
+    assert_eq!(machine.text_cell(0, 2, 3) & 0x00FF, 0x20, "page 0 untouched");
+    assert_eq!(machine.bda_word(0x52), 0x0206, "page 1 cursor after the string");
+    assert_eq!(machine.bda_word(0x50), page_0_cursor, "page 0 cursor untouched");
+}
+
+/// With AL bit 1 each character is followed by its attribute; CR, LF, BS and
+/// BEL move the cursor and carry no attribute byte.
+#[test]
+fn write_string_with_attributes_and_control_characters() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xEB, 0x08, // JMP SHORT start
+        // msg:
+        0x41, 0x1F, 0x42, 0x2E, 0x0D, 0x0A, 0x43, 0x4F, // DB 'A',1Fh,'B',2Eh,0Dh,0Ah,'C',4Fh
+        // start:
+        0x0E, // PUSH CS
+        0x07, // POP ES
+        0xBD, 0x02, 0x00, // MOV BP,msg
+        0xB8, 0x03, 0x13, // MOV AX,1303h   (character/attribute pairs, cursor follows)
+        0xBB, 0x00, 0x00, // MOV BX,0000h
+        0xB9, 0x05, 0x00, // MOV CX,0005h   (A, B, CR, LF, C)
+        0xBA, 0x03, 0x02, // MOV DX,0203h
+        0xCD, 0x10, // INT 10h
+    ]);
+    assert_eq!(machine.text_cell(0, 2, 3), 0x1F41, "A");
+    assert_eq!(machine.text_cell(0, 2, 4), 0x2E42, "B");
+    assert_eq!(machine.text_cell(0, 3, 0), 0x4F43, "C, after CR and LF");
+    assert_eq!(machine.bda_word(0x50), 0x0301, "cursor after the string");
+}
+
+// ===========================================================================
+// INT 10h — scroll windows and repeat counts
+// ===========================================================================
+
+impl Machine {
+    /// Fills the 25 rows of text page `page` with `cell`.
+    fn fill_text_page(&mut self, page: usize, cell: u16) {
+        for row in 0..25 {
+            for col in 0..80 {
+                self.set_text_cell(page, row, col, cell);
+            }
+        }
+    }
+
+    /// Whether every cell in the 25 rows of text page `page` is `cell`.
+    fn text_page_is(&self, page: usize, cell: u16) -> bool {
+        (0..25).all(|row| (0..80).all(|col| self.text_cell(page, row, col) == cell))
+    }
+}
+
+/// Regression: a window whose top is below its bottom (or whose left is
+/// right of its right edge) made the 8-bit height wrap; the row loop then
+/// ran 65536 times and blanked the whole video segment.
+#[test]
+fn scroll_with_an_inverted_window_does_nothing() {
+    let mut machine = Machine::booted();
+    machine.fill_text_page(0, 0x4E58);
+    machine.fill_text_page(1, 0x4E58);
+    machine.run_stub(&[
+        0xB8, 0x00, 0x06, // MOV AX,0600h
+        0xB7, 0x07, // MOV BH,07h
+        0xB9, 0x00, 0x05, // MOV CX,0500h
+        0xBA, 0x4F, 0x04, // MOV DX,044Fh
+        0xCD, 0x10, // INT 10h   (clear rows 5 to 4)
+        0xB8, 0x01, 0x07, // MOV AX,0701h
+        0xCD, 0x10, // INT 10h   (scroll rows 5 to 4 down)
+        0xB8, 0x01, 0x06, // MOV AX,0601h
+        0xB9, 0x0A, 0x00, // MOV CX,000Ah
+        0xBA, 0x09, 0x18, // MOV DX,1809h
+        0xCD, 0x10, // INT 10h   (scroll columns 10 to 9 up)
+    ]);
+    assert!(machine.text_page_is(0, 0x4E58), "page 0 was written");
+    assert!(machine.text_page_is(1, 0x4E58), "page 1 was written");
+    let registers = &machine.rt.cpu.registers;
+    assert_eq!(registers.cx.word(), 0x000A, "CX");
+    assert_eq!(registers.dx.word(), 0x1809, "DX");
+}
+
+/// Regression: a window reaching past the screen was used as given: its
+/// 8-bit height and width wrapped (DX = FFFFh cleared nothing at all) or the
+/// fill ran past the page.
+#[test]
+fn scroll_window_is_clipped_to_the_screen() {
+    let mut machine = Machine::booted();
+    machine.fill_text_page(0, 0x4E58);
+    machine.fill_text_page(1, 0x4E58);
+    machine.set_text_cell(0, 25, 0, 0x4E58); // just past the last row
+    machine.run_stub(&[
+        0xB8, 0x00, 0x06, // MOV AX,0600h
+        0xB7, 0x1F, // MOV BH,1Fh
+        0x31, 0xC9, // XOR CX,CX
+        0xBA, 0xFF, 0xFF, // MOV DX,0FFFFh
+        0xCD, 0x10, // INT 10h   (clear from 0,0 to row 255, column 255)
+    ]);
+    assert!(machine.text_page_is(0, 0x1F20), "the whole screen is cleared");
+    assert_eq!(machine.text_cell(0, 25, 0), 0x4E58, "nothing past the last row");
+    assert!(machine.text_page_is(1, 0x4E58), "page 1 was written");
+    assert_eq!(machine.rt.cpu.registers.dx.word(), 0xFFFF, "DX");
+}
+
+/// Regression: AH=09h/0Ah with a count of zero looped 65536 times and filled
+/// the whole video segment with the character.
+#[test]
+fn write_char_with_a_zero_count_writes_nothing() {
+    let mut machine = Machine::booted();
+    machine.fill_text_page(0, 0x0741);
+    machine.fill_text_page(1, 0x0741);
+    machine.run_stub(&[
+        0xB4, 0x02, // MOV AH,02h
+        0xB7, 0x00, // MOV BH,00h
+        0xBA, 0x0A, 0x0A, // MOV DX,0A0Ah
+        0xCD, 0x10, // INT 10h   (cursor to row 10, column 10)
+        0xB8, 0x78, 0x09, // MOV AX,0978h
+        0xBB, 0x4E, 0x00, // MOV BX,004Eh
+        0x31, 0xC9, // XOR CX,CX
+        0xCD, 0x10, // INT 10h   (write character and attribute, zero times)
+        0xB8, 0x78, 0x0A, // MOV AX,0A78h
+        0xCD, 0x10, // INT 10h   (write character, zero times)
+    ]);
+    assert!(machine.text_page_is(0, 0x0741), "page 0 was written");
+    assert!(machine.text_page_is(1, 0x0741), "page 1 was written");
+}
+
+// ===========================================================================
+// INT 10h — DAC registers, blink select, pixels
+// ===========================================================================
+
+/// Regression: INT 10h AH=10h was not implemented, so programs that set
+/// their palette through the BIOS instead of the DAC ports kept whatever
+/// colours were loaded.
+#[test]
+fn dac_registers_can_be_set_and_read_through_the_bios() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xEB, 0x0F, // JMP SHORT start
+        // table:
+        0x0A, 0x0B, 0x0C, 0x14, 0x15, 0x16, 0x1E, 0x1F, 0x20, // DB 10,11,12, 20,21,22, 30,31,32
+        // buffer:
+        0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, // DB 0EEh,0EEh,0EEh,0EEh,0EEh,0EEh
+        // start:
+        0xB8, 0x13, 0x00, // MOV AX,0013h
+        0xCD, 0x10, // INT 10h   (320x200, 256 colours)
+        0x0E, // PUSH CS
+        0x07, // POP ES
+        0xB8, 0x12, 0x10, // MOV AX,1012h
+        0xBB, 0x64, 0x00, // MOV BX,0064h
+        0xB9, 0x03, 0x00, // MOV CX,0003h
+        0xBA, 0x02, 0x00, // MOV DX,table
+        0xCD, 0x10, // INT 10h   (set DAC registers 100-102 from the table)
+        0xB8, 0x10, 0x10, // MOV AX,1010h
+        0xBB, 0xC8, 0x00, // MOV BX,00C8h
+        0xB6, 0x01, // MOV DH,01h
+        0xB9, 0x03, 0x02, // MOV CX,0203h
+        0xCD, 0x10, // INT 10h   (set DAC register 200 to 1,2,3)
+        0xB8, 0x17, 0x10, // MOV AX,1017h
+        0xBB, 0x65, 0x00, // MOV BX,0065h
+        0xB9, 0x02, 0x00, // MOV CX,0002h
+        0xBA, 0x0B, 0x00, // MOV DX,buffer
+        0xCD, 0x10, // INT 10h   (read DAC registers 101-102 into the buffer)
+        0xB8, 0x15, 0x10, // MOV AX,1015h
+        0xBB, 0x65, 0x00, // MOV BX,0065h
+        0xB9, 0x66, 0x66, // MOV CX,6666h
+        0xBA, 0x55, 0x55, // MOV DX,5555h
+        0xCD, 0x10, // INT 10h   (read DAC register 101 into DH,CH,CL)
+    ]);
+    assert_eq!(machine.dac_register(100), [10, 11, 12], "AX=1012h, first register");
+    assert_eq!(machine.dac_register(102), [30, 31, 32], "AX=1012h, last register");
+    assert_eq!(machine.dac_register(200), [1, 2, 3], "AX=1010h");
+
+    let registers = &machine.rt.cpu.registers;
+    assert_eq!(registers.dx.word() >> 8, 20, "AX=1015h: red in DH");
+    assert_eq!(registers.cx.word(), 21 << 8 | 22, "AX=1015h: green in CH, blue in CL");
+
+    let buffer = ((STUB_SEG as usize) << 4) + 0x000B;
+    let read_back: Vec<u8> = (0..6).map(|i| machine.rt.cpu.memory.read_byte(buffer + i)).collect();
+    assert_eq!(read_back, [20, 21, 22, 30, 31, 32], "AX=1017h");
+}
+
+/// Regression: AX=1003h was not implemented, so text programs could not
+/// switch between blinking and sixteen background colours.
+#[test]
+fn blink_and_bright_backgrounds_can_be_selected() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (80x25 text)
+        0xB8, 0x03, 0x10, // MOV AX,1003h
+        0xB3, 0x00, // MOV BL,00h
+        0xCD, 0x10, // INT 10h   (bright backgrounds instead of blinking)
+    ]);
+    assert_eq!(machine.attribute_register(0x10) & 0x08, 0, "attribute mode control: no blink");
+    assert_eq!(machine.bda_byte(0x65) & 0x20, 0, "copy of the mode control register");
+
+    machine.run_stub(&[
+        0xB8, 0x03, 0x10, // MOV AX,1003h
+        0xB3, 0x01, // MOV BL,01h
+        0xCD, 0x10, // INT 10h   (blinking)
+    ]);
+    assert_eq!(machine.attribute_register(0x10) & 0x08, 0x08, "attribute mode control: blink");
+    assert_eq!(machine.bda_byte(0x65) & 0x20, 0x20, "copy of the mode control register");
+
+    // A mode set goes back to blinking.
+    machine.run_stub(&[
+        0xB8, 0x03, 0x10, // MOV AX,1003h
+        0xB3, 0x00, // MOV BL,00h
+        0xCD, 0x10, // INT 10h   (bright backgrounds)
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (80x25 text)
+    ]);
+    assert_eq!(machine.attribute_register(0x10), 0x0C);
+    assert_eq!(machine.bda_byte(0x65), 0x29);
+}
+
+/// Regression: AH=0Ch/0Dh were not implemented.
+#[test]
+fn pixels_can_be_written_and_read_in_mode_13h() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xB8, 0x13, 0x00, // MOV AX,0013h
+        0xCD, 0x10, // INT 10h   (320x200, 256 colours)
+        0xB8, 0x0F, 0x0C, // MOV AX,0C0Fh
+        0xB7, 0x00, // MOV BH,00h
+        0xB9, 0x0A, 0x00, // MOV CX,000Ah
+        0xBA, 0x05, 0x00, // MOV DX,0005h
+        0xCD, 0x10, // INT 10h   (pixel at column 10, row 5 = colour 15)
+        0xB8, 0x0F, 0x0C, // MOV AX,0C0Fh
+        0xB9, 0x40, 0x01, // MOV CX,0140h
+        0xCD, 0x10, // INT 10h   (column 320: ignored)
+        0xB4, 0x0D, // MOV AH,0Dh
+        0xB9, 0x0A, 0x00, // MOV CX,000Ah
+        0xCD, 0x10, // INT 10h   (read the pixel at column 10, row 5)
+    ]);
+    let frame_buffer = |machine: &Machine, x: usize, y: usize| {
+        machine.rt.cpu.memory.read_byte(0xA0000 + y * 320 + x)
+    };
+    assert_eq!(frame_buffer(&machine, 10, 5), 0x0F, "pixel written");
+    assert_eq!(frame_buffer(&machine, 0, 6), 0x00, "column 320 is off screen");
+    assert_eq!(machine.rt.cpu.registers.ax.word() & 0x00FF, 0x0F, "pixel read back");
+
+    // In text mode there are no pixels: writes are ignored, reads return 0.
+    machine.rt.cpu.memory.write_byte(0xA0000 + 5 * 320 + 10, 0x33);
+    machine.run_stub(&[
+        0xB8, 0x03, 0x00, // MOV AX,0003h
+        0xCD, 0x10, // INT 10h   (80x25 text)
+        0xB8, 0x0F, 0x0C, // MOV AX,0C0Fh
+        0xB7, 0x00, // MOV BH,00h
+        0xB9, 0x0A, 0x00, // MOV CX,000Ah
+        0xBA, 0x05, 0x00, // MOV DX,0005h
+        0xCD, 0x10, // INT 10h   (write pixel)
+        0xB8, 0x55, 0x0D, // MOV AX,0D55h
+        0xCD, 0x10, // INT 10h   (read pixel)
+    ]);
+    assert_eq!(frame_buffer(&machine, 10, 5), 0x33);
+    assert_eq!(machine.rt.cpu.registers.ax.word() & 0x00FF, 0x00);
+}
+
+// ===========================================================================
+// POST — video
+// ===========================================================================
+
+/// Regression: POST filled in a few video fields of the BDA by hand and
+/// never programmed the adapter: the CRTC cursor shape did not match the
+/// BDA, and the rows, character height and register copies were left at 0.
+#[test]
+fn post_sets_the_video_mode() {
+    let mut machine = Machine::booted();
+    assert_eq!(machine.bda_byte(0x49), 0x03, "video mode");
+    assert_eq!(machine.bda_word(0x4A), 80, "columns");
+    assert_eq!(machine.bda_word(0x4C), 4096, "page size");
+    assert_eq!(machine.bda_word(0x63), 0x03D4, "CRTC base port");
+    assert_eq!(machine.bda_byte(0x84), 24, "rows - 1");
+    assert_eq!(machine.bda_word(0x85), 16, "character height");
+    assert_eq!(machine.bda_byte(0x65), 0x29, "copy of the mode control register");
+    assert_eq!(machine.bda_byte(0x66), 0x30, "copy of the colour select register");
+    assert_eq!(machine.bda_word(0x60), 0x0607, "cursor shape");
+    assert_eq!(machine.indexed_register(0x3D4, 0x0A), 0x06, "CRTC cursor start line");
+    assert_eq!(machine.indexed_register(0x3D4, 0x0B), 0x07, "CRTC cursor end line");
+    assert_eq!(machine.attribute_register(0x06), 0x14, "text palette");
+}
+
+/// Regression: a restart through the reset vector from mode 13h, or with
+/// the display switched to another page, left the adapter in that state
+/// while the BDA said "mode 3, page 0".
+#[test]
+fn restart_returns_the_adapter_to_text_mode() {
+    let mut machine = Machine::booted();
+    machine.load_stub(&[
+        0xB8, 0x13, 0x00, // MOV AX,0013h
+        0xCD, 0x10, // INT 10h   (320x200, 256 colours)
+        0xBA, 0xD4, 0x03, // MOV DX,03D4h
+        0xB0, 0x0C, // MOV AL,0Ch
+        0xEE, // OUT DX,AL
+        0x42, // INC DX
+        0xB0, 0x08, // MOV AL,08h
+        0xEE, // OUT DX,AL   (display start high = 08h)
+        0xEA, 0x00, 0x00, 0xFF, 0xFF, // JMP 0FFFFh:0000h   (restart)
+    ]);
+    machine.run_until(|rt| rt.cpu.halted); // POST again, then the wait for a key
+
+    assert_eq!(machine.indexed_register(0x3CE, 0x05) & 0x40, 0, "256-colour mode is off");
+    assert_eq!(machine.display_start(), 0, "CRTC display start");
+    assert_eq!(machine.bda_byte(0x49), 0x03, "video mode");
+    assert_eq!(machine.bda_word(0x85), 16, "character height");
+    assert!(machine.screen_text().contains("No bootable disk"));
+}
+
+// ===========================================================================
+// POST — equipment word
+// ===========================================================================
+
+/// The number of diskette drives in the equipment word (INT 11h bits 7-6,
+/// with bit 0 saying there are any) is what INT 13h AH=15h reports for
+/// units 0-3.
+/// Regression: it was a constant "one drive", so DOS treated B: as a second
+/// name for A: and a second diskette image could not be reached.
+#[test]
+fn equipment_word_counts_the_diskette_drives() {
+    for (units, expected) in [(2u8, 0x0041u16), (3, 0x0081), (4, 0x00C1)] {
+        let drives = (0..units).map(|unit| (unit, blank_floppy())).collect();
+        let mut machine = Machine::boot(disks(drives));
+        machine.run_stub(&[
+            0xCD, 0x11, // INT 11h   (equipment list)
+        ]);
+        let equipment = machine.rt.cpu.registers.ax.word();
+        assert_eq!(equipment & 0x00C1, expected, "{units} diskette drives");
+        assert_eq!(equipment & 0x0030, 0x0020, "initial video mode: 80x25 colour");
+        assert_eq!(machine.bda_word(0x10), equipment, "INT 11h returns the BDA word");
+    }
+}
+
+// ===========================================================================
+// INT 19h — what counts as a boot sector
+// ===========================================================================
+
+/// The test boot sector with its last two bytes replaced.
+fn boot_sector_ending(last_two: [u8; 2]) -> Vec<u8> {
+    let mut sector = boot_sector();
+    sector[510..].copy_from_slice(&last_two);
+    sector
+}
+
+fn floppy_with_first_sector(sector: &[u8]) -> DiskImage {
+    let mut image = blank_floppy();
+    image.write_sectors(0, 0, 1, 1, sector).unwrap();
+    image
+}
+
+/// Regression: diskettes older than the 55AAh convention (and the boot
+/// sectors of some games) do not end in the signature and were refused.
+#[test]
+fn diskette_boots_without_the_55aa_signature() {
+    let floppy = floppy_with_first_sector(&boot_sector_ending([0x00, 0x00]));
+    let machine = Machine::boot(disks(vec![(0x00, floppy)]));
+    assert_eq!(machine.booted_drive(), Some(0x00));
+}
+
+/// A diskette whose first sector cannot be code - all zeros, or one fill
+/// byte repeated as on a formatted but empty disk - is passed over, with or
+/// without the signature at its end, and the next device boots.
+#[test]
+fn blank_diskettes_are_skipped() {
+    for fill in [0x00u8, 0xF6, 0xE5] {
+        for last_two in [[fill, fill], [0x55, 0xAA]] {
+            let mut sector = vec![fill; 512];
+            sector[510..].copy_from_slice(&last_two);
+            let machine = Machine::boot(disks(vec![
+                (0x00, floppy_with_first_sector(&sector)),
+                (0x80, bootable_hard_disk()),
+            ]));
+            assert_eq!(
+                machine.booted_drive(),
+                Some(0x80),
+                "diskette filled with {fill:02X}h, ending in {last_two:02X?}"
+            );
+        }
+    }
+}
+
+/// Hard disks keep the rule that the sector must end in 55AAh.
+#[test]
+fn hard_disk_without_the_55aa_signature_is_not_booted() {
+    let mut disk = DiskImage::new_in_memory_hard_disk(1);
+    disk.write_sectors(0, 0, 1, 1, &boot_sector_ending([0x00, 0x00])).unwrap();
+    let machine = Machine::boot(disks(vec![(0x80, disk)]));
+    assert_eq!(machine.booted_drive(), None);
+    assert!(machine.screen_text().contains("No bootable disk"));
+}
+
+// ===========================================================================
+// INT 16h — keyboard services
+// ===========================================================================
+
+/// Regression: INT 16h never enabled interrupts for its caller. A program
+/// polling AH=01h with interrupts off never let IRQ1 in and never saw the
+/// key; the IBM BIOS enables interrupts on entry and AH=01h returns with
+/// them on.
+#[test]
+fn int16_status_lets_the_keyboard_in_when_called_with_interrupts_off() {
+    let mut machine = Machine::booted();
+    machine.send_scancodes(&[0x1E, 0x9E]); // 'a'
+    machine.run_stub(&[
+        0xFA, // CLI
+        0xB9, 0xD0, 0x07, // MOV CX,07D0h   (up to 2000 polls)
+        // poll:
+        0xB4, 0x01, // MOV AH,01h
+        0xCD, 0x16, // INT 16h   (keystroke waiting?)
+        0x75, 0x06, // JNZ got
+        0xE2, 0xF8, // LOOP poll
+        0x31, 0xDB, // XOR BX,BX   (never saw one)
+        0xEB, 0x02, // JMP SHORT done
+        // got:
+        0x89, 0xC3, // MOV BX,AX   (the keystroke)
+        // done:
+        0x9C, // PUSHF
+        0x5A, // POP DX   (flags INT 16h returned with)
+    ]);
+    let registers = &machine.rt.cpu.registers;
+    assert_eq!(registers.bx.word(), 0x1E61, "the keystroke AH=01h reported");
+    assert_ne!(registers.dx.word() & FLAG_INTERRUPT, 0, "AH=01h returns with IF set");
+    assert_eq!(machine.take_keystrokes(), [0x1E61], "AH=01h leaves the key in the buffer");
+}
+
+/// Regression: AH=12h returned the byte at 40:18 as AH. The extended flags
+/// have another layout: bit 0/1 are left Ctrl/Alt (never set at 40:18 by
+/// this BIOS), and bit 7 is SysReq, not "Insert held".
+#[test]
+fn int16_extended_shift_flags() {
+    let mut machine = Machine::booted();
+    machine.typed(&[0x1D, 0x38, 0x52]); // Ctrl, Alt and Insert held down
+    machine.run_stub(&[
+        0xB4, 0x02, // MOV AH,02h
+        0xCD, 0x16, // INT 16h   (shift flags)
+        0x88, 0xC3, // MOV BL,AL
+        0xB4, 0x12, // MOV AH,12h
+        0xCD, 0x16, // INT 16h   (extended shift flags)
+    ]);
+    let registers = &machine.rt.cpu.registers;
+    assert_eq!(registers.bx.word() & 0x00FF, 0x8C, "AH=02h: Insert on, Alt, Ctrl");
+    assert_eq!(registers.ax.word(), 0x038C, "AH=12h: AL as AH=02h, AH = left Ctrl + left Alt");
+}
+
+// ===========================================================================
+// INT 15h — system services
+// ===========================================================================
+
+/// Regression: a function the BIOS does not implement came back with CF set
+/// but AH unchanged, where the IBM BIOS returns AH=86h. The keyboard
+/// intercept (AH=4Fh) is the one call that must hand AX back untouched, with
+/// CF set, so that INT 09h goes on to process the scancode.
+#[test]
+fn int15_unsupported_functions_return_ah_86h() {
+    let mut machine = Machine::booted();
+    machine.run_stub(&[
+        0xBB, 0x34, 0x12, // MOV BX,1234h
+        0xB8, 0xA5, 0xC0, // MOV AX,0C0A5h
+        0xCD, 0x15, // INT 15h   (AH=C0h: not supported)
+        0x9C, // PUSHF
+        0x59, // POP CX
+        0x89, 0xC6, // MOV SI,AX
+        0xB8, 0x1E, 0x4F, // MOV AX,4F1Eh
+        0xF9, // STC
+        0xCD, 0x15, // INT 15h   (AH=4Fh: keyboard intercept)
+        0x9C, // PUSHF
+        0x5A, // POP DX
+        0x89, 0xC7, // MOV DI,AX
+        0xB8, 0xA5, 0x88, // MOV AX,88A5h
+        0xF9, // STC
+        0xCD, 0x15, // INT 15h   (AH=88h: extended memory size)
+    ]);
+    let cpu = &machine.rt.cpu;
+    let registers = &cpu.registers;
+    assert_eq!(registers.si.word(), 0x86A5, "unsupported: AH=86h, AL untouched");
+    assert_ne!(registers.cx.word() & FLAG_CARRY, 0, "unsupported: CF set");
+    assert_eq!(registers.di.word(), 0x4F1E, "keyboard intercept: AX untouched");
+    assert_ne!(registers.dx.word() & FLAG_CARRY, 0, "keyboard intercept: CF set");
+    assert_eq!(registers.ax.word(), 0x0000, "no extended memory");
+    assert!(!cpu.check_flag(CpuFlag::Carry), "AH=88h: CF clear");
+    assert_eq!(registers.bx.word(), 0x1234, "BX is not touched");
+}
+
+// ===========================================================================
+// INT 08h — timer tick
+// ===========================================================================
+
+/// Regression: INT 08h sent the end-of-interrupt before it called the user
+/// hook INT 1Ch. A hook that enabled interrupts and ran for longer than a
+/// tick period was entered again by the next tick, on top of itself, for as
+/// long as ticks kept coming. The IBM BIOS calls the hook first: IRQ0 is
+/// still in service, so the interrupt controller holds the next tick back
+/// until the hook has returned.
+#[test]
+fn timer_hook_is_not_re_entered_by_the_next_tick() {
+    // What the hook records, in the stub's segment.
+    const DATA: usize = ((STUB_SEG as usize) << 4) + 0x0200;
+
+    let mut machine = Machine::booted();
+    machine.rt.use_manual_clock();
+    for addr in DATA..DATA + 6 {
+        machine.rt.cpu.memory.write_byte(addr, 0);
+    }
+    machine.load_stub(&[
+        0x31, 0xC0, // XOR AX,AX
+        0x8E, 0xC0, // MOV ES,AX
+        0xFA, // CLI
+        0x26, 0xC7, 0x06, 0x70, 0x00, 0x21, 0x00, // MOV WORD [ES:0070h],hook   (INT 1Ch vector)
+        0x26, 0x8C, 0x0E, 0x72, 0x00, // MOV [ES:0072h],CS
+        0xB0, 0x36, // MOV AL,36h
+        0xE6, 0x43, // OUT 43h,AL   (timer channel 0: mode 3)
+        0xB0, 0xE8, // MOV AL,0E8h
+        0xE6, 0x40, // OUT 40h,AL
+        0xB0, 0x03, // MOV AL,03h
+        0xE6, 0x40, // OUT 40h,AL   (one tick every 1000 clocks)
+        0xFB, // STI
+        // idle:
+        0xF4, // HLT
+        0xEB, 0xFD, // JMP idle
+        // hook:
+        0x50, // PUSH AX
+        0x51, // PUSH CX
+        0xB0, 0x0B, // MOV AL,0Bh
+        0xE6, 0x20, // OUT 20h,AL   (next read of port 20h: in-service register)
+        0xE4, 0x20, // IN AL,20h
+        0x2E, 0xA2, 0x02, 0x02, // MOV [CS:0202h],AL
+        0xB0, 0x0A, // MOV AL,0Ah
+        0xE6, 0x20, // OUT 20h,AL   (back to the request register)
+        0x2E, 0xFE, 0x06, 0x00, 0x02, // INC BYTE [CS:0200h]   (hooks running now)
+        0x2E, 0xA0, 0x00, 0x02, // MOV AL,[CS:0200h]
+        0x2E, 0x3A, 0x06, 0x01, 0x02, // CMP AL,[CS:0201h]
+        0x76, 0x04, // JBE spin
+        0x2E, 0xA2, 0x01, 0x02, // MOV [CS:0201h],AL   (the most that ever ran at once)
+        // spin:
+        0xFB, // STI
+        0xB9, 0xD0, 0x07, // MOV CX,2000
+        // delay:
+        0xE2, 0xFE, // LOOP delay   (several tick periods)
+        0x2E, 0xFE, 0x0E, 0x00, 0x02, // DEC BYTE [CS:0200h]
+        0x2E, 0xFF, 0x06, 0x04, 0x02, // INC WORD [CS:0204h]   (hooks completed)
+        0x59, // POP CX
+        0x58, // POP AX
+        0xCF, // IRET
+    ]);
+    machine.rt.step_frame(); // installs the hook and starts the timer; no time passes
+    machine.feed_time(1, 20_000_000); // 23 tick periods
+    machine.run_until(|rt| rt.cpu.halted); // back in the idle loop
+
+    let memory = &machine.rt.cpu.memory;
+    let running = memory.read_byte(DATA);
+    let most_at_once = memory.read_byte(DATA + 1);
+    let in_service = memory.read_byte(DATA + 2);
+    let completed = memory.read_word(DATA + 4);
+    assert_eq!(running, 0, "every hook has returned");
+    assert!(completed >= 2, "the hook keeps being called: {completed} calls");
+    assert_eq!(
+        (in_service & 0x01, most_at_once),
+        (0x01, 1),
+        "(IRQ0 in service while the hook runs, hooks running at once)"
+    );
+}

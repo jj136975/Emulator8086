@@ -1,5 +1,9 @@
 ; =============================================================================
 ; INT 09h — Keyboard (IRQ1)
+;
+; Turns PC/XT scancodes into keystrokes (scan code in AH, character in AL)
+; and queues them in the BIOS keyboard buffer. Shift, Ctrl, Alt and the lock
+; keys are tracked in the BDA keyboard flags.
 ; =============================================================================
 int09_handler:
     push ax
@@ -52,129 +56,149 @@ int09_handler:
     cmp al, 0x52
     je .k_ins_toggle
 
-    ; --- Regular key ---
-    mov cl, al               ; CL = scancode
+    ; --- Ordinary key: AH = scan code, BL = shift flags ---
+    mov ah, al
+    mov bl, [BDA_KBD_FLAGS1]
+    test bl, 0x08
+    jnz .k_alt
+    test bl, 0x04
+    jnz .k_ctrl
+    cmp al, 0x47
+    jae .k_keypad
+    cmp al, 0x3B
+    jae .k_fkey
 
-    ; Special keys (F1-F10, nav) handled separately
-    cmp cl, 0x3B
-    jae .k_special
-
-    ; Check Alt
-    test byte [BDA_KBD_FLAGS1], 0x08
-    jnz .k_alt_regular
-
-    ; Check Ctrl
-    test byte [BDA_KBD_FLAGS1], 0x04
-    jnz .k_ctrl_regular
-
-    ; --- Normal/shifted lookup ---
-    xor ch, ch               ; CH = effective shift flag
-    test byte [BDA_KBD_FLAGS1], 0x03
-    jz .k_no_shift
-    inc ch
-.k_no_shift:
-    ; Caps Lock toggles shift for letter keys only
-    test byte [BDA_KBD_FLAGS1], 0x40
-    jz .k_do_lookup
-    cmp cl, 0x10
-    jb .k_do_lookup
-    cmp cl, 0x19
-    jbe .k_is_letter
-    cmp cl, 0x1E
-    jb .k_do_lookup
-    cmp cl, 0x26
-    jbe .k_is_letter
-    cmp cl, 0x2C
-    jb .k_do_lookup
-    cmp cl, 0x32
-    ja .k_do_lookup
-.k_is_letter:
-    xor ch, 1
-
-.k_do_lookup:
-    mov ah, cl               ; AH = scancode for buffer
-    cmp ch, 0
-    jne .k_shifted
-
-    ; Unshifted lookup
-    xor bx, bx
-    mov bl, cl
-    cmp bl, scancode_table_end - scancode_table
-    jae .k_done
+    ; --- Typewriter keys 01h-39h ---
     mov si, scancode_table
-    cs mov al, [si+bx]
-    cmp al, 0
-    je .k_done
-    jmp .k_insert
-
-.k_shifted:
-    xor bx, bx
-    mov bl, cl
-    cmp bl, scancode_shift_end - scancode_shift_table
-    jae .k_done
+    test bl, 0x03
+    jz .k_lookup
+    cmp al, 0x0F             ; Shift+Tab is back-tab: scan 0Fh, no character
+    je .k_no_char
     mov si, scancode_shift_table
-    cs mov al, [si+bx]
-    cmp al, 0
-    je .k_done
-    jmp .k_insert
-
-    ; --- Alt+regular key ---
-.k_alt_regular:
-    mov ah, cl
-    xor al, al
-    jmp .k_insert
-
-    ; --- Ctrl+regular key ---
-.k_ctrl_regular:
-    mov ah, cl
-    xor bx, bx
-    mov bl, cl
+.k_lookup:
+    xor bh, bh
+    mov bl, al
     cmp bl, scancode_table_end - scancode_table
     jae .k_done
-    mov si, scancode_table
     cs mov al, [si+bx]
-    cmp al, 'a'
-    jb .k_insert             ; non-letter: insert as-is
-    cmp al, 'z'
+    cmp al, 0
+    je .k_done               ; the key has no character
+    ; Caps Lock swaps the case of letters only
+    test byte [BDA_KBD_FLAGS1], 0x40
+    jz .k_insert
+    mov bl, al
+    or bl, 0x20
+    cmp bl, 'a'
+    jb .k_insert
+    cmp bl, 'z'
     ja .k_insert
-    sub al, 0x60             ; Ctrl+A=0x01, Ctrl+B=0x02, ...
+    xor al, 0x20
     jmp .k_insert
 
-    ; --- Special keys (F1-F10, nav) ---
-.k_special:
-    cmp cl, 0x44
-    jbe .k_fkey
-    cmp cl, 0x47
-    jb .k_done               ; 0x45/0x46 already handled as modifiers
-    cmp cl, 0x53
-    ja .k_done
-
-    ; Nav keys (Home, Up, PgUp, Left, Right, End, Down, PgDn, Ins, Del)
-    mov ah, cl
+.k_no_char:
     xor al, al
     jmp .k_insert
 
+    ; --- F1-F10 ---
 .k_fkey:
-    ; F1-F10: adjust scancode based on modifiers
-    mov ah, cl
-    xor al, al
-    test byte [BDA_KBD_FLAGS1], 0x08
-    jnz .k_fkey_alt
-    test byte [BDA_KBD_FLAGS1], 0x04
-    jnz .k_fkey_ctrl
-    test byte [BDA_KBD_FLAGS1], 0x03
-    jnz .k_fkey_shift
-    jmp .k_insert            ; unmodified F-key
+    cmp al, 0x44
+    ja .k_done               ; 45h/46h are lock keys, handled above
+    test bl, 0x03
+    jz .k_no_char
+    add ah, 0x19             ; Shift+F1-F10: 54h-5Dh
+    jmp .k_no_char
 
-.k_fkey_shift:
-    add ah, 0x19             ; F1: 0x3B -> 0x54
+    ; --- Cursor and keypad keys 47h-53h ---
+.k_keypad:
+    cmp al, 0x53
+    ja .k_done
+    cmp al, 0x4A
+    jne .k_keypad_plus
+    mov al, '-'
     jmp .k_insert
-.k_fkey_ctrl:
-    add ah, 0x23             ; F1: 0x3B -> 0x5E
+.k_keypad_plus:
+    cmp al, 0x4E
+    jne .k_no_char
+    mov al, '+'
     jmp .k_insert
-.k_fkey_alt:
-    add ah, 0x2D             ; F1: 0x3B -> 0x68
+
+    ; --- Alt + key ---
+.k_alt:
+    test bl, 0x04
+    jz .k_alt_space
+    cmp al, 0x53             ; Ctrl+Alt+Del restarts the machine
+    jne .k_alt_space
+    mov word [BDA_RESET_FLAG], 0x1234
+    jmp 0xFFFF:0x0000
+.k_alt_space:
+    cmp al, 0x39             ; Alt+Space is a space
+    jne .k_alt_tab
+    mov al, ' '
     jmp .k_insert
+.k_alt_tab:
+    cmp al, 0x0F             ; Alt+Tab: A5h (0Fh without a character is back-tab)
+    jne .k_alt_digits
+    mov ah, 0xA5
+    jmp .k_no_char
+.k_alt_digits:
+    cmp al, 0x02
+    jb .k_no_char            ; Alt+Esc
+    cmp al, 0x0D
+    ja .k_alt_fkeys
+    add ah, 0x76             ; Alt+1 ... Alt+=: 78h-83h
+    jmp .k_no_char
+.k_alt_fkeys:
+    cmp al, 0x3B
+    jb .k_no_char            ; letters and punctuation keep their scan code
+    cmp al, 0x44
+    ja .k_alt_keypad
+    add ah, 0x2D             ; Alt+F1-F10: 68h-71h
+    jmp .k_no_char
+.k_alt_keypad:
+    cmp al, 0x47
+    jb .k_done
+    cmp al, 0x53
+    ja .k_done
+    cmp al, 0x4A             ; Alt with keypad -, 5 and + produces nothing
+    je .k_done
+    cmp al, 0x4C
+    je .k_done
+    cmp al, 0x4E
+    je .k_done
+    add ah, 0x50             ; Alt + cursor keys: 97h-A3h
+    jmp .k_no_char
+
+    ; --- Ctrl + key ---
+.k_ctrl:
+    cmp al, 0x47
+    jae .k_ctrl_keypad
+    cmp al, 0x3B
+    jae .k_ctrl_fkey
+    cmp al, 0x37             ; Ctrl+PrtSc: 7200h
+    jne .k_ctrl_lookup
+    mov ah, 0x72
+    jmp .k_no_char
+.k_ctrl_lookup:
+    xor bh, bh
+    mov bl, al
+    cmp bl, ctrl_table_end - ctrl_table
+    jae .k_done
+    cs mov al, [ctrl_table + bx]
+    cmp al, 0xFF
+    je .k_done               ; the combination produces nothing
+    jmp .k_insert
+.k_ctrl_fkey:
+    cmp al, 0x44
+    ja .k_done
+    add ah, 0x23             ; Ctrl+F1-F10: 5Eh-67h
+    jmp .k_no_char
+.k_ctrl_keypad:
+    cmp al, 0x53
+    ja .k_done
+    xor bh, bh
+    mov bl, al
+    cs mov ah, [ctrl_keypad_table + bx - 0x47]
+    jmp .k_no_char
 
     ; --- Buffer insertion ---
 .k_insert:
@@ -218,6 +242,18 @@ int09_handler:
     xor byte [BDA_KBD_FLAGS1], 0x20   ; Toggle Num Lock
     jmp .k_done
 .k_scrolllock:
+    test byte [BDA_KBD_FLAGS1], 0x04
+    jz .k_scroll_toggle
+    ; Ctrl+Scroll Lock is Break: empty the buffer, raise the break flag, call
+    ; the break handler and queue a 0000h keystroke
+    mov bx, [BDA_KBD_BUF_START]
+    mov [BDA_KBD_BUF_HEAD], bx
+    mov [BDA_KBD_BUF_TAIL], bx
+    mov byte [BDA_BREAK_FLAG], 0x80
+    int 0x1B
+    xor ax, ax
+    jmp .k_insert
+.k_scroll_toggle:
     test byte [BDA_KBD_FLAGS2], 0x10  ; Already held?
     jnz .k_done                        ; Yes, skip toggle
     or byte [BDA_KBD_FLAGS2], 0x10    ; Set held bit
@@ -228,7 +264,8 @@ int09_handler:
     jnz .k_done                        ; Yes, skip toggle
     or byte [BDA_KBD_FLAGS2], 0x80    ; Set held bit
     xor byte [BDA_KBD_FLAGS1], 0x80   ; Toggle Insert
-    jmp .k_done
+    mov ax, 0x5200                     ; Insert is a keystroke too: scan 52h, no character
+    jmp .k_insert
 
     ; --- Break code handling ---
 .k_break:
@@ -308,7 +345,7 @@ scancode_shift_table:
     db 0, 0x1B                                      ; 0x00-0x01
     db '!','@','#','$','%','^','&','*','(',')'       ; 0x02-0x0B
     db '_','+'                                       ; 0x0C-0x0D
-    db 0x08, 0                                       ; 0x0E-0x0F (BS, Shift+Tab)
+    db 0x08, 0                                       ; 0x0E-0x0F (BS; Shift+Tab is handled in code)
     db 'Q','W','E','R','T','Y','U','I','O','P'       ; 0x10-0x19
     db '{','}'                                       ; 0x1A-0x1B
     db 0x0D, 0                                       ; 0x1C-0x1D (Enter, Ctrl)
@@ -319,3 +356,25 @@ scancode_shift_table:
     db '<','>','?'                                   ; 0x33-0x35
     db 0, '*', 0, ' '                                ; 0x36-0x39
 scancode_shift_end:
+
+; --- Characters queued for Ctrl + the typewriter keys 00h-39h ---
+; The control characters of the IBM PC/XT BIOS; 0xFF = the combination
+; produces nothing.
+ctrl_table:
+    db 0xFF                                           ; 0x00
+    db 0x1B, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0x1E, 0xFF ; 0x01-0x08 (Esc; 2 = NUL; 6 = 1Eh)
+    db 0xFF, 0xFF, 0xFF, 0x1F, 0xFF, 0x7F, 0xFF       ; 0x09-0x0F (- = 1Fh; BS = 7Fh)
+    db 0x11, 0x17, 0x05, 0x12, 0x14, 0x19, 0x15, 0x09 ; 0x10-0x17 (Q W E R T Y U I)
+    db 0x0F, 0x10, 0x1B, 0x1D, 0x0A, 0xFF             ; 0x18-0x1D (O P; [ = 1Bh; ] = 1Dh; Enter = LF)
+    db 0x01, 0x13, 0x04, 0x06, 0x07, 0x08, 0x0A, 0x0B ; 0x1E-0x25 (A S D F G H J K)
+    db 0x0C, 0xFF, 0xFF, 0xFF, 0xFF, 0x1C             ; 0x26-0x2B (L; \ = 1Ch)
+    db 0x1A, 0x18, 0x03, 0x16, 0x02, 0x0E, 0x0D       ; 0x2C-0x32 (Z X C V B N M)
+    db 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, ' '        ; 0x33-0x39 (Space)
+ctrl_table_end:
+
+; --- Scan codes queued for Ctrl + the cursor/keypad keys 47h-53h ---
+; 73h-77h and 84h are the PC/XT codes; the others are the codes the enhanced
+; keyboard BIOS uses.
+ctrl_keypad_table:
+    db 0x77, 0x8D, 0x84, 0x8E, 0x73, 0x8F, 0x74      ; Home Up PgUp - Left 5 Right
+    db 0x90, 0x75, 0x91, 0x76, 0x92, 0x93            ; + End Down PgDn Ins Del

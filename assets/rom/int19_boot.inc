@@ -4,6 +4,9 @@
 ; The emulator supplies the boot order through BOOT_ORDER_PORT: a write
 ; rewinds the list, each read returns the next BIOS drive number to try, and
 ; BOOT_ORDER_END is returned once the list is exhausted.
+;
+; The first sector of each drive is read to 0000:7C00. A hard disk is booted
+; when the sector ends in 55AAh, a diskette when the sector looks like code.
 ; =============================================================================
 BOOT_ORDER_PORT equ 0xB1
 BOOT_ORDER_END  equ 0xFF
@@ -31,9 +34,26 @@ int19_handler:
     int 0x13
     jc .try_next
 
-    cmp word [es:0x7DFE], 0xAA55
+    test dl, 0x80
+    jz .diskette
+    cmp word [es:0x7DFE], 0xAA55    ; a hard disk must carry the boot signature
     jne .try_next
+    jmp .boot
 
+.diskette:
+    ; Diskettes are older than the signature, so it is not required. The
+    ; sector is refused only when it cannot be code: a first byte below 06h,
+    ; or a fill pattern (its first nine words all the same).
+    cmp byte [es:0x7C00], 0x06
+    jb .try_next
+    mov ax, [es:0x7C00]
+    mov di, 0x7C02
+    mov cx, 8
+    cld
+    repe scasw
+    je .try_next
+
+.boot:
     mov al, '!'
     out 0xE9, al
     xor ax, ax

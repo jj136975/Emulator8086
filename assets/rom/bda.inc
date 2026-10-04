@@ -24,3 +24,10 @@ BDA_KBD_FLAGS2    equ 0x0018   ; Keyboard flags byte 2 (held state of toggle key
 BDA_FLOPPY_STATUS equ 0x0041   ; Floppy disk last status
 BDA_HD_STATUS     equ 0x0074   ; Hard disk last status
 BDA_HD_COUNT      equ 0x0075   ; Number of hard disks
+BDA_CRT_START     equ 0x004E   ; Offset of the active page in video memory
+BDA_CRT_MODE_SET  equ 0x0065   ; Copy of the mode control register (port 3D8h)
+BDA_CRT_PALETTE   equ 0x0066   ; Copy of the colour select register (port 3D9h)
+BDA_BREAK_FLAG    equ 0x0071   ; Bit 7 set when Ctrl-Break was pressed
+BDA_RESET_FLAG    equ 0x0072   ; 1234h = restart requested from the keyboard
+BDA_ROWS_M1       equ 0x0084   ; Text rows on screen, minus one
+BDA_CHAR_HEIGHT   equ 0x0085   ; Character height in scan lines (word)

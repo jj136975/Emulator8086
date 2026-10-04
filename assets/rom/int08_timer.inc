@@ -1,7 +1,15 @@
 ; =============================================================================
 ; INT 08h — Timer Tick (IRQ0)
+;
+; The order of events is the IBM BIOS's: interrupts on, time-of-day and
+; diskette motor bookkeeping, the user hook INT 1Ch, then the end-of-interrupt.
+; IRQ0 is still in service while the hook runs, and it has the highest
+; priority, so the interrupt controller holds every request back until the
+; hook has returned: a hook that enables interrupts is not interrupted by
+; another device, nor entered again by the next tick.
 ; =============================================================================
 int08_handler:
+    sti
     push ds
     push ax
     mov ax, 0x0040
@@ -38,16 +46,15 @@ int08_handler:
     mov byte [BDA_MOTOR_STATUS], 0
 .no_motor:
 
-    ; Send EOI to PIC (before INT 1Ch so other IRQs aren't blocked)
+    ; User timer hook
+    int 0x1C
+
+    ; End of interrupt. Interrupts stay off from here to the IRET (as in the
+    ; PC/AT BIOS), so a tick that is already pending is taken once this
+    ; handler's stack frame is gone, not on top of it.
+    cli
     mov al, 0x20
     out 0x20, al
-
-    ; Re-enable interrupts so the user timer hook can be pre-empted by
-    ; higher-priority IRQs (keyboard, etc.). Matches IBM PC BIOS behaviour.
-    sti
-
-    ; Call user timer hook (INT 1Ch)
-    int 0x1C
 
     pop ax
     pop ds

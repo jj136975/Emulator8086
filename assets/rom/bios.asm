@@ -78,13 +78,9 @@ bios_entry:
     mov ax, 0x0040
     mov ds, ax
     mov word [BDA_MEMSIZE], 640
-    mov word [BDA_EQUIPMENT], 0x0021
-    mov byte [BDA_VIDEO_MODE], 0x03
-    mov word [BDA_VIDEO_COLS], 80
+    mov word [BDA_EQUIPMENT], 0x0020    ; 80x25 colour video; diskette bits are added below
+    ; Video: only the adapter's constants here; the mode set below does the rest
     mov word [BDA_VIDEO_PGSZ], 4096
-    mov word [BDA_CURSOR_POS], 0x0000
-    mov word [BDA_CURSOR_SHAPE], 0x0607
-    mov byte [BDA_ACTIVE_PAGE], 0
     mov word [BDA_CRTC_BASE], 0x03D4
     mov word [BDA_KBD_BUF_HEAD], 0x001E
     mov word [BDA_KBD_BUF_TAIL], 0x001E
@@ -128,14 +124,37 @@ bios_entry:
     out 0x40, al
     out 0x40, al
 
-    ; Clear screen
-    mov ax, 0xB800
-    mov es, ax
-    xor di, di
-    mov cx, 2000
-    mov ax, 0x0720
-    cld
-    rep stosw
+    ; Video: 80x25 text through the ordinary mode set, which programs the
+    ; adapter, fills in the video fields of the BDA and blanks the screen,
+    ; whatever state the adapter was left in
+    mov ax, 0x0003
+    int 0x10
+
+    ; Equipment word: count the diskette drives. INT 13h AH=15h returns the
+    ; type of a unit in AH, 0 for a drive that does not exist; the highest
+    ; of the four possible units that exists gives the number of drives.
+    xor bx, bx                      ; BH = unit, BL = number of drives
+.count_diskettes:
+    mov dl, bh
+    mov ah, 0x15
+    int 0x13
+    jc .next_diskette
+    or ah, ah
+    jz .next_diskette
+    mov bl, bh
+    inc bl
+.next_diskette:
+    inc bh
+    cmp bh, 4
+    jb .count_diskettes
+    or bl, bl
+    jz .equipment_done              ; none: the "diskette installed" bit stays clear
+    dec bl
+    mov cl, 6
+    shl bl, cl                      ; bits 7-6: number of drives - 1
+    or bl, 0x01                     ; bit 0: diskette drive(s) installed
+    or [BDA_EQUIPMENT], bl
+.equipment_done:
 
     mov al, 'I'
     out 0xE9, al
@@ -183,7 +202,10 @@ int12_handler:
 int15_handler:
     cmp ah, 0x88
     je .i15_88
-    ; Unsupported function / keyboard intercept passthrough: CF=1
+    cmp ah, 0x4F
+    je .i15_cf               ; keyboard intercept: CF=1, AX as it came in
+    mov ah, 0x86             ; any other function is unsupported: AH=86h, CF=1
+.i15_cf:
     push bp
     mov bp, sp
     or word [bp+6], 0x0001

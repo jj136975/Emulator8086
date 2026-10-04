@@ -30,102 +30,140 @@ int10_handler:
     je .get_mode
     cmp ah, 0x13
     je .write_string
+    cmp ah, 0x10
+    je .palette
+    cmp ah, 0x0C
+    je .write_pixel
+    cmp ah, 0x0D
+    je .read_pixel
     iret
 
 ; --- AH=00: Set video mode ---
+; AL = mode: 02h/03h (80x25 text) or 13h (320x200 in 256 colours). With bit 7
+; set the video memory is not cleared. Any other mode number is ignored, so
+; AH=0Fh keeps reporting the mode that is really in effect.
+; A mode set starts the display from a known state: page 0, every page's
+; cursor at 0,0, the default cursor shape, the CRTC showing video memory from
+; its first cell, the mode's default palette, and blank video memory. It
+; also fills in the video fields of the BDA (it needs the CRTC base at 40:63).
 .set_mode:
     push ds
     push es
+    push si
     push di
-    push cx
-    push ax
     push dx
+    push cx
     push bx
-
-    cmp al, 0x13
-    je .set_mode_13h
-
-    ; --- Text modes (0x00-0x03) ---
-    mov bx, 0x0040
-    mov ds, bx
-    mov byte [BDA_VIDEO_MODE], al
-    mov word [BDA_VIDEO_COLS], 80
-    mov word [BDA_CURSOR_POS], 0x0000
-    mov byte [BDA_ACTIVE_PAGE], 0
-    mov bx, 0xB800
-    mov es, bx
-    xor di, di
-    mov cx, 2000
-    mov ax, 0x0720
+    push ax
     cld
-    rep stosw
-    ; Program mode control register (port 0x3D8)
-    ; Bit 0=1 (80-col), bit 3=1 (enable), bit 5=1 (blink) = 0x29
-    mov al, 0x29
-    mov dx, 0x03D8
-    out dx, al
-    ; Reset GC mode register to text mode (clears 256-color bit)
-    mov dx, 0x03CE
-    mov al, 0x05
-    out dx, al
-    inc dx
-    mov al, 0x00
-    out dx, al
-    jmp .set_mode_done
-
-.set_mode_13h:
-    ; --- Mode 13h: 320x200x256 (chain-4, linear at A000:0000) ---
     mov bx, 0x0040
     mov ds, bx
-    mov byte [BDA_VIDEO_MODE], 0x13
-    mov word [BDA_VIDEO_COLS], 40
-    mov word [BDA_CURSOR_POS], 0x0000
-    mov byte [BDA_ACTIVE_PAGE], 0
+    mov bh, al                      ; BH bit 7 set: keep the video memory
+    mov bl, al
+    and bl, 0x7F                    ; BL = mode number
+    cmp bl, 0x13
+    je .sm_supported
+    cmp bl, 0x03
+    je .sm_supported
+    cmp bl, 0x02
+    je .sm_supported
+    jmp .sm_done
+.sm_supported:
+    mov [BDA_VIDEO_MODE], bl
 
-    ; Clear graphics VRAM (A000:0000, 64000 bytes = 32000 words)
-    mov bx, 0xA000
-    mov es, bx
+    ; BDA: page 0, all eight cursors at 0,0, default cursor shape
+    xor ax, ax
+    mov [BDA_ACTIVE_PAGE], al
+    mov [BDA_CRT_START], ax
+    mov word [BDA_CURSOR_SHAPE], 0x0607
+    mov byte [BDA_ROWS_M1], 24
+    push ds
+    pop es
+    mov di, BDA_CURSOR_POS
+    mov cx, 8
+    rep stosw
+
+    ; CRTC: cursor on scan lines 6-7, display start 0, cursor location 0
+    mov dx, [BDA_CRTC_BASE]
+    mov si, vid_crtc_reset
+    mov cx, 6
+.sm_crtc:
+    cs lodsw                        ; AL = register, AH = value
+    call vid_out_idx
+    loop .sm_crtc
+
+    cmp bl, 0x13
+    je .sm_13h
+
+    ; --- 80x25 text ---
+    mov word [BDA_VIDEO_COLS], 80
+    mov word [BDA_CHAR_HEIGHT], 16
+    mov dx, 0x03C2                  ; Miscellaneous Output: colour, 400 lines
+    mov al, 0x67
+    out dx, al
+    mov dx, 0x03C4                  ; Sequencer memory mode: odd/even
+    mov ax, 0x0204
+    call vid_out_idx
+    mov dx, 0x03CE                  ; Graphics Controller: text at B8000
+    mov ax, 0x1005
+    call vid_out_idx
+    mov ax, 0x0E06
+    call vid_out_idx
+    mov dx, 0x03D8                  ; mode control: 80 columns, video on, blink
+    mov al, 0x29
+    out dx, al
+    mov [BDA_CRT_MODE_SET], al
+    inc dx                          ; colour select
+    mov al, 0x30
+    out dx, al
+    mov [BDA_CRT_PALETTE], al
+    mov si, vid_ac_text             ; attribute controller and DAC
+    call vid_load_ac
+    call vid_load_dac_ega
+    test bh, 0x80
+    jnz .sm_done
+    mov ax, 0xB800                  ; blank all eight pages
+    mov es, ax
+    xor di, di
+    mov cx, 0x4000
+    mov ax, 0x0720
+    rep stosw
+    jmp .sm_done
+
+.sm_13h:
+    ; --- Mode 13h: 320x200x256 (chain-4, linear at A000:0000) ---
+    mov word [BDA_VIDEO_COLS], 40
+    mov word [BDA_CHAR_HEIGHT], 8
+    mov dx, 0x03C2                  ; Miscellaneous Output: colour, 25.175 MHz clock
+    mov al, 0x63
+    out dx, al
+    mov dx, 0x03C4                  ; Sequencer memory mode: chain-4
+    mov ax, 0x0E04
+    call vid_out_idx
+    mov dx, 0x03CE                  ; Graphics Controller: 256-colour shift mode,
+    mov ax, 0x4005                  ; graphics at A0000
+    call vid_out_idx
+    mov ax, 0x0506
+    call vid_out_idx
+    mov si, vid_ac_13h              ; attribute controller and DAC
+    call vid_load_ac
+    call vid_load_dac_256
+    test bh, 0x80
+    jnz .sm_done
+    mov ax, 0xA000                  ; clear the 64000-byte frame buffer
+    mov es, ax
     xor di, di
     mov cx, 32000
     xor ax, ax
-    cld
     rep stosw
 
-    ; Miscellaneous Output Register: color mode, 25.175MHz clock
-    mov dx, 0x03C2
-    mov al, 0x63
-    out dx, al
-
-    ; Sequencer: Memory Mode = chain-4
-    mov dx, 0x03C4
-    mov al, 0x04
-    out dx, al
-    inc dx
-    mov al, 0x0E
-    out dx, al
-
-    ; Graphics Controller: Mode register = 256-color shift
-    mov dx, 0x03CE
-    mov al, 0x05
-    out dx, al
-    inc dx
-    mov al, 0x40
-    out dx, al
-
-    ; Graphics Controller: Miscellaneous register = A0000, graphics mode
-    dec dx
-    mov al, 0x06
-    out dx, al
-    inc dx
-    mov al, 0x05
-    out dx, al
-
-.set_mode_done:
-    pop bx
-    pop dx
+.sm_done:
     pop ax
+    pop bx
     pop cx
+    pop dx
     pop di
+    pop si
     pop es
     pop ds
     iret
@@ -157,48 +195,29 @@ int10_handler:
     iret
 
 ; --- AH=02: Set cursor position ---
+; BH = page (0-7), DH/DL = row/column. The hardware cursor follows when BH is
+; the active page.
 .set_cursor_pos:
+    cmp bh, 7
+    ja .scp_ret
     push ds
     push ax
-    push bx
-    push dx
     push si
     mov ax, 0x0040
     mov ds, ax
-    ; Store cursor for the specified page (BH)
     mov al, bh
     xor ah, ah
     shl ax, 1
     mov si, ax
     mov [BDA_CURSOR_POS + si], dx
-    ; Only update CRTC if this is the active page
     cmp bh, [BDA_ACTIVE_PAGE]
     jne .scp_done
-    mov al, dh
-    xor ah, ah
-    mov bl, 80
-    mul bl
-    xor dh, dh
-    add ax, dx
-    mov bx, ax
-    mov dx, [BDA_CRTC_BASE]   ; Read from BDA instead of hardcoding
-    mov al, 0x0E
-    out dx, al
-    inc dx
-    mov al, bh
-    out dx, al
-    dec dx
-    mov al, 0x0F
-    out dx, al
-    inc dx
-    mov al, bl
-    out dx, al
+    call vid_sync_cursor
 .scp_done:
     pop si
-    pop dx
-    pop bx
     pop ax
     pop ds
+.scp_ret:
     iret
 
 ; --- AH=03: Get cursor position ---
@@ -220,7 +239,10 @@ int10_handler:
     iret
 
 ; --- AH=05: Set active display page ---
+; AL = page (0-7).
 .set_active_page:
+    cmp al, 7
+    ja .sap_ret
     push ds
     push ax
     push bx
@@ -228,38 +250,44 @@ int10_handler:
     mov bx, 0x0040
     mov ds, bx
     mov [BDA_ACTIVE_PAGE], al
-    ; Calculate start address = page * (page_size / 2)
-    ; page_size is in BDA_VIDEO_PGSZ (bytes), CRTC uses character cells (2 bytes each)
     xor ah, ah
-    mov bx, [BDA_VIDEO_PGSZ]
-    shr bx, 1                  ; Convert bytes to character cells
-    mul bx                     ; AX = page * (page_size / 2)
-    ; Write to CRTC R12 (high) and R13 (low)
+    mul word [BDA_VIDEO_PGSZ]  ; AX = offset of the page in video memory
+    mov [BDA_CRT_START], ax
+    shr ax, 1                  ; the CRTC counts character cells
+    mov bx, ax
     mov dx, [BDA_CRTC_BASE]
-    push ax
     mov al, 0x0C               ; Register 12: Start Address High
-    out dx, al
-    inc dx
-    pop ax
-    push ax
-    mov al, ah                 ; High byte of start address
-    out dx, al
-    dec dx
+    mov ah, bh
+    call vid_out_idx
     mov al, 0x0D               ; Register 13: Start Address Low
-    out dx, al
-    inc dx
-    pop ax
-    out dx, al                 ; Low byte of start address
+    mov ah, bl
+    call vid_out_idx
+    call vid_sync_cursor       ; show the cursor of the page now displayed
     pop dx
     pop bx
     pop ax
     pop ds
+.sap_ret:
     iret
 
 ; --- AH=06: Scroll up ---
 ; AL = lines (0=clear window), BH = fill attribute
 ; CH/CL = top-left row/col, DH/DL = bottom-right row/col
+; The window is clipped to the 25x80 screen; an empty one does nothing.
 .scroll_up:
+    push dx                 ; the caller's DX; the window is clipped in DX
+    cmp dh, 24
+    jbe .su_row_ok
+    mov dh, 24
+.su_row_ok:
+    cmp dl, 79
+    jbe .su_col_ok
+    mov dl, 79
+.su_col_ok:
+    cmp ch, dh
+    ja .su_ret
+    cmp cl, dl
+    ja .su_ret
     push ds
     push es
     push si
@@ -410,12 +438,28 @@ int10_handler:
     pop si
     pop es
     pop ds
+.su_ret:
+    pop dx
     iret
 
 ; --- AH=07: Scroll down ---
 ; AL = lines (0=clear window), BH = fill attribute
 ; CH/CL = top-left row/col, DH/DL = bottom-right row/col
+; The window is clipped to the 25x80 screen; an empty one does nothing.
 .scroll_down:
+    push dx                 ; the caller's DX; the window is clipped in DX
+    cmp dh, 24
+    jbe .sd_row_ok
+    mov dh, 24
+.sd_row_ok:
+    cmp dl, 79
+    jbe .sd_col_ok
+    mov dl, 79
+.sd_col_ok:
+    cmp ch, dh
+    ja .sd_ret
+    cmp cl, dl
+    ja .sd_ret
     push ds
     push es
     push si
@@ -584,6 +628,8 @@ int10_handler:
     pop si
     pop es
     pop ds
+.sd_ret:
+    pop dx
     iret
 
 ; --- AH=08: Read char+attr at cursor ---
@@ -625,7 +671,9 @@ int10_handler:
     iret
 
 ; --- AH=09: Write char+attr at cursor ---
+; AL = character, BH = page, BL = attribute, CX = count (0 writes nothing)
 .write_char_attr:
+    jcxz .wa_ret
     push es
     push di
     push dx
@@ -677,10 +725,13 @@ int10_handler:
     pop dx
     pop di
     pop es
+.wa_ret:
     iret
 
 ; --- AH=0A: Write char at cursor (keep attr) ---
+; AL = character, BH = page, CX = count (0 writes nothing)
 .write_char:
+    jcxz .wc_ret
     push es
     push di
     push dx
@@ -731,6 +782,7 @@ int10_handler:
     pop dx
     pop di
     pop es
+.wc_ret:
     iret
 
 ; --- AH=0B: Set color palette (text mode no-op) ---
@@ -738,6 +790,10 @@ int10_handler:
     iret
 
 ; --- AH=0E: Teletype output ---
+; Writes AL at the cursor of the active page and advances the cursor; CR, LF,
+; BS and BEL are acted on instead of written. The attribute already on screen
+; is kept. When the cursor moves past the last row the page scrolls up one
+; line, and the new line takes the attribute found at the cursor.
 .teletype:
     push ds
     push es
@@ -745,13 +801,21 @@ int10_handler:
     push cx
     push dx
     push di
+    push si
 
     out 0xE9, al
 
     mov bx, 0x0040
     mov ds, bx
-    mov dh, byte [BDA_CURSOR_POS+1]
-    mov dl, byte [BDA_CURSOR_POS]
+    mov bl, [BDA_ACTIVE_PAGE]
+    and bx, 0x0007
+    mov si, bx
+    shl si, 1                       ; SI = the page's cursor slot
+    mov cl, 8
+    shl bx, cl                      ; pages are 4096 bytes = 100h paragraphs apart
+    add bx, 0xB800
+    mov es, bx                      ; ES:0000 = first cell of the active page
+    mov dx, [BDA_CURSOR_POS + si]   ; DH = row, DL = column
 
     cmp al, 0x0D
     je .t_cr
@@ -762,62 +826,16 @@ int10_handler:
     cmp al, 0x07
     je .t_done
 
-    push ax
-    mov al, dh
-    xor ah, ah
-    mov bx, 80
-    push dx
-    mul bx
-    pop dx
-    xor dh, dh
-    add ax, dx
-    mov di, ax
-    add di, di
-    pop ax
-
-    mov bx, 0xB800
-    mov es, bx
+    call .t_cell
     mov [es:di], al
-
-    mov dh, byte [BDA_CURSOR_POS+1]
-    mov dl, byte [BDA_CURSOR_POS]
     inc dl
     cmp dl, 80
     jb .t_update
     xor dl, dl
-    jmp .t_newline
+    jmp .t_lf
 
 .t_cr:
     xor dl, dl
-    jmp .t_update
-
-.t_lf:
-.t_newline:
-    inc dh
-    cmp dh, 25
-    jb .t_update
-    mov dh, 24
-    push ax
-    push si
-    push di
-    push cx
-    mov ax, 0xB800
-    mov ds, ax
-    mov es, ax
-    mov si, 160
-    xor di, di
-    mov cx, 1920
-    cld
-    rep movsw
-    mov cx, 80
-    mov ax, 0x0720
-    rep stosw
-    mov ax, 0x0040
-    mov ds, ax
-    pop cx
-    pop di
-    pop si
-    pop ax
     jmp .t_update
 
 .t_bs:
@@ -826,34 +844,37 @@ int10_handler:
     dec dl
     jmp .t_update
 
-.t_update:
-    mov [BDA_CURSOR_POS], dl
-    mov [BDA_CURSOR_POS+1], dh
+.t_lf:
+    inc dh
+    cmp dh, 25
+    jb .t_update
+    mov dh, 24
+    ; Scroll the page up one line
     push ax
-    push bx
-    mov al, dh
-    xor ah, ah
-    mov bl, 80
-    mul bl
-    xor dh, dh
-    add ax, dx
-    mov bx, ax
-    mov dx, 0x03D4
-    mov al, 0x0E
-    out dx, al
-    mov dx, 0x03D5
-    mov al, bh
-    out dx, al
-    mov dx, 0x03D4
-    mov al, 0x0F
-    out dx, al
-    mov dx, 0x03D5
-    mov al, bl
-    out dx, al
-    pop bx
+    push si
+    push ds
+    call .t_cell
+    mov ah, [es:di+1]               ; attribute at the cursor, for the new line
+    mov al, ' '
+    push es
+    pop ds
+    mov si, 160
+    xor di, di
+    mov cx, 1920
+    cld
+    rep movsw
+    mov cx, 80
+    rep stosw
+    pop ds
+    pop si
     pop ax
 
+.t_update:
+    mov [BDA_CURSOR_POS + si], dx
+    call vid_sync_cursor
+
 .t_done:
+    pop si
     pop di
     pop dx
     pop cx
@@ -862,11 +883,24 @@ int10_handler:
     pop ds
     iret
 
+; DI = offset within the page of the cell at row DH, column DL.
+.t_cell:
+    push ax
+    mov al, 80
+    mul dh
+    mov di, dx
+    and di, 0x00FF
+    add di, ax
+    shl di, 1
+    pop ax
+    ret
+
 ; --- AH=0F: Get video mode ---
+; Returns AL = mode, AH = columns, BH = active page.
 .get_mode:
     push ds
-    mov bx, 0x0040
-    mov ds, bx
+    mov ax, 0x0040
+    mov ds, ax
     mov al, [BDA_VIDEO_MODE]
     mov ah, byte [BDA_VIDEO_COLS]
     mov bh, [BDA_ACTIVE_PAGE]
@@ -874,14 +908,17 @@ int10_handler:
     iret
 
 ; --- AH=13: Write string ---
-; AL = write mode (bit 0: move cursor, bit 1: string has attr bytes)
-; BH = page (ignored), BL = attribute (if AL bit 1 = 0)
-; CX = string length
-; DH = row, DL = col
-; ES:BP = pointer to string
+; AL = write mode (bit 0: leave the cursor after the string, bit 1: the
+;      string holds character/attribute pairs)
+; BH = page, BL = attribute (when AL bit 1 = 0)
+; CX = number of characters
+; DH = row, DL = column of the first character
+; ES:BP = pointer to the string
 ;
-; Per IBM BIOS: control chars (07h, 08h, 0Ah, 0Dh) are processed as
-; commands, not written. Printable chars are written with the attribute.
+; CR, LF, BS and BEL move the cursor instead of being written, and carry no
+; attribute byte. Without AL bit 0 the cursor ends up where it was before
+; the call. A line feed on the last row scrolls through the teletype
+; function, i.e. it scrolls the active page.
 .write_string:
     push ds
     push si
@@ -890,113 +927,78 @@ int10_handler:
     push cx
     push bx
     push ax
-
-    ; Set cursor to DH,DL
-    push ax
-    push bx
-    mov ah, 0x02
-    xor bh, bh
-    int 0x10
-    pop bx
-    pop ax
-
-    ; SI = string offset, DS = string segment
-    mov si, bp
+    cld
+    cmp bh, 7
+    ja .ws_exit
+    jcxz .ws_exit
+    mov di, cx                      ; DI = characters left
+    mov ch, al                      ; CH = write mode
+    mov si, 0x0040
+    mov ds, si
+    mov al, bh
+    xor ah, ah
+    shl ax, 1
+    mov si, ax
+    push word [BDA_CURSOR_POS + si] ; the page's cursor before the call
     push es
     pop ds
-
-    mov di, cx          ; DI = remaining char count
-    test al, 0x02
-    jnz .ws_with_attr
-
-    ; --- Char-only mode (attribute in BL) ---
-.ws_char_only:
-    cmp di, 0
-    je .ws_done
-    lodsb
-    ; Check for control characters
-    cmp al, 0x07
-    je .ws_co_ctrl
-    cmp al, 0x08
-    je .ws_co_ctrl
-    cmp al, 0x0A
-    je .ws_co_ctrl
-    cmp al, 0x0D
-    je .ws_co_ctrl
-    ; Printable: write char+attr then advance via teletype
-    push di
-    push bx
-    mov ah, 0x09
-    mov cx, 1
-    xor bh, bh
-    int 0x10
-    pop bx
-    pop di
-.ws_co_ctrl:
-    ; Advance cursor / process control char via teletype
-    push di
-    push bx
-    mov ah, 0x0E
-    xor bh, bh
-    int 0x10
-    pop bx
-    pop di
-    dec di
-    jmp .ws_char_only
-
-    ; --- With-attr mode (each char followed by attr byte in string) ---
-.ws_with_attr:
-    cmp di, 0
-    je .ws_done
-    lodsb               ; AL = character
-    mov bl, [si]        ; BL = attribute from string
-    inc si
-    ; Check for control characters
-    cmp al, 0x07
-    je .ws_wa_ctrl
-    cmp al, 0x08
-    je .ws_wa_ctrl
-    cmp al, 0x0A
-    je .ws_wa_ctrl
-    cmp al, 0x0D
-    je .ws_wa_ctrl
-    ; Printable: write char+attr then advance via teletype
-    push di
-    push bx
-    mov ah, 0x09
-    mov cx, 1
-    xor bh, bh
-    int 0x10
-    pop bx
-    pop di
-.ws_wa_ctrl:
-    ; Advance cursor / process control char via teletype
-    push di
-    push bx
-    mov ah, 0x0E
-    xor bh, bh
-    int 0x10
-    pop bx
-    pop di
-    dec di
-    jmp .ws_with_attr
-
-.ws_done:
-    pop ax
-    test al, 0x01
-    jnz .ws_keep_cursor
-    pop bx
-    pop cx
-    pop dx
+    mov si, bp                      ; DS:SI -> string
     mov ah, 0x02
-    xor bh, bh
+    int 0x10                        ; cursor to the start position
+.ws_loop:
+    lodsb
+    cmp al, 0x0D
+    je .ws_cr
+    cmp al, 0x0A
+    je .ws_lf
+    cmp al, 0x08
+    je .ws_bs
+    cmp al, 0x07
+    je .ws_next
+    test ch, 0x02
+    jz .ws_put
+    mov bl, [si]                    ; the attribute follows the character
+    inc si
+.ws_put:
+    push cx
+    mov cx, 1
+    mov ah, 0x09
+    int 0x10                        ; character and attribute at the cursor
+    pop cx
+    inc dl
+    cmp dl, 80
+    jb .ws_set_cursor
+    xor dl, dl
+.ws_lf:
+    inc dh
+    cmp dh, 25
+    jb .ws_set_cursor
+    mov dh, 24
+    mov ah, 0x02
+    int 0x10                        ; cursor on the last row,
+    mov ax, 0x0E0A
+    int 0x10                        ; then a teletype line feed scrolls
+    jmp .ws_next
+.ws_cr:
+    xor dl, dl
+    jmp .ws_set_cursor
+.ws_bs:
+    or dl, dl
+    jz .ws_set_cursor
+    dec dl
+.ws_set_cursor:
+    mov ah, 0x02
     int 0x10
-    pop di
-    pop si
-    pop ds
-    iret
-
-.ws_keep_cursor:
+.ws_next:
+    dec di
+    jnz .ws_loop
+    pop dx                          ; the cursor before the call
+    test ch, 0x01
+    jnz .ws_exit
+    mov ah, 0x02
+    int 0x10
+.ws_exit:
+    pop ax
     pop bx
     pop cx
     pop dx
@@ -1004,3 +1006,361 @@ int10_handler:
     pop si
     pop ds
     iret
+
+; --- AH=10: Palette functions ---
+; AL = 03h  blinking (BL = 1) or bright backgrounds (BL = 0) for attribute bit 7
+; AL = 10h  set DAC register BX to DH, CH, CL (red, green, blue)
+; AL = 12h  set CX DAC registers starting at BX from the table at ES:DX
+; AL = 15h  read DAC register BL into DH, CH, CL
+; AL = 17h  read CX DAC registers starting at BX into the buffer at ES:DX
+; DAC components are 6 bits each. Other subfunctions do nothing.
+.palette:
+    cmp al, 0x03
+    je .pal_blink
+    cmp al, 0x10
+    je .pal_set_register
+    cmp al, 0x12
+    je .pal_set_block
+    cmp al, 0x15
+    je .pal_get_register
+    cmp al, 0x17
+    je .pal_get_block
+    iret
+
+.pal_blink:
+    push ds
+    push dx
+    push ax
+    mov ax, 0x0040
+    mov ds, ax
+    ; Attribute controller mode control register, bit 3
+    mov dx, 0x03DA
+    in al, dx                       ; the next write to 3C0h selects a register
+    mov dx, 0x03C0
+    mov al, 0x10
+    out dx, al
+    inc dx
+    in al, dx                       ; read the register back through 3C1h
+    dec dx
+    and al, 0xF7
+    test bl, 0x01
+    jz .pal_blink_ac
+    or al, 0x08
+.pal_blink_ac:
+    out dx, al
+    mov al, 0x20                    ; index with bit 5 set: display on
+    out dx, al
+    mov dx, 0x03DA
+    in al, dx                       ; leave 3C0h expecting a register number
+    ; CGA mode control register, bit 5, and its copy in the BDA
+    mov al, [BDA_CRT_MODE_SET]
+    and al, 0xDF
+    test bl, 0x01
+    jz .pal_blink_cga
+    or al, 0x20
+.pal_blink_cga:
+    mov [BDA_CRT_MODE_SET], al
+    mov dx, 0x03D8
+    out dx, al
+    pop ax
+    pop dx
+    pop ds
+    iret
+
+.pal_set_register:
+    push dx
+    push ax
+    mov ah, dh                      ; red
+    mov dx, 0x03C8
+    mov al, bl
+    out dx, al
+    inc dx
+    mov al, ah
+    out dx, al
+    mov al, ch                      ; green
+    out dx, al
+    mov al, cl                      ; blue
+    out dx, al
+    pop ax
+    pop dx
+    iret
+
+.pal_set_block:
+    push si
+    push dx
+    push cx
+    push ax
+    cld
+    mov si, dx
+    mov dx, 0x03C8
+    mov al, bl
+    out dx, al
+    inc dx
+    mov ax, cx
+    shl cx, 1
+    add cx, ax                      ; three bytes per register
+    jcxz .pal_set_block_done
+.pal_set_block_next:
+    es lodsb
+    out dx, al
+    loop .pal_set_block_next
+.pal_set_block_done:
+    pop ax
+    pop cx
+    pop dx
+    pop si
+    iret
+
+.pal_get_register:
+    push ax
+    push bx
+    mov bh, dl                      ; DL is not a result: keep it
+    mov dx, 0x03C7
+    mov al, bl
+    out dx, al
+    mov dx, 0x03C9
+    in al, dx
+    mov ah, al                      ; red
+    in al, dx
+    mov ch, al                      ; green
+    in al, dx
+    mov cl, al                      ; blue
+    mov dh, ah
+    mov dl, bh
+    pop bx
+    pop ax
+    iret
+
+.pal_get_block:
+    push di
+    push dx
+    push cx
+    push ax
+    cld
+    mov di, dx
+    mov dx, 0x03C7
+    mov al, bl
+    out dx, al
+    mov dx, 0x03C9
+    mov ax, cx
+    shl cx, 1
+    add cx, ax                      ; three bytes per register
+    jcxz .pal_get_block_done
+.pal_get_block_next:
+    in al, dx
+    stosb
+    loop .pal_get_block_next
+.pal_get_block_done:
+    pop ax
+    pop cx
+    pop dx
+    pop di
+    iret
+
+; --- AH=0C: Write pixel / AH=0D: Read pixel ---
+; AL = colour (written, or returned), CX = column, DX = row.
+; Only mode 13h has pixels: in any other mode, or outside the 320x200 screen,
+; a write is ignored and a read returns 0.
+.write_pixel:
+    push ds
+    push bx
+    push dx
+    push ax
+    mov bx, 0x0040
+    mov ds, bx
+    cmp byte [BDA_VIDEO_MODE], 0x13
+    jne .wp_done
+    cmp cx, 320
+    jae .wp_done
+    cmp dx, 200
+    jae .wp_done
+    mov ax, 320
+    mul dx                          ; AX = row * 320
+    add ax, cx
+    mov bx, ax
+    mov ax, 0xA000
+    mov ds, ax
+    pop ax
+    push ax
+    mov [bx], al
+.wp_done:
+    pop ax
+    pop dx
+    pop bx
+    pop ds
+    iret
+
+.read_pixel:
+    push ds
+    push bx
+    push dx
+    mov bx, 0x0040
+    mov ds, bx
+    xor al, al
+    cmp byte [BDA_VIDEO_MODE], 0x13
+    jne .rp_done
+    cmp cx, 320
+    jae .rp_done
+    cmp dx, 200
+    jae .rp_done
+    push ax
+    mov ax, 320
+    mul dx                          ; AX = row * 320
+    add ax, cx
+    mov bx, ax
+    mov ax, 0xA000
+    mov ds, ax
+    pop ax
+    mov al, [bx]
+.rp_done:
+    pop dx
+    pop bx
+    pop ds
+    iret
+
+; =============================================================================
+; Video helpers (near routines used by the INT 10h handler)
+; =============================================================================
+
+; Writes AH to register AL of the index/data port pair at DX/DX+1.
+; DX is preserved; AL is destroyed.
+vid_out_idx:
+    out dx, al
+    inc dx
+    mov al, ah
+    out dx, al
+    dec dx
+    ret
+
+; Programs the CRTC cursor location with the cursor of the active page: the
+; page's first cell plus row * 80 + column. Needs DS = 0040h.
+; Preserves all registers.
+vid_sync_cursor:
+    push ax
+    push bx
+    push dx
+    mov bl, [BDA_ACTIVE_PAGE]
+    xor bh, bh
+    shl bx, 1
+    mov bx, [BDA_CURSOR_POS + bx]   ; BH = row, BL = column
+    mov al, 80
+    mul bh                          ; AX = row * 80
+    xor bh, bh
+    add bx, ax
+    mov ax, [BDA_CRT_START]
+    shr ax, 1
+    add bx, ax                      ; + first cell of the active page
+    mov dx, [BDA_CRTC_BASE]
+    mov al, 0x0E
+    mov ah, bh
+    call vid_out_idx
+    mov al, 0x0F
+    mov ah, bl
+    call vid_out_idx
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; CRTC registers every mode set programs: register number, value.
+vid_crtc_reset:
+    db 0x0A, 0x06,  0x0B, 0x07      ; cursor on scan lines 6-7
+    db 0x0C, 0x00,  0x0D, 0x00      ; display starts at the first cell
+    db 0x0E, 0x00,  0x0F, 0x00      ; cursor at the first cell
+
+; Loads attribute controller registers 00h-14h (the 16 palette registers, mode
+; control, overscan, plane enable, pixel panning, colour select) from the
+; table at CS:SI, turns the display back on and opens the DAC pixel mask.
+; Needs DF = 0. Destroys AX, CX, DX, SI.
+vid_load_ac:
+    mov dx, 0x03DA
+    in al, dx                       ; the next write to 3C0h selects a register
+    mov dx, 0x03C0
+    xor ah, ah                      ; AH = register number
+    mov cx, 21
+.next:
+    mov al, ah
+    out dx, al
+    cs lodsb
+    out dx, al
+    inc ah
+    loop .next
+    mov al, 0x20                    ; index with bit 5 set: display on
+    out dx, al
+    mov dx, 0x03DA
+    in al, dx                       ; leave 3C0h expecting a register number
+    mov dx, 0x03C6
+    mov al, 0xFF                    ; DAC pixel mask: all bits
+    out dx, al
+    ret
+
+; Text modes: DAC registers 00h-3Fh get the 64 EGA colours - bits 2, 1, 0 of
+; the register number are red, green, blue at 2/3 intensity and bits 5, 4, 3
+; the same at 1/3 - and the rest of the DAC is black.
+; Destroys AX, CX, DX.
+vid_load_dac_ega:
+    mov dx, 0x03C8
+    xor al, al
+    out dx, al                      ; start at DAC register 0
+    inc dx
+    xor ah, ah                      ; AH = register number
+.colour:
+    mov cx, 0x2004                  ; red:   CL = 2/3 bit, CH = 1/3 bit
+    call .component
+    mov cx, 0x1002                  ; green
+    call .component
+    mov cx, 0x0801                  ; blue
+    call .component
+    inc ah
+    cmp ah, 64
+    jb .colour
+    xor al, al
+    mov cx, (256 - 64) * 3
+.black:
+    out dx, al
+    loop .black
+    ret
+.component:
+    xor al, al
+    test ah, cl
+    jz .no_two_thirds
+    add al, 0x2A
+.no_two_thirds:
+    test ah, ch
+    jz .no_third
+    add al, 0x15
+.no_third:
+    out dx, al
+    ret
+
+; Mode 13h: the default 256-colour palette. Needs DF = 0.
+; Destroys AX, CX, DX, SI.
+vid_load_dac_256:
+    mov dx, 0x03C8
+    xor al, al
+    out dx, al                      ; start at DAC register 0
+    inc dx
+    mov si, vga_palette_256
+    mov cx, 256 * 3
+.next:
+    cs lodsb
+    out dx, al
+    loop .next
+    ret
+
+; Attribute controller registers 00h-14h of the text modes. The palette maps
+; the 16 text colours to EGA colours: 00h-05h and 07h directly, brown to 14h,
+; the bright colours to 38h-3Fh. Then: mode control (text, line graphics,
+; blink), overscan, plane enable, pixel panning, colour select.
+vid_ac_text:
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07
+    db 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F
+    db 0x0C, 0x00, 0x0F, 0x08, 0x00
+
+; The same registers for mode 13h: identity palette, 256-colour graphics.
+vid_ac_13h:
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
+    db 0x41, 0x00, 0x0F, 0x00, 0x00
+
+%include "vga_palette.inc"
