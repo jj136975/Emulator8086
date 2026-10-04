@@ -74,6 +74,34 @@ fn blit_shader_is_valid_wgsl() {
     assert!(!SHADER_SRC.contains("textureSample("));
 }
 
+/// A device is asked for wgpu's default limits where its adapter has them,
+/// however much more it offers. An adapter that has not is asked for what
+/// WebGL2 guarantees, with textures as large as it makes them, and what is
+/// asked for is always on offer.
+#[test]
+fn a_device_is_asked_for_limits_its_adapter_has() {
+    let defaults = wgpu::Limits::default();
+    assert_eq!(required_limits(&defaults), defaults);
+    let generous = wgpu::Limits {
+        max_texture_dimension_2d: 32768,
+        max_bind_groups: 8,
+        ..defaults.clone()
+    };
+    assert_eq!(required_limits(&generous), defaults);
+
+    // WebGL2 as a browser offers it: its guarantees, with larger textures.
+    let webgl2 = wgpu::Limits {
+        max_texture_dimension_1d: 4096,
+        max_texture_dimension_2d: 4096,
+        ..wgpu::Limits::downlevel_webgl2_defaults()
+    };
+    assert!(!defaults.check_limits(&webgl2), "it has not the defaults");
+    let asked = required_limits(&webgl2);
+    assert_eq!(asked.max_texture_dimension_2d, 4096);
+    assert_eq!(asked, webgl2);
+    assert!(asked.check_limits(&webgl2));
+}
+
 /// When the window is at least as large as the framebuffer, the viewport is
 /// integer-scaled and centered.
 #[test]
@@ -156,7 +184,7 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         "GPU test on {} ({}, {:?})",
         info.name, info.backend, info.device_type
     );
-    match pollster::block_on(adapter.request_device(&device_descriptor())) {
+    match pollster::block_on(adapter.request_device(&device_descriptor(&adapter))) {
         Ok(device_and_queue) => Some(device_and_queue),
         Err(error) => {
             eprintln!("skipped: the adapter gives no device: {error}");

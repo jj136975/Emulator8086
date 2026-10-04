@@ -135,13 +135,27 @@ fn create_blit_bind_group(
     })
 }
 
-/// What the renderer asks of a device: no optional feature, the default
-/// limits.
-fn device_descriptor() -> wgpu::DeviceDescriptor<'static> {
+/// The limits the renderer asks of a device whose adapter offers `offered`:
+/// wgpu's defaults where the adapter has them. An adapter that has not, as
+/// the WebGL2 a browser without WebGPU is drawn with, is asked for the
+/// least wgpu itself runs on, with textures as large as the adapter makes
+/// them: the surface is one, as large as the window.
+fn required_limits(offered: &wgpu::Limits) -> wgpu::Limits {
+    let defaults = wgpu::Limits::default();
+    if defaults.check_limits(offered) {
+        defaults
+    } else {
+        wgpu::Limits::downlevel_webgl2_defaults().using_resolution(offered.clone())
+    }
+}
+
+/// What the renderer asks of a device of `adapter`: no optional feature,
+/// and the limits the adapter can give (`required_limits`).
+fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     wgpu::DeviceDescriptor {
         label: Some("VGA Device"),
         required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
+        required_limits: required_limits(&adapter.limits()),
         ..Default::default()
     }
 }
@@ -639,9 +653,15 @@ impl Renderer {
     pub async fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
         // Every backend the build has. The GL backend presents through the
         // display the instance was given, so it gets the event loop's.
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(display),
-        ));
+        //
+        // A browser has two, WebGPU and WebGL2, and an instance is of one
+        // or the other for good: whether WebGPU works there has to be found
+        // out first, by asking it for an adapter. Outside a browser there
+        // is nothing to find out.
+        let instance = wgpu::util::new_instance_with_webgpu_detection(
+            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display)),
+        )
+        .await;
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
@@ -655,8 +675,11 @@ impl Renderer {
             .await
             .expect("Failed to find GPU adapter");
 
+        let info = adapter.get_info();
+        log::info!("Drawing with {} ({})", info.name, info.backend);
+
         let (device, queue) = adapter
-            .request_device(&device_descriptor())
+            .request_device(&device_descriptor(&adapter))
             .await
             .expect("Failed to create GPU device");
 
@@ -740,7 +763,9 @@ impl Renderer {
             wgpu::CurrentSurfaceTexture::Occluded => return,
             status @ (wgpu::CurrentSurfaceTexture::Timeout
             | wgpu::CurrentSurfaceTexture::Validation) => {
-                eprintln!("Surface error: {:?}", status);
+                // Through the log, which every host shows somewhere: a
+                // browser has no stderr.
+                log::error!("Surface error: {:?}", status);
                 return;
             }
         };
