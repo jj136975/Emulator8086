@@ -1,12 +1,17 @@
+//! A stand-in for the PC/XT's Xebec hard disk controller at ports
+//! 320h-323h. No sector passes through it: the BIOS serves INT 13h at its
+//! disk trap. It holds no state, and answers software that probes the
+//! controller: the configuration switches (322h) read 00h.
+//!
+//! The invariant: the controller always reports itself ready. The status
+//! register (321h) reads 00h, ready and without error, and every write is
+//! dropped, so nothing a program sends starts a command.
+
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
 use log::debug;
 
 /// Minimal Xebec-style hard disk controller stub.
-///
-/// The emulator handles hard disk I/O via BIOS-level trapping, so this
-/// device only needs to return sensible status values when software
-/// probes the HDC ports directly.
 pub struct HdcStub;
 
 impl HdcStub {

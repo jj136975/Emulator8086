@@ -1,3 +1,11 @@
+//! The debug port E9h. The BIOS writes its progress markers there, and a
+//! copy of everything it prints through INT 10h teletype.
+//!
+//! The invariant: nothing written to the port reaches the terminal, which
+//! the terminal frontend draws the guest's screen on. The bytes are
+//! collected into lines and logged at debug level (`RUST_LOG=debug`), and
+//! the log is the only place they go.
+
 use log::debug;
 
 use crate::io::bus::IoDevice;
@@ -6,10 +14,7 @@ use crate::vm::cpu::Cpu;
 /// A line longer than this is logged without waiting for its end.
 const MAX_LINE: usize = 256;
 
-/// Debug output port E9h. The BIOS sends its progress markers and a copy
-/// of everything it prints through INT 10h teletype here. The bytes are
-/// collected into lines and logged at debug level (`RUST_LOG=debug`); they
-/// are never written to the terminal, which the terminal frontend draws on.
+/// Collects the bytes written to port E9h into lines and logs each one.
 #[derive(Default)]
 pub struct DebugConsole {
     line: String,
@@ -56,8 +61,8 @@ mod tests {
             .collect()
     }
 
-    /// Regression: every byte went straight to stderr, one write per
-    /// character, on top of the screen the terminal frontend draws.
+    /// Bytes are held until a line feed ends their line, which is then
+    /// passed on whole; a carriage return is dropped.
     #[test]
     fn output_is_collected_into_lines() {
         let mut console = DebugConsole::new();

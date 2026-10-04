@@ -1,3 +1,13 @@
+//! The window frontend's key map (`--features gui`): a winit physical key
+//! to the make code of the key in the same place on the PC/XT keyboard.
+//! The guest's keyboard driver turns that code into a character, so the
+//! host's keyboard layout plays no part.
+//!
+//! The invariant: a key maps to one make code below 80h, or to nothing.
+//! The window loop sends the break as the make with bit 7 set, and an XT
+//! keyboard knows no E0 prefix: a key that later keyboards added beside an
+//! XT key (right Ctrl, the cursor block, keypad Enter) shares its code.
+
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 /// Map a winit `PhysicalKey` to an IBM PC/XT scancode.
@@ -110,9 +120,8 @@ mod tests {
         physical_key_to_scancode(PhysicalKey::Code(code))
     }
 
-    /// Regression: the digit keys of the numeric keypad, keypad Enter,
-    /// keypad `/` and `.`, and the 102nd key were not mapped, so pressing
-    /// them sent nothing to the guest.
+    /// Every key of the numeric keypad, Enter and `/` included, sends its XT
+    /// scancode, and so does the 102nd key of ISO keyboards.
     #[test]
     fn keypad_and_102nd_key_send_their_scancodes() {
         let expected = [
