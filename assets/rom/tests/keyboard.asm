@@ -1,4 +1,4 @@
-; test_kbd.asm — nasm -f bin test_kbd.asm -o test_kbd.img
+; keyboard.asm — nasm -f bin keyboard.asm -o keyboard.bin
 cpu 8086
 bits 16
 org 0x7C00

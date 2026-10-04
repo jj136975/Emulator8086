@@ -111,9 +111,7 @@ impl VgaDevice {
         let mut dac_palette = [[0u8; 3]; 256];
 
         // Initialize first 16 entries to CGA colors
-        for i in 0..16 {
-            dac_palette[i] = CGA_DAC[i];
-        }
+        dac_palette[..16].copy_from_slice(&CGA_DAC);
 
         // Initialize entries 16-31 as a greyscale ramp
         for i in 0..16u8 {
@@ -123,8 +121,8 @@ impl VgaDevice {
 
         // Initialize default attribute controller palette (identity 0-15)
         let mut attr_regs = [0u8; 32];
-        for i in 0..16 {
-            attr_regs[i] = i as u8;
+        for (i, reg) in attr_regs.iter_mut().enumerate().take(16) {
+            *reg = i as u8;
         }
         // AC Mode Control register (index 0x10)
         attr_regs[0x10] = 0x0C; // default text mode value
@@ -550,10 +548,6 @@ impl IoDevice for VgaDevice {
             _ => {}
         }
     }
-
-    fn name(&self) -> &'static str {
-        "VGA"
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -661,7 +655,7 @@ pub fn cp437_to_unicode(byte: u8) -> char {
 }
 
 // ---------------------------------------------------------------------------
-// Inspection tests — demonstrate real bugs in the VGA emulation.
+// Regression tests — VGA register and DAC behaviour.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod inspection_tests {
@@ -685,9 +679,7 @@ mod inspection_tests {
         assert_eq!(got, 0x5F, "CRTC index 0x00 readback");
     }
 
-    /// Sanity check: CRTC index 0x0E (Cursor Location High) is in the
-    /// supported range and should read back correctly. This test should
-    /// PASS on the current code; if it fails we have a different bug.
+    /// CRTC index 0x0E (Cursor Location High) reads back the stored value.
     #[test]
     fn crtc_register_0e_readback_is_ok() {
         let mut vga = VgaDevice::new();
@@ -699,29 +691,22 @@ mod inspection_tests {
         assert_eq!(got, 0xAB);
     }
 
-    /// FINDING (Phase 3): DAC 6→8 bit conversion `(v<<2)|(v>>4)` uses bit
-    /// replication, not linear scaling. Phase 3 claimed this causes color
-    /// banding because it doesn't reach full-scale properly.
-    /// STATUS: PASSES → retracted. Bit replication maps 0→0 and 63→255
-    /// correctly; intermediate values differ from linear scaling by at most
-    /// 1 (e.g., 32 → 130 vs linear 129). Bit replication is standard VGA
-    /// DAC emulation practice and is NOT a bug.
+    /// `dac_to_rgb8` widens the 6-bit DAC components by bit replication
+    /// `(v << 2) | (v >> 4)`, so 0 maps to 0x00 and 63 to 0xFF (full scale).
     #[test]
     fn dac_conversion_endpoints_are_exact() {
-        let vga = VgaDevice::new();
-        // DAC entry 0 should be all-zero regardless of bit replication.
-        // Fill entry 1 with (63, 63, 63) via a fresh instance — here we
-        // just verify the formula behaves correctly at extremes.
-        // The function uses dac_palette; since we can't easily inject,
-        // we directly verify the math by computing the expected output
-        // of the bit-replication formula.
-        fn replicate(v6: u8) -> u8 {
-            (v6 << 2) | (v6 >> 4)
-        }
-        assert_eq!(replicate(0), 0x00, "0 must map to 0x00");
-        assert_eq!(replicate(63), 0xFF, "63 must map to 0xFF (full scale reached)");
-        assert_eq!(replicate(32), 130, "midpoint maps consistently");
-        // Prevent dead_code warning on the vga binding.
-        let _ = vga.dac_to_rgb8(0);
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        // Program DAC entry 1 to (63, 32, 0) through the write-index and
+        // data ports, as software does.
+        vga.port_out_byte(0x3C8, 1, &mut rt.cpu);
+        vga.port_out_byte(0x3C9, 63, &mut rt.cpu);
+        vga.port_out_byte(0x3C9, 32, &mut rt.cpu);
+        vga.port_out_byte(0x3C9, 0, &mut rt.cpu);
+        assert_eq!(
+            vga.dac_to_rgb8(1),
+            [0xFF, 130, 0x00],
+            "63 must map to 0xFF (full scale), 32 to 130 and 0 to 0x00"
+        );
     }
 }

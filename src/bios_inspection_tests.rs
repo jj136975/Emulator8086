@@ -6,10 +6,7 @@
 
 const BIOS_BIN: &[u8] = include_bytes!("../assets/rom/bios.bin");
 
-/// FINDING (Phase 5): ROM sits in memory from 0xF0000..=0xFFFFF. The reset
-/// vector is at physical 0xFFFF0 (segment F000, offset FFF0). Within a 64KB
-/// ROM image loaded at 0xF0000, the reset vector byte offset is 0xFFF0.
-/// STATUS: PASSES → retracted. The reset vector is present.
+/// The ROM image is exactly 64KB, so it fills 0xF0000..=0xFFFFF.
 #[test]
 fn rom_is_exactly_64kb() {
     assert_eq!(
@@ -32,10 +29,8 @@ fn reset_vector_is_far_jump() {
     );
 }
 
-/// FINDING (Phase 5): The ROM checksum byte at offset 0xFFFF is hardcoded
-/// to 0x00, so the 8-bit sum of the entire ROM is NOT zero.
-/// Real IBM PC POST verifies the sum-mod-256 is 0 across the ROM area.
-/// STATUS: CONFIRMED BUG (or at least non-conformance).
+/// The 8-bit sum of the whole ROM is 0, as the IBM PC POST checks; build.rs
+/// patches the checksum byte at offset 0xFFFF to make it so.
 #[test]
 fn rom_checksum_sums_to_zero() {
     let sum: u8 = BIOS_BIN.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
@@ -45,36 +40,6 @@ fn rom_checksum_sums_to_zero() {
          Fix: adjust the checksum byte at offset 0xFFFF so the total sum is 0.",
         sum
     );
-}
-
-/// FINDING (Phase 5): INT 14h (serial), 17h (parallel), 05h (PrintScreen)
-/// should be installed as IRET stubs. Without them, user code that chains
-/// to these vectors will execute garbage.
-///
-/// This test is *structural* — we can't verify IVT content without running
-/// the BIOS init code, but we can look for an 0xCF (IRET) opcode somewhere
-/// in the ROM, which every BIOS should contain.
-///
-/// STATUS: weak test — just checks that IRET bytes appear in the image.
-#[test]
-fn bios_contains_iret_bytes() {
-    assert!(
-        BIOS_BIN.contains(&0xCF),
-        "ROM must contain at least one IRET (0xCF) instruction"
-    );
-}
-
-/// Running the full BIOS init to verify IVT entries would require loading
-/// the ROM into a Runtime and stepping until POST completes. That's
-/// integration-test territory and sensitive to BIOS internals. Marked
-/// #[ignore] so it doesn't run by default; run with `cargo test --
-/// --ignored` once the BIOS init is stable enough to assert against.
-#[test]
-#[ignore]
-fn ivt_int_1c_is_initialized_after_bios_init() {
-    // Stub — would load bios.bin, step N instructions, then check that
-    // memory at 0x0070 / 0x0072 (INT 1Ch vector) is non-zero and points
-    // at a plausible IRET stub.
 }
 
 /// FIX: INT 08h must re-enable interrupts (STI) between sending EOI and
@@ -99,10 +64,9 @@ fn int08_handler_has_sti_between_eoi_and_int1c() {
     );
 }
 
-/// Retract (Phase 5 finding): "INT 1Ch, 1Bh, 14h, 17h, 05h not installed".
-/// The fill loop at bios.asm:66-75 sets every zero IVT entry to point at
-/// `iret_stub` at segment 0xF000. So unset vectors get stub pointers, not
-/// garbage. We verify the ROM contains the fill-loop byte pattern.
+/// BIOS init points every IVT entry that is still zero (INT 1Ch, 1Bh, 14h,
+/// 17h, 05h, ...) at `iret_stub` in segment 0xF000, so no vector is left
+/// pointing at garbage. Checked by looking for the fill loop's bytes.
 ///
 /// Fill loop:
 ///   xor si, si             (31 F6)

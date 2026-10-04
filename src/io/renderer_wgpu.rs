@@ -1,5 +1,3 @@
-#![cfg(feature = "gui")]
-
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -41,10 +39,9 @@ mod inspection_tests {
         assert_eq!(oy, 0.0);
     }
 
-    /// FIX: when the window is smaller than the framebuffer, the previous
-    /// implementation computed `win_width - scaled_w` as u32, which
-    /// underflowed to ~4 billion and placed the viewport off-screen.
-    /// The fix uses i32 arithmetic so the offset is a plain negative number.
+    /// Regression: when the window is smaller than the framebuffer, the
+    /// viewport offset is a plain negative number (no u32 underflow that
+    /// would push the viewport off-screen).
     #[test]
     fn viewport_underflow_when_window_smaller_than_framebuffer() {
         // 200x150 window, 320x200 framebuffer.

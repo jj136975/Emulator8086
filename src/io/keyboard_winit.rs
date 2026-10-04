@@ -1,5 +1,3 @@
-#![cfg(feature = "gui")]
-
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 /// Map a winit `PhysicalKey` to an IBM PC/XT scancode.

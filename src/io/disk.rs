@@ -23,7 +23,7 @@ pub enum DiskSource {
 
 /// Parsed `--disk` argument: drive letter + source.
 pub struct DiskSpec {
-    pub drive: u8, // 0 = A:, 1 = B:
+    pub drive: u8, // floppy drive: 0 = A:, 1 = B:, 2 = C:, 3 = D:
     pub source: DiskSource,
     pub readonly: bool,
 }
@@ -245,7 +245,7 @@ impl DiskImage {
         end_lba <= total_sectors
     }
 
-    /// Zero-fill a track with the standard DOS format fill byte (0xF6).
+    /// Fill a track with the standard DOS format fill byte (0xF6).
     pub fn format_track(&mut self, c: u16, h: u8) -> std::io::Result<()> {
         let fill = vec![0xF6u8; self.sectors_per_track as usize * SECTOR_SIZE];
         self.write_sectors(c, h, 1, self.sectors_per_track, &fill)
@@ -641,7 +641,7 @@ impl DiskController {
         let func = cpu.registers.ax.high();
         let drive = cpu.registers.dx.low();
 
-        // Fix 7: Update BDA hard disk count dynamically
+        // Update the BDA hard disk count dynamically
         let hd_count = self.drives.iter().filter(|(d, _)| *d >= 0x80).count() as u8;
         cpu.memory.write_byte(0x0475, hd_count);
 
@@ -802,8 +802,8 @@ impl DiskController {
                     let byte_count = batch as usize * SECTOR_SIZE;
 
                     let mut buf = vec![0u8; byte_count];
-                    for i in 0..byte_count {
-                        buf[i] = cpu.memory.read_byte((src + i) & 0xFFFFF);
+                    for (i, byte) in buf.iter_mut().enumerate() {
+                        *byte = cpu.memory.read_byte((src + i) & 0xFFFFF);
                     }
                     src = (src + byte_count) & 0xFFFFF;
 
@@ -945,7 +945,7 @@ impl DiskController {
                                     .filter(|(d, _)| *d < 0x80)
                                     .count() as u8
                             );
-                            // Fix 8: Point ES:DI to disk parameter table at INT 1Eh vector
+                            // Point ES:DI to the disk parameter table at the INT 1Eh vector
                             let dpt_offset = cpu.memory.read_word(0x0078); // INT 1Eh offset
                             let dpt_segment = cpu.memory.read_word(0x007A); // INT 1Eh segment
                             cpu.registers.es.reg_mut().set(dpt_segment);
@@ -1151,8 +1151,8 @@ impl DiskController {
 
         for i in 0..count {
             let mut buf = vec![0u8; SECTOR_SIZE];
-            for j in 0..SECTOR_SIZE {
-                buf[j] = cpu.memory.read_byte((src + j) & 0xFFFFF);
+            for (j, byte) in buf.iter_mut().enumerate() {
+                *byte = cpu.memory.read_byte((src + j) & 0xFFFFF);
             }
             src = (src + SECTOR_SIZE) & 0xFFFFF;
 
@@ -1186,13 +1186,6 @@ impl DiskController {
             None
         }
     }
-
-    /// Get a mutable reference to a drive's image.
-    pub fn find_drive_mut(&mut self, drive: u8) -> Option<&mut DiskImage> {
-        self.drives.iter_mut()
-            .find(|(d, _)| *d == drive)
-            .map(|(_, img)| img)
-    }
 }
 
 impl IoDevice for DiskController {
@@ -1216,25 +1209,18 @@ impl IoDevice for DiskController {
             _ => {}
         }
     }
-
-    fn name(&self) -> &'static str {
-        "BIOS Disk Trap"
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Inspection tests — demonstrate real bugs in the disk I/O subsystem.
+// Regression tests — INT 13h disk services.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod inspection_tests {
     use super::*;
     use crate::vm::runtime::{CpuFlag, Runtime};
 
-    /// BUG: `handle_trap` AH=02 at disk.rs:649,676 reads AL directly as the
-    /// sector count. Real IBM PC BIOS interprets AL=0 as "transfer 256
-    /// sectors". Consequence: programs that request a 256-sector batch
-    /// (common in DOS utilities and diskcopy) silently transfer zero
-    /// sectors and report success, causing silent data loss.
+    /// INT 13h AH=02 with AL=0 transfers 256 sectors, as the IBM PC BIOS
+    /// does, rather than none.
     #[test]
     fn int13h_al_zero_should_mean_256_sectors() {
         let mut rt = Runtime::new_test();
@@ -1289,10 +1275,9 @@ mod inspection_tests {
         );
     }
 
-    /// FINDING (Phase 4): AH=08 Get drive params CX encoding:
-    /// CH = cyl_low, CL bits 6-7 = cyl_hi, CL bits 0-5 = SPT, DH = max_head.
-    /// For a 1.44MB floppy: cylinders=80 (max_cyl=79), heads=2, SPT=18.
-    /// STATUS: PASSES → retracted as a bug. The encoding is correct.
+    /// INT 13h AH=08 packs the geometry as CH = max cylinder bits 0-7,
+    /// CL bits 6-7 = max cylinder bits 8-9, CL bits 0-5 = SPT, DH = max head;
+    /// for a 1.44MB floppy that is max_cyl=79, SPT=18, max_head=1.
     #[test]
     fn int13h_get_drive_params_floppy_returns_correct_geometry() {
         let mut rt = Runtime::new_test();
@@ -1320,10 +1305,8 @@ mod inspection_tests {
         );
     }
 
-    /// FINDING (Phase 4): Readonly disks must reject writes with AH=0x03
-    /// (write protected). The write_sectors path returns PermissionDenied,
-    /// which disk.rs:769-778 maps to 0x03. Verify round-trip.
-    /// STATUS: PASSES → retracted. The enforcement is correct.
+    /// A write to a read-only disk fails with CF set and AH=0x03 (write
+    /// protected).
     #[test]
     fn int13h_write_to_readonly_disk_returns_0x03() {
         let mut rt = Runtime::new_test();
@@ -1356,15 +1339,9 @@ mod inspection_tests {
         );
     }
 
-    /// BUG: `handle_trap` at disk.rs:681 computes
-    ///     `on_track = (disk.sectors_per_track - cur_s + 1) as u8`
-    /// without checking `cur_s <= sectors_per_track`. CHS sector is a
-    /// 6-bit field (1..=63) but software can pass any value in that
-    /// range. A request for S=20 on a 1.44 MB floppy (SPT=18) causes a
-    /// u8 underflow: in debug builds this panics; in release builds it
-    /// wraps to 255 and the controller attempts a 255-sector read at an
-    /// invalid CHS. Expected behaviour: return AH=0x04 (sector not
-    /// found) with CF set.
+    /// A CHS sector number above the track's sectors per track (S=20 on a
+    /// 1.44 MB floppy with SPT=18) fails with CF set and AH=0x04 (sector
+    /// not found) instead of underflowing the per-track sector count.
     #[test]
     fn int13h_sector_above_spt_should_return_error_not_underflow() {
         let mut rt = Runtime::new_test();
@@ -1384,16 +1361,11 @@ mod inspection_tests {
         rt.cpu.registers.es.reg_mut().set(0x1000);
         rt.cpu.registers.bx.set(0x0000);
 
-        // In debug builds this call panics on the `sectors_per_track - cur_s`
-        // u8 underflow. That panic IS the bug — the handler should return a
-        // clean 0x04 error instead.
         disk_ctrl.port_out_byte(0xB0, 0x00, &mut rt.cpu);
 
         assert!(
             rt.cpu.check_flag(CpuFlag::Carry),
-            "Carry should be set on invalid sector — instead we survived \
-             the call (release mode) or panicked before getting here \
-             (debug mode)"
+            "Carry should be set on an invalid sector number"
         );
         assert_eq!(
             rt.cpu.registers.ax.high(),

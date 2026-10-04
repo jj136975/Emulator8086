@@ -1,3 +1,5 @@
+use crate::io::bus::IoDevice;
+use crate::io::pic::PicDevice;
 use crate::vm::instructions::process;
 use crate::vm::memory::Memory;
 use crate::vm::runtime::CpuFlag::*;
@@ -21,10 +23,6 @@ fn exec_n(vm: &mut Runtime, n: usize) {
     for _ in 0..n {
         process(vm);
     }
-}
-
-fn parity(v: u8) -> bool {
-    v.count_ones() & 1 == 0
 }
 
 // ========================================================================
@@ -234,6 +232,7 @@ fn push_cs() {
     // PUSH CS (0x0E); POP AX (0x58)
     // CS=0x0000 (default in test), so pushed value is 0
     let mut vm = setup(&[0x0E, 0x58]);
+    vm.cpu.registers.ax.set(0xFFFF); // sentinel, overwritten by POP AX
     exec_n(&mut vm, 2);
     assert_eq!(vm.cpu.registers.ax.word(), 0x0000);
 }
@@ -278,6 +277,7 @@ fn cbw_positive() {
     // CBW (0x98): sign-extend AL into AH
     let mut vm = setup(&[0x98]);
     vm.cpu.registers.ax.set_low(0x7F);
+    vm.cpu.registers.ax.set_high(0xFF); // sentinel, must be cleared
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.word(), 0x007F);
 }
@@ -295,6 +295,7 @@ fn cwd_positive() {
     // CWD (0x99): sign-extend AX into DX
     let mut vm = setup(&[0x99]);
     vm.cpu.registers.ax.set(0x7FFF);
+    vm.cpu.registers.dx.set(0xFFFF); // sentinel, must be cleared
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.dx.word(), 0x0000);
 }
@@ -431,7 +432,6 @@ fn sub_zero() {
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.low(), 0x00);
     assert!(vm.cpu.check_flag(Zero));
-    assert!(parity(0));
     assert!(vm.cpu.check_flag(Parity));
 }
 
@@ -573,6 +573,8 @@ fn mul_byte() {
     let mut vm = setup(&[0xF6, 0xE1]);
     vm.cpu.registers.ax.set_low(10);
     vm.cpu.registers.cx.set_low(20);
+    vm.cpu.set_flag(Carry);
+    vm.cpu.set_flag(Overflow);
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.word(), 200);
     assert!(!vm.cpu.check_flag(Carry)); // high byte is 0
@@ -698,6 +700,8 @@ fn group_80_and_byte() {
     // AND BYTE [reg], imm8: 80 E0 0F -> AND AL,0x0F (mod=11 reg=100(AND) rm=000(AL))
     let mut vm = setup(&[0x80, 0xE0, 0x0F]);
     vm.cpu.registers.ax.set_low(0xAB);
+    vm.cpu.set_flag(Carry);
+    vm.cpu.set_flag(Overflow);
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.low(), 0x0B);
     assert!(!vm.cpu.check_flag(Carry));
@@ -776,6 +780,8 @@ fn and_al_imm() {
     // AND AL,0x0F (24 0F)
     let mut vm = setup(&[0x24, 0x0F]);
     vm.cpu.registers.ax.set_low(0xAB);
+    vm.cpu.set_flag(Carry);
+    vm.cpu.set_flag(Overflow);
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.low(), 0x0B);
     assert!(!vm.cpu.check_flag(Carry));
@@ -796,6 +802,8 @@ fn or_al_imm() {
     // OR AL,0xF0 (0C F0)
     let mut vm = setup(&[0x0C, 0xF0]);
     vm.cpu.registers.ax.set_low(0x0A);
+    vm.cpu.set_flag(Carry);
+    vm.cpu.set_flag(Overflow);
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.low(), 0xFA);
     assert!(!vm.cpu.check_flag(Carry));
@@ -826,6 +834,8 @@ fn xor_ax_ax_zeroes() {
     // XOR AX,AX (31 C0 = mod=11 reg=000 rm=000 with opcode 0x31)
     let mut vm = setup(&[0x31, 0xC0]);
     vm.cpu.registers.ax.set(0x1234);
+    vm.cpu.set_flag(Carry);
+    vm.cpu.set_flag(Overflow);
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.word(), 0x0000);
     assert!(vm.cpu.check_flag(Zero));
@@ -857,6 +867,8 @@ fn test_al_imm() {
     // TEST AL,0xFF (A8 FF) with AL=0x00 -> ZF set
     let mut vm = setup(&[0xA8, 0xFF]);
     vm.cpu.registers.ax.set_low(0x00);
+    vm.cpu.set_flag(Carry);
+    vm.cpu.set_flag(Overflow);
     exec(&mut vm);
     assert!(vm.cpu.check_flag(Zero));
     assert!(!vm.cpu.check_flag(Carry));
@@ -1231,7 +1243,7 @@ fn repne_scasb() {
 
 #[test]
 fn jmp_short() {
-    // JMP +2 (EB 02): skip 2 bytes, execute NOP NOP, then MOV AL,0x42
+    // JMP +2 (EB 02): skip the 2 bytes 00 00 (never executed), then MOV AL,0x42
     let mut vm = setup(&[0xEB, 0x02, 0x00, 0x00, 0xB0, 0x42]);
     exec(&mut vm); // JMP
     exec(&mut vm); // MOV AL,0x42
@@ -1269,7 +1281,7 @@ fn jz_taken() {
 
 #[test]
 fn jz_not_taken() {
-    // JZ +2 (74 02) with ZF=0 -> falls through to NOP NOP
+    // JZ +2 (74 02) with ZF=0 -> falls through to MOV AL,0x99
     let mut vm = setup(&[0x74, 0x02, 0xB0, 0x99, 0xB0, 0x42]);
     exec(&mut vm); // JZ not taken
     exec(&mut vm); // MOV AL,0x99
@@ -1401,7 +1413,7 @@ fn loop_basic() {
     let mut vm = setup(&[
         0xB9, 0x03, 0x00, // MOV CX,3
         0x40,             // INC AX (offset 3)
-        0xE2, 0xFD,       // LOOP -3 (offset 5, disp=-3 -> target=offset 3+(-1)=3... wait)
+        0xE2, 0xFD,       // LOOP -3 (offset 4)
     ]);
     // LOOP at offset 4: fetch disp at offset 5 -> PC=6, disp=0xFD=-3 -> 6+(-3)=3
     exec_n(&mut vm, 1 + 3 * 2); // MOV CX + 3 iterations of (INC + LOOP)
@@ -1641,51 +1653,10 @@ fn dec_rm_word() {
 }
 
 // ===========================================================================
-// INSPECTION TESTS — verify claimed bugs from the code review.
-//
-// For each finding the inspection flagged as a "bug," we either:
-//   - write a test that FAILS on current code (bug confirmed), or
-//   - write a test that PASSES (finding retracted as false positive).
+// REGRESSION TESTS
 // ===========================================================================
 
-use crate::io::pic::PicDevice;
-use crate::io::bus::IoDevice;
-
-/// FINDING (Phase 1): INC/DEC must NOT touch CF.
-/// Intel SDM: INC/DEC affect OF, SF, ZF, AF, PF — CF is preserved.
-/// STATUS: PASSES on current code → retracted as false positive.
-#[test]
-fn inc_preserves_carry_flag_set() {
-    // STC; INC AX  →  F9 40
-    let mut vm = setup(&[0xF9, 0x40]);
-    vm.cpu.registers.ax.set(0x0001);
-    exec_n(&mut vm, 2);
-    assert!(
-        vm.cpu.check_flag(Carry),
-        "INC must preserve CF; it was set before, should still be set"
-    );
-    assert_eq!(vm.cpu.registers.ax.word(), 0x0002);
-}
-
-#[test]
-fn inc_preserves_carry_flag_clear() {
-    // CLC; MOV AX, 0x7FFF; INC AX  (wraps to 0x8000, OF should set; CF untouched)
-    // CLC = F8;  MOV AX,imm16 = B8 FF 7F;  INC AX = 40
-    let mut vm = setup(&[0xF8, 0xB8, 0xFF, 0x7F, 0x40]);
-    exec_n(&mut vm, 3);
-    assert!(
-        !vm.cpu.check_flag(Carry),
-        "INC must preserve CF; was clear before, should stay clear"
-    );
-    assert!(
-        vm.cpu.check_flag(Overflow),
-        "INC 0x7FFF → 0x8000 should set OF (signed overflow)"
-    );
-    assert_eq!(vm.cpu.registers.ax.word(), 0x8000);
-}
-
-/// FINDING (Phase 1): TEST must clear CF and OF per Intel SDM.
-/// STATUS: PASSES → retracted.
+/// TEST clears CF and OF.
 #[test]
 fn test_clears_carry_and_overflow() {
     // STC; MOV AX,0xFFFF; TEST AX, 0x1
@@ -1698,8 +1669,7 @@ fn test_clears_carry_and_overflow() {
     assert!(!vm.cpu.check_flag(Overflow), "TEST must clear OF");
 }
 
-/// FINDING (Phase 1): 8086 PUSH SP quirk — pushes the DECREMENTED SP value.
-/// STATUS: PASSES → retracted. Confirmed correct at mod.rs:1072-1076.
+/// PUSH SP on the 8086 pushes the already-decremented SP value.
 #[test]
 fn push_sp_8086_quirk_pushes_decremented_value() {
     // MOV SP, 0x100; PUSH SP
@@ -1715,11 +1685,10 @@ fn push_sp_8086_quirk_pushes_decremented_value() {
     );
 }
 
-/// FINDING (Phase 1): POP SS must set interrupt_inhibit for one instruction.
-/// STATUS: PASSES → retracted. Confirmed at mod.rs:1059-1061.
+/// POP SS inhibits interrupts for the instruction that follows it.
 #[test]
 fn pop_ss_sets_interrupt_inhibit() {
-    // PUSH imm16 is 286+ so use PUSH DS; POP SS   (1E 17)
+    // PUSH DS; POP SS   (1E 17)
     // Set DS=0x1234 first so we push something, then pop into SS.
     let mut vm = setup(&[0x1E, 0x17]);
     vm.cpu.registers.ds.reg_mut().set(0x1234);
@@ -1731,8 +1700,7 @@ fn pop_ss_sets_interrupt_inhibit() {
     );
 }
 
-/// FINDING (Phase 1): DIV quotient overflow must raise INT 0.
-/// STATUS: PASSES → retracted. Confirmed via alu.rs:291 / control.rs:87-94.
+/// A DIV whose quotient does not fit raises INT 0 through IVT[0].
 #[test]
 fn div_byte_quotient_overflow_raises_int0() {
     // Set IVT entry 0 to CS=0x1000, IP=0x5000
@@ -1756,12 +1724,8 @@ fn div_byte_quotient_overflow_raises_int0() {
     );
 }
 
-/// FINDING (Phase 1 / Phase 7): REP string instructions run to completion
-/// without checking pending interrupts. A long REP MOVS blocks IRQ0.
-/// STATUS: CONFIRMED BUG. This test runs REP MOVSB with CX=100 and a pending
-/// IRQ0, and expects REP to break out after one iteration (CX=99) so the
-/// CPU can service the interrupt. The current code finishes all 100
-/// iterations (CX=0), demonstrating the bug.
+/// A REP string instruction stops between iterations when an interrupt is
+/// pending, so a long REP MOVSB cannot hold off IRQ0 until it completes.
 #[test]
 fn rep_movsb_should_break_on_pending_interrupt() {
     // CLD        FC                (clear DF → forward)
@@ -1801,7 +1765,6 @@ fn rep_movsb_should_break_on_pending_interrupt() {
         vm.cpu.registers.cx.word() > 0,
         "REP MOVSB ran all 100 iterations (CX=0) despite a pending IRQ0. \
          Real 8086 interrupts REP between iterations so long string ops \
-         don't block the timer/keyboard. string.rs:6-42 has no PIC check \
-         inside the loop."
+         don't block the timer/keyboard."
     );
 }

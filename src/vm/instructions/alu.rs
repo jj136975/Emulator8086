@@ -77,10 +77,6 @@ pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, direction
             }
             _ => {}
         }
-        // For ADD/ADC/SUB/SBB that already called modrm.set above, skip the generic set
-        // For OR/AND/XOR, modrm.operation already wrote the result
-        // For CMP, we don't write back
-        return;
     } else {
         let (modrm, reg) = u8::mod_rm_single(vm);
         let byte = vm.cpu.fetch_byte();

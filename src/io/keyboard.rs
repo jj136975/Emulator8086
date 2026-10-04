@@ -15,7 +15,7 @@ pub enum EmulatorEvent {
     Scancode(u8),    // make code
     ScanRelease(u8), // break code (scancode | 0x80)
     EnterCLI,        // signal to enter command line interface
-    DumpVga,         // F11: dump VGA memory to file
+    DumpVga,         // dump VGA memory to file (F11 in terminal mode, F12 in GUI mode)
     Quit,
 }
 
@@ -313,10 +313,6 @@ impl IoDevice for KeyboardController {
 
             _ => {}
         }
-    }
-
-    fn name(&self) -> &'static str {
-        "8255 PPI / Keyboard"
     }
 }
 

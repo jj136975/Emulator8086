@@ -1,13 +1,13 @@
+//! Intel 8259A Programmable Interrupt Controller
+//!
+//! Handles a single PIC (master). For a full PC/AT you'd add a slave,
+//! but a single master is sufficient for MS-DOS on an 8086/8088.
+//!
+//! Ports (master): 0x20 (command), 0x21 (data)
+
 use log::debug;
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
-
-/// Intel 8259A Programmable Interrupt Controller
-///
-/// Handles a single PIC (master). For a full PC/AT you'd add a slave,
-/// but a single master is sufficient for MS-DOS on an 8086/8088.
-///
-/// Ports (master): 0x20 (command), 0x21 (data)
 
 #[derive(Clone, Copy, PartialEq)]
 enum TriggerMode {
@@ -402,25 +402,18 @@ impl IoDevice for PicDevice {
             _ => cpu.pic.write_data(value),     // 0x21
         }
     }
-
-    fn name(&self) -> &'static str {
-        "8259A PIC"
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Inspection tests — 8259A state-machine invariants.
+// Regression tests — 8259A state-machine invariants.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod inspection_tests {
     use super::*;
     use crate::vm::runtime::Runtime;
 
-    /// FINDING (Phase 3): ICW1 bit 1 (SNGL) interpretation was claimed to be
-    /// "reversed." Per Intel 8259A datasheet: SNGL=1 means single PIC (no
-    /// ICW3), SNGL=0 means cascade (ICW3 required).
-    /// STATUS: PASSES → retracted. `pic.rs:262` has `single_pic = value & 0x02 != 0`
-    /// which is correct. We verify the ICW state-machine progression.
+    /// ICW1 with SNGL=1 (bit 1) selects a single PIC: ICW3 is skipped, so
+    /// initialization completes after ICW1, ICW2 and ICW4.
     #[test]
     fn icw1_sngl_bit_means_single_pic_no_icw3_needed() {
         let mut rt = Runtime::new_test();
@@ -440,10 +433,8 @@ mod inspection_tests {
         );
     }
 
-    /// FINDING (Phase 3): Single-PIC emulation handles IRQ0 and IRQ1 (timer
-    /// + keyboard) but IRQ8-15 would need a slave PIC. Document this.
-    /// STATUS: acceptable limitation for 8086 MS-DOS — this test just
-    /// confirms IRQ0 path works end-to-end.
+    /// After initialization with vector base 0x08, a raised IRQ0 is pending
+    /// and is acknowledged as INT 08h.
     #[test]
     fn irq0_routes_to_vector_0x08_after_init() {
         let mut rt = Runtime::new_test();

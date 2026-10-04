@@ -124,7 +124,6 @@ pub struct Runtime {
 impl Runtime {
     #[cfg(test)]
     pub fn new_test() -> Self {
-        use std::ops::DerefMut;
         let mut memory = Box::new(Memory::new());
 
         let registers = Registers::new(memory.deref_mut());
@@ -281,9 +280,7 @@ impl Runtime {
         }
 
         let load_address = 0xF0000;
-        for (i, byte) in rom_data.iter().enumerate() {
-            self.cpu.memory.write_byte_unchecked(load_address + i, *byte);
-        }
+        Memory::copy_data(&mut self.cpu.memory, load_address, rom_data);
         self.cpu.memory.enable_rom_protection();
     }
 
@@ -335,7 +332,7 @@ impl Runtime {
                             return false;
                         }
                         Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
-                            enter_monitor(&mut *self.disks.borrow_mut());
+                            enter_monitor(&mut self.disks.borrow_mut());
                             if let Some(vga) = &self.vga {
                                 vga.borrow_mut().queue_full_redraw();
                             }
@@ -461,7 +458,7 @@ impl Runtime {
         }
 
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
+        let _ = writeln!(std::io::stdout(), "\x1B[0m\x1B[?25h");
         let _ = std::io::stdout().flush();
 
         debug!("Emulator exited after {} instructions", self.instruction_count);

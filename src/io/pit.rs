@@ -1,13 +1,13 @@
+//! 8253/8254 Programmable Interval Timer
+//!
+//! Ports:
+//!   0x40 - Channel 0 data (system timer)
+//!   0x41 - Channel 1 data (DRAM refresh, ignored)
+//!   0x42 - Channel 2 data (speaker)
+//!   0x43 - Mode/command register
+
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
-
-/// 8253/8254 Programmable Interval Timer
-///
-/// Ports:
-///   0x40 - Channel 0 data (system timer)
-///   0x41 - Channel 1 data (DRAM refresh, ignored)
-///   0x42 - Channel 2 data (speaker)
-///   0x43 - Mode/command register
 
 /// Outcome of `Pit::advance`.
 pub struct PitAdvance {
@@ -567,9 +567,5 @@ impl IoDevice for Pit {
             }
             _ => {}
         }
-    }
-
-    fn name(&self) -> &'static str {
-        "8253 PIT"
     }
 }

@@ -98,13 +98,13 @@ pub fn process(vm: &mut Runtime) {
                 vm.cpu.registers.ax.set(res);
             } else {
                 let byte = vm.cpu.fetch_byte();
-                let ah = vm.cpu.registers.ax.low();
-                let (res, overflow, carry) = ah.oc_add(byte);
+                let al = vm.cpu.registers.ax.low();
+                let (res, overflow, carry) = al.oc_add(byte);
 
                 update_arithmetic_flags_byte(vm, res, overflow, carry);
                 vm.cpu.update_flag(
                     AuxCarry,
-                    (((byte & BYTE_AUX_CARRY_MASK) + (ah & BYTE_AUX_CARRY_MASK))
+                    (((byte & BYTE_AUX_CARRY_MASK) + (al & BYTE_AUX_CARRY_MASK))
                         & BYTE_AUX_CARRY_FLAG)
                         != 0,
                 );
@@ -580,11 +580,11 @@ pub fn process(vm: &mut Runtime) {
             if (match (opcode >> 1) & 0b_111 {
                 // JO / JNO
                 0b_000 => vm.cpu.check_flag(Overflow),
-                // JB,JNEA / JAE,JNB
+                // JB,JNAE / JAE,JNB
                 0b_001 => vm.cpu.check_flag(Carry),
                 // JE,JZ / JNE,JNZ
                 0b_010 => vm.cpu.check_flag(Zero),
-                // JBE,JNS / JA,JNBE
+                // JBE,JNA / JA,JNBE
                 0b_011 => vm.cpu.check_flag(Carry) || vm.cpu.check_flag(Zero),
                 // JS / JNS
                 0b_100 => vm.cpu.check_flag(Sign),
@@ -1159,7 +1159,7 @@ pub fn process(vm: &mut Runtime) {
             let pc = vm.pop_word();
             vm.cpu.registers.pc.set(pc);
         }
-        // RET disp16
+        // RETF imm16
         0xCA => {
             let disp = vm.cpu.fetch_word();
             let pc = vm.pop_word();
@@ -1333,13 +1333,13 @@ pub fn process(vm: &mut Runtime) {
         }
         // WAIT
         0x9B => {}
-        // XCHNG reg
+        // XCHG reg
         0b_1001_0001..=0b_1001_0111 => {
             vm.cpu.registers
                 .ref_reg_word(opcode & 0b_111)
                 .swap_register(&mut vm.cpu.registers.ax);
         }
-        // XCHNG Mod R/M
+        // XCHG Mod R/M
         0b_1000_0110 | 0b_1000_0111 => {
             if is_word {
                 let (mut modrm, reg) = u16::mod_rm_single(vm);

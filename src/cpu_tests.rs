@@ -1,16 +1,17 @@
-/// CPU validation tests against real 8086 hardware captures.
-///
-/// Test data lives in `8086/v1/*.json.gz` — 2,000 tests per opcode captured
-/// from a physical Intel P80C86A-2 CPU.
-///
-/// Run all CPU tests:
-///     cargo test cpu_tests -- --ignored
-///
-/// Run a single opcode:
-///     cargo test cpu_tests::test_opcode_00 -- --ignored
-///
-/// Run a range:
-///     cargo test cpu_tests::test_opcode_0 -- --ignored   (matches 00–0f)
+//! CPU validation tests against real 8086 hardware captures.
+//!
+//! Test data lives in `8086/v1/*.json.gz` — 2,000 tests per file (one file
+//! per opcode, or per ModR/M `reg` value for group opcodes) captured from a
+//! physical Intel P80C86A-2 CPU.
+//!
+//! Run all CPU tests:
+//!     cargo test cpu_tests -- --ignored
+//!
+//! Run a single opcode:
+//!     cargo test cpu_tests::test_opcode_00 -- --ignored
+//!
+//! Run a range:
+//!     cargo test cpu_tests::test_opcode_0 -- --ignored   (matches 00–0e)
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -38,9 +39,6 @@ struct TestCase {
 struct InitialState {
     regs: InitialRegs,
     ram: Vec<(u32, u8)>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    queue: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -65,9 +63,6 @@ struct InitialRegs {
 struct FinalState {
     regs: HashMap<String, u16>,
     ram: Vec<(u32, u8)>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    queue: Vec<u8>,
 }
 
 // ── Metadata types ──────────────────────────────────────────────────────
@@ -138,14 +133,21 @@ fn get_flags_mask(opcode_str: &str) -> u16 {
 
 /// Find all test files matching an opcode hex string.
 /// Returns `(path, opcode_label)` pairs sorted by label.
+/// Panics if the vector directory is missing, so the tests cannot pass
+/// without running anything.
 fn find_test_files(opcode_hex: &str) -> Vec<(PathBuf, String)> {
     let dir = Path::new("8086/v1");
     let target = opcode_hex.to_lowercase();
 
     let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return files;
-    };
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "cannot read the CPU test vectors in {} ({}): the 8086 submodule \
+             is missing, run `git submodule update --init`",
+            dir.display(),
+            e
+        )
+    });
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -332,25 +334,14 @@ fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
     }
 }
 
-/// Opcodes where the emulator intentionally implements 80186+ behavior
-/// instead of 8086 behavior (for DOS compatibility). Tests for these are skipped.
-const SKIP_186_OPCODES: &[&str] = &[
-    "60", "61", "62", "63", "64", "65", "66", "67",
-    "68", "69", "6a", "6b", "6c", "6d", "6e", "6f",
-    "c0", "c1", "c8", "c9",
-];
-
 /// Run all test files for an opcode (base + sub-opcodes).
 fn run_opcode(opcode_hex: &str) {
-    if SKIP_186_OPCODES.contains(&opcode_hex) {
-        eprintln!("  skip opcode {} — intentional 80186+ implementation", opcode_hex);
-        return;
-    }
     let files = find_test_files(opcode_hex);
-    if files.is_empty() {
-        eprintln!("  skip opcode {} — no test files found", opcode_hex);
-        return;
-    }
+    assert!(
+        !files.is_empty(),
+        "no test vectors for opcode {} in 8086/v1",
+        opcode_hex
+    );
 
     let mut total_passed = 0usize;
     let mut total_failed = 0usize;
@@ -427,12 +418,21 @@ macro_rules! cpu_tests {
     };
 }
 
+// One test per opcode that has hardware vectors to run. Left out:
+//   - 0F, 26, 2E, 36, 3E, 9B, F0, F1, F2, F3 and F4: the test suite has no
+//     vector file for them (POP CS, the segment/LOCK/REP prefixes, WAIT, HLT).
+//   - 60-62, 64-6F, C0, C1, C8 and C9: the vectors record what the 8086 does
+//     with these bytes, but the emulator deliberately gives them their 80186
+//     meaning (PUSHA, POPA, BOUND, PUSH imm, IMUL imm, INS/OUTS, shift by
+//     imm8, ENTER, LEAVE) or, for 64-67, treats them as 80386 prefixes, for
+//     DOS compatibility.
+// 63 keeps its 8086 meaning (an alias of JNB) and is tested.
 cpu_tests! {
     // 0x00 – 0x0F
     (test_opcode_00, "00"), (test_opcode_01, "01"), (test_opcode_02, "02"), (test_opcode_03, "03"),
     (test_opcode_04, "04"), (test_opcode_05, "05"), (test_opcode_06, "06"), (test_opcode_07, "07"),
     (test_opcode_08, "08"), (test_opcode_09, "09"), (test_opcode_0a, "0a"), (test_opcode_0b, "0b"),
-    (test_opcode_0c, "0c"), (test_opcode_0d, "0d"), (test_opcode_0e, "0e"), (test_opcode_0f, "0f"),
+    (test_opcode_0c, "0c"), (test_opcode_0d, "0d"), (test_opcode_0e, "0e"),
     // 0x10 – 0x1F
     (test_opcode_10, "10"), (test_opcode_11, "11"), (test_opcode_12, "12"), (test_opcode_13, "13"),
     (test_opcode_14, "14"), (test_opcode_15, "15"), (test_opcode_16, "16"), (test_opcode_17, "17"),
@@ -440,14 +440,14 @@ cpu_tests! {
     (test_opcode_1c, "1c"), (test_opcode_1d, "1d"), (test_opcode_1e, "1e"), (test_opcode_1f, "1f"),
     // 0x20 – 0x2F
     (test_opcode_20, "20"), (test_opcode_21, "21"), (test_opcode_22, "22"), (test_opcode_23, "23"),
-    (test_opcode_24, "24"), (test_opcode_25, "25"), (test_opcode_26, "26"), (test_opcode_27, "27"),
+    (test_opcode_24, "24"), (test_opcode_25, "25"), (test_opcode_27, "27"),
     (test_opcode_28, "28"), (test_opcode_29, "29"), (test_opcode_2a, "2a"), (test_opcode_2b, "2b"),
-    (test_opcode_2c, "2c"), (test_opcode_2d, "2d"), (test_opcode_2e, "2e"), (test_opcode_2f, "2f"),
+    (test_opcode_2c, "2c"), (test_opcode_2d, "2d"), (test_opcode_2f, "2f"),
     // 0x30 – 0x3F
     (test_opcode_30, "30"), (test_opcode_31, "31"), (test_opcode_32, "32"), (test_opcode_33, "33"),
-    (test_opcode_34, "34"), (test_opcode_35, "35"), (test_opcode_36, "36"), (test_opcode_37, "37"),
+    (test_opcode_34, "34"), (test_opcode_35, "35"), (test_opcode_37, "37"),
     (test_opcode_38, "38"), (test_opcode_39, "39"), (test_opcode_3a, "3a"), (test_opcode_3b, "3b"),
-    (test_opcode_3c, "3c"), (test_opcode_3d, "3d"), (test_opcode_3e, "3e"), (test_opcode_3f, "3f"),
+    (test_opcode_3c, "3c"), (test_opcode_3d, "3d"), (test_opcode_3f, "3f"),
     // 0x40 – 0x4F
     (test_opcode_40, "40"), (test_opcode_41, "41"), (test_opcode_42, "42"), (test_opcode_43, "43"),
     (test_opcode_44, "44"), (test_opcode_45, "45"), (test_opcode_46, "46"), (test_opcode_47, "47"),
@@ -459,10 +459,7 @@ cpu_tests! {
     (test_opcode_58, "58"), (test_opcode_59, "59"), (test_opcode_5a, "5a"), (test_opcode_5b, "5b"),
     (test_opcode_5c, "5c"), (test_opcode_5d, "5d"), (test_opcode_5e, "5e"), (test_opcode_5f, "5f"),
     // 0x60 – 0x6F
-    (test_opcode_60, "60"), (test_opcode_61, "61"), (test_opcode_62, "62"), (test_opcode_63, "63"),
-    (test_opcode_64, "64"), (test_opcode_65, "65"), (test_opcode_66, "66"), (test_opcode_67, "67"),
-    (test_opcode_68, "68"), (test_opcode_69, "69"), (test_opcode_6a, "6a"), (test_opcode_6b, "6b"),
-    (test_opcode_6c, "6c"), (test_opcode_6d, "6d"), (test_opcode_6e, "6e"), (test_opcode_6f, "6f"),
+    (test_opcode_63, "63"),
     // 0x70 – 0x7F
     (test_opcode_70, "70"), (test_opcode_71, "71"), (test_opcode_72, "72"), (test_opcode_73, "73"),
     (test_opcode_74, "74"), (test_opcode_75, "75"), (test_opcode_76, "76"), (test_opcode_77, "77"),
@@ -476,7 +473,7 @@ cpu_tests! {
     // 0x90 – 0x9F
     (test_opcode_90, "90"), (test_opcode_91, "91"), (test_opcode_92, "92"), (test_opcode_93, "93"),
     (test_opcode_94, "94"), (test_opcode_95, "95"), (test_opcode_96, "96"), (test_opcode_97, "97"),
-    (test_opcode_98, "98"), (test_opcode_99, "99"), (test_opcode_9a, "9a"), (test_opcode_9b, "9b"),
+    (test_opcode_98, "98"), (test_opcode_99, "99"), (test_opcode_9a, "9a"),
     (test_opcode_9c, "9c"), (test_opcode_9d, "9d"), (test_opcode_9e, "9e"), (test_opcode_9f, "9f"),
     // 0xA0 – 0xAF
     (test_opcode_a0, "a0"), (test_opcode_a1, "a1"), (test_opcode_a2, "a2"), (test_opcode_a3, "a3"),
@@ -489,9 +486,9 @@ cpu_tests! {
     (test_opcode_b8, "b8"), (test_opcode_b9, "b9"), (test_opcode_ba, "ba"), (test_opcode_bb, "bb"),
     (test_opcode_bc, "bc"), (test_opcode_bd, "bd"), (test_opcode_be, "be"), (test_opcode_bf, "bf"),
     // 0xC0 – 0xCF
-    (test_opcode_c0, "c0"), (test_opcode_c1, "c1"), (test_opcode_c2, "c2"), (test_opcode_c3, "c3"),
+    (test_opcode_c2, "c2"), (test_opcode_c3, "c3"),
     (test_opcode_c4, "c4"), (test_opcode_c5, "c5"), (test_opcode_c6, "c6"), (test_opcode_c7, "c7"),
-    (test_opcode_c8, "c8"), (test_opcode_c9, "c9"), (test_opcode_ca, "ca"), (test_opcode_cb, "cb"),
+    (test_opcode_ca, "ca"), (test_opcode_cb, "cb"),
     (test_opcode_cc, "cc"), (test_opcode_cd, "cd"), (test_opcode_ce, "ce"), (test_opcode_cf, "cf"),
     // 0xD0 – 0xDF
     (test_opcode_d0, "d0"), (test_opcode_d1, "d1"), (test_opcode_d2, "d2"), (test_opcode_d3, "d3"),
@@ -504,8 +501,7 @@ cpu_tests! {
     (test_opcode_e8, "e8"), (test_opcode_e9, "e9"), (test_opcode_ea, "ea"), (test_opcode_eb, "eb"),
     (test_opcode_ec, "ec"), (test_opcode_ed, "ed"), (test_opcode_ee, "ee"), (test_opcode_ef, "ef"),
     // 0xF0 – 0xFF
-    (test_opcode_f0, "f0"), (test_opcode_f1, "f1"), (test_opcode_f2, "f2"), (test_opcode_f3, "f3"),
-    (test_opcode_f4, "f4"), (test_opcode_f5, "f5"), (test_opcode_f6, "f6"), (test_opcode_f7, "f7"),
+    (test_opcode_f5, "f5"), (test_opcode_f6, "f6"), (test_opcode_f7, "f7"),
     (test_opcode_f8, "f8"), (test_opcode_f9, "f9"), (test_opcode_fa, "fa"), (test_opcode_fb, "fb"),
     (test_opcode_fc, "fc"), (test_opcode_fd, "fd"), (test_opcode_fe, "fe"), (test_opcode_ff, "ff"),
 }

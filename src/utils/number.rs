@@ -1,5 +1,3 @@
-use num_traits::PrimInt;
-
 #[inline]
 pub fn div_rem<T: std::ops::Div<Output=T> + std::ops::Rem<Output=T> + Copy>(x: T, y: T) -> (T, T) {
     let quot = x / y;
@@ -12,7 +10,7 @@ pub const fn extend_sign(value: u8) -> u16 {
     value as i8 as i16 as u16
 }
 
-pub trait SpecialOps: PrimInt {
+pub trait SpecialOps: Sized {
     fn oc_carry_add(self, y: Self, carry: bool) -> (Self, bool, bool);
     fn oc_add(self, y: Self) -> (Self, bool, bool);
 

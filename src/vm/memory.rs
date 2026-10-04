@@ -25,11 +25,6 @@ impl Memory {
     pub fn enable_rom_protection(&mut self) {
         self.rom_start = 0xF0000;
     }
-
-    /// Set a custom ROM protection boundary.
-    pub fn set_rom_start(&mut self, addr: usize) {
-        self.rom_start = addr;
-    }
 }
 
 impl Memory {
@@ -86,6 +81,7 @@ impl Memory {
         self.mem[addr] = byte;
     }
 
+    #[cfg(test)]
     #[inline]
     pub fn write_word(&mut self, address: usize, word: u16) {
         let bytes = word.to_le_bytes();
@@ -96,7 +92,7 @@ impl Memory {
     }
 
     /// Write a byte without ROM protection checks.
-    /// Used for loading ROM images into memory.
+    #[cfg(test)]
     #[inline]
     pub fn write_byte_unchecked(&mut self, address: usize, byte: u8) {
         self.mem[address & 0xFFFFF] = byte;
@@ -174,7 +170,7 @@ impl Segment {
 }
 
 // ---------------------------------------------------------------------------
-// Inspection tests — Memory & Segment invariants flagged by the code review.
+// Regression tests — Memory & Segment invariants.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod inspection_tests {
@@ -221,11 +217,8 @@ mod inspection_tests {
         assert_eq!(mem.read_byte(0xF0000), 0x22, "the ROM byte is not");
     }
 
-    /// FINDING (Phase 2): Segment::read_word at offset 0xFFFF must wrap
-    /// within the segment (low byte from offset 0xFFFF, high byte from 0x0000
-    /// of the SAME segment). Real 8086 does this.
-    /// STATUS: PASSES → retracted. `Segment::read_word` uses byte-by-byte
-    /// access with `address.wrapping_add(1)`.
+    /// `Segment::read_word` at offset 0xFFFF wraps within the segment, as on
+    /// the 8086: low byte from offset 0xFFFF, high byte from offset 0x0000.
     #[test]
     fn segment_read_word_wraps_within_segment_at_offset_ffff() {
         let mut mem = Box::new(Memory::new());
@@ -234,7 +227,7 @@ mod inspection_tests {
         // Write 0xBB at segment:0x0000 (physical 0x10000)
         Memory::copy_data(&mut mem, 0x1FFFF, &[0xAA]);
         Memory::copy_data(&mut mem, 0x10000, &[0xBB]);
-        let mut seg = Segment::new(0x1000, &mut *mem as *mut Memory);
+        let seg = Segment::new(0x1000, &mut *mem as *mut Memory);
         let word = seg.read_word(0xFFFF);
         assert_eq!(
             word, 0xBBAA,
@@ -243,10 +236,8 @@ mod inspection_tests {
         );
     }
 
-    /// FINDING (Phase 2): Memory::read_word at physical 0xFFFFF must wrap
-    /// to read the high byte from physical 0. This is the real 8086 20-bit
-    /// address bus wrap (no A20 line).
-    /// STATUS: PASSES → retracted. `Memory::read_word` masks both addresses.
+    /// `Memory::read_word` at physical 0xFFFFF reads the high byte from
+    /// physical 0, like the 8086's 20-bit address bus (no A20 line).
     #[test]
     fn memory_read_word_wraps_at_1mb_boundary() {
         let mut mem = Memory::new();
@@ -259,10 +250,8 @@ mod inspection_tests {
         );
     }
 
-    /// FINDING (Phase 2): ROM write protection must block writes above
-    /// rom_start when enabled.
-    /// STATUS: PASSES → retracted. `write_byte` / `write_word` check
-    /// `addr >= self.rom_start`.
+    /// With ROM protection enabled, `write_byte` drops writes at or above
+    /// `rom_start`; `write_byte_unchecked` still writes.
     #[test]
     fn rom_write_protection_blocks_writes() {
         let mut mem = Memory::new();

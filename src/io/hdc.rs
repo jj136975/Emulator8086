@@ -34,8 +34,4 @@ impl IoDevice for HdcStub {
     fn port_out_byte(&mut self, port: u16, value: u8, _cpu: &mut Cpu) {
         debug!("HDC: write to port {:04X} = {:02X}", port, value);
     }
-
-    fn name(&self) -> &'static str {
-        "Xebec HDC Stub"
-    }
 }

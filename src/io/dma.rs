@@ -200,10 +200,6 @@ impl IoDevice for DmaController {
             }
         }
     }
-
-    fn name(&self) -> &'static str {
-        "8237A DMA Controller"
-    }
 }
 
 impl DmaController {
@@ -265,9 +261,5 @@ impl IoDevice for DmaPageRegisters {
                 debug!("DMA Page: unhandled write to port {:04X} = {:02X}", port, value);
             }
         }
-    }
-
-    fn name(&self) -> &'static str {
-        "DMA Page Registers"
     }
 }

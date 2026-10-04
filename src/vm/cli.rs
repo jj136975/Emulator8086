@@ -15,8 +15,8 @@ fn parse_floppy(s: &str) -> Option<u8> {
 /// Parse "hd0", "hd1", etc. into BIOS hard disk number (0x80+).
 fn parse_hd(s: &str) -> Option<u8> {
     let lower = s.to_lowercase();
-    if lower.starts_with("hd") {
-        lower[2..].parse::<u8>().ok().map(|n| 0x80 + n)
+    if let Some(index) = lower.strip_prefix("hd") {
+        index.parse::<u8>().ok().map(|n| 0x80 + n)
     } else {
         None
     }
@@ -71,16 +71,13 @@ pub fn enter_monitor(disk_ctrl: &mut DiskController) {
         println!("Hard Disks:");
         for i in 0..4u8 {
             let drive_num = 0x80 + i;
-            match disk_ctrl.find_drive(drive_num) {
-                Some(d) => {
-                    let size_mb = d.total_bytes() / (1024 * 1024);
-                    let ro = if d.readonly { " [ro]" } else { "" };
-                    println!(
-                        "  HD{}: [loaded] ({}MB, C/H/S={}/{}/{}){}",
-                        i, size_mb, d.cylinders, d.heads, d.sectors_per_track, ro
-                    );
-                }
-                None => {}
+            if let Some(d) = disk_ctrl.find_drive(drive_num) {
+                let size_mb = d.total_bytes() / (1024 * 1024);
+                let ro = if d.readonly { " [ro]" } else { "" };
+                println!(
+                    "  HD{}: [loaded] ({}MB, C/H/S={}/{}/{}){}",
+                    i, size_mb, d.cylinders, d.heads, d.sectors_per_track, ro
+                );
             }
         }
     } else {
@@ -213,7 +210,7 @@ pub fn enter_monitor(disk_ctrl: &mut DiskController) {
                     Some(d) => d,
                     None => continue,
                 };
-                match disk_ctrl.find_drive_mut(drive_num) {
+                match disk_ctrl.find_drive(drive_num) {
                     Some(disk) => match disk.save_to_file(Path::new(parts[2])) {
                         Ok(()) => println!("{} saved to {}", drive_label(drive_num), parts[2]),
                         Err(e) => println!("Error: {}", e),
@@ -258,7 +255,7 @@ pub fn enter_monitor(disk_ctrl: &mut DiskController) {
                 };
 
                 let label = drive_label(drive_num);
-                let disk = match disk_ctrl.find_drive_mut(drive_num) {
+                let disk = match disk_ctrl.find_drive(drive_num) {
                     Some(d) => d,
                     None => {
                         println!("{} is empty", label);

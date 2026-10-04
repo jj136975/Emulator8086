@@ -53,8 +53,4 @@ impl IoDevice for FdcStub {
             }
         }
     }
-
-    fn name(&self) -> &'static str {
-        "NEC uPD765 FDC Stub"
-    }
 }

@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use clap_derive::Parser;
 
 use crate::io::disk::{DiskSource, DiskSpec, FLOPPY_144_SIZE};
 use crate::vm::runtime::Runtime;
@@ -21,7 +20,7 @@ mod bios_tests;
 
 #[derive(Parser, Debug)]
 #[command(name = "emulator8086", about = "Intel 8086 emulator")]
-struct CLI {
+struct Cli {
     /// Path to boot ROM image (e.g. --rom boot.bin)
     rom: PathBuf,
     /// Disk specification: DRIVE:SOURCE (e.g. a:boot.img, b:memory, a:C:\path\to\image.img)
@@ -38,15 +37,6 @@ struct CLI {
     /// Enable register trace output
     #[arg(long)]
     trace: bool
-    // /// Run in headless mode (no terminal UI)
-    // #[arg(long)]
-    // headless: bool,
-    // /// Path to write VGA screen dump (default: screen.txt when headless)
-    // #[arg(long)]
-    // screen_dump: Option<PathBuf>,
-    // /// Path to read keystroke commands from (default: keys.txt when headless)
-    // #[arg(long)]
-    // key_input: Option<PathBuf>,
 }
 
 fn parse_disk_spec(spec: &str) -> DiskSpec {
@@ -78,10 +68,10 @@ fn parse_disk_spec(spec: &str) -> DiskSpec {
     };
 
     // Check for :ro or :rw suffix
-    let (source_str, readonly) = if rest.ends_with(":ro") {
-        (&rest[..rest.len() - 3], true)
-    } else if rest.ends_with(":rw") {
-        (&rest[..rest.len() - 3], false)
+    let (source_str, readonly) = if let Some(source) = rest.strip_suffix(":ro") {
+        (source, true)
+    } else if let Some(source) = rest.strip_suffix(":rw") {
+        (source, false)
     } else {
         (rest, false)
     };
@@ -129,19 +119,10 @@ fn parse_boot_order(spec: &str) -> Vec<u8> {
 
 fn main() {
     env_logger::init();
-    let args = CLI::parse();
+    let args = Cli::parse();
 
     let specs: Vec<DiskSpec> = args.disk.iter().map(|s| parse_disk_spec(s)).collect();
     let boot_order = args.boot.as_deref().map(parse_boot_order);
-
-    // let headless_config = if args.headless {
-    //     Some(HeadlessConfig {
-    //         screen_dump_path: args.screen_dump.unwrap_or_else(|| PathBuf::from("screen.txt")),
-    //         key_input_path: args.key_input.unwrap_or_else(|| PathBuf::from("keys.txt")),
-    //     })
-    // } else {
-    //     None
-    // };
 
     let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace);
     runtime.load_rom(args.rom);

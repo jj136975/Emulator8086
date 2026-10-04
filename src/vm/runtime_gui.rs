@@ -1,5 +1,3 @@
-#![cfg(feature = "gui")]
-
 use std::sync::Arc;
 use std::sync::mpsc;
 

@@ -17,8 +17,6 @@ pub trait IoDevice {
         self.port_out_byte(port, value as u8, cpu);
         self.port_out_byte(port.wrapping_add(1), (value >> 8) as u8, cpu);
     }
-
-    fn name(&self) -> &'static str;
 }
 
 impl <T: IoDevice> IoDevice for Rc<RefCell<T>> {
@@ -33,9 +31,6 @@ impl <T: IoDevice> IoDevice for Rc<RefCell<T>> {
     }
     fn port_out_word(&mut self, port: u16, value: u16, cpu: &mut Cpu) {
         self.borrow_mut().port_out_word(port, value, cpu)
-    }
-    fn name(&self) -> &'static str {
-        self.borrow().name()
     }
 }
 
@@ -147,7 +142,7 @@ impl IoBus {
 }
 
 // ---------------------------------------------------------------------------
-// Inspection tests — IoBus registration and dispatch invariants.
+// Regression tests — IoBus registration and dispatch invariants.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod inspection_tests {
@@ -157,14 +152,10 @@ mod inspection_tests {
     impl IoDevice for DummyDevice {
         fn port_in_byte(&mut self, _port: u16, _cpu: &mut Cpu) -> u8 { 0 }
         fn port_out_byte(&mut self, _port: u16, _value: u8, _cpu: &mut Cpu) {}
-        fn name(&self) -> &'static str { "dummy" }
     }
 
-    /// FINDING (Phase 3): `register()` rejects back-to-back adjacent ranges
-    /// because of `start <= self.last_port`.
-    /// STATUS: PASSES → retracted. `start > last_port` is the required
-    /// condition, and adjacency (e.g., 0..=15 followed by 16..=31) satisfies
-    /// that: 16 > 15 → registration succeeds.
+    /// Adjacent, non-overlapping port ranges (0x00..=0x0F then 0x10..=0x1F)
+    /// register without panicking.
     #[test]
     fn adjacent_nonoverlapping_port_ranges_register_cleanly() {
         let mut bus = IoBus::new();
