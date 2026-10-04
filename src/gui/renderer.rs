@@ -1,11 +1,12 @@
-//! The window renderer: a wgpu surface on the winit window, one texture
-//! that takes the frame `raster` draws on the CPU, and a fullscreen-triangle
-//! blit that scales it by a whole number, centres it and leaves the rest of
-//! the window black.
+//! The window's renderer, in two parts. `FrameBlit` needs no window: one
+//! texture that takes the frame `raster` draws on the CPU, and a
+//! fullscreen-triangle blit that scales it by a whole number, centres it in
+//! its target and leaves the rest of the target black. `Renderer` holds the
+//! wgpu surface on the winit window and puts one blit on it per frame.
 //!
 //! The invariant: the frame holds display-encoded DAC colours that must
 //! reach the screen unchanged, so the texture's encoding follows the
-//! surface's (`framebuffer_format`). A mismatch decodes without encoding
+//! target's (`framebuffer_format`). A mismatch decodes without encoding
 //! again, or encodes what was never decoded: too dark or too bright.
 
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use wgpu::util::DeviceExt;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
-use crate::io::raster;
+use crate::io::raster::{self, BlinkPhase};
 use crate::io::vga::{VgaDevice, VideoMode};
 use crate::vm::memory::Memory;
 
@@ -63,12 +64,12 @@ pub(crate) fn compute_viewport_math(
     )
 }
 
-/// Format of the frame texture for a given surface format. The frame holds
-/// DAC values, which are display-encoded. With an sRGB surface the texture
+/// Format of the frame texture for a given target format. The frame holds
+/// DAC values, which are display-encoded. With an sRGB target the texture
 /// is sRGB too (decoded on sampling, encoded again on output); with any
-/// other surface it must be plain, or the picture would be decoded only.
-fn framebuffer_format(surface_format: wgpu::TextureFormat) -> wgpu::TextureFormat {
-    if surface_format.is_srgb() {
+/// other target it must be plain, or the picture would be decoded only.
+fn framebuffer_format(target_format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if target_format.is_srgb() {
         wgpu::TextureFormat::Rgba8UnormSrgb
     } else {
         wgpu::TextureFormat::Rgba8Unorm
@@ -97,45 +98,70 @@ fn create_framebuffer_texture(
     })
 }
 
+/// The bind group of the blit: the frame texture, its sampler and the
+/// uniforms. It holds a view of the texture, so a new texture needs a new
+/// bind group.
+fn create_blit_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    texture: &wgpu::Texture,
+    sampler: &wgpu::Sampler,
+    uniform_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Blit BG"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&texture_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+/// What the renderer asks of a device: no optional feature, the default
+/// limits.
+fn device_descriptor() -> wgpu::DeviceDescriptor<'static> {
+    wgpu::DeviceDescriptor {
+        label: Some("VGA Device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        ..Default::default()
+    }
+}
+
 /// Uniform buffer for the fullscreen blit shader.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct BlitUniforms {
     /// The viewport in pixels: offset_x, offset_y, scaled_w, scaled_h.
     viewport: [f32; 4],
-    /// Window size.
+    /// Size of the target, which for the surface is the window's.
     window_size: [f32; 2],
     _pad: [f32; 2],
 }
 
-pub struct Renderer {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    texture: wgpu::Texture,
-    texture_view: wgpu::TextureView,
-    sampler: wgpu::Sampler,
-    bind_group_layout: wgpu::BindGroupLayout,
-    bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
-
-    // CPU-side framebuffer (RGBA)
-    framebuffer: Vec<u8>,
-    fb_width: u32,
-    fb_height: u32,
-    fb_format: wgpu::TextureFormat,
-
-    /// The video mode the frame texture is sized for.
-    current_mode: VideoMode,
-
-    // Window size in physical pixels, never zero.
-    win_width: u32,
-    win_height: u32,
-
-    /// Reference point for the blink phase of cursor and text.
-    started: Instant,
+impl BlitUniforms {
+    /// The uniforms that put a frame of `fb_width` x `fb_height` on a target
+    /// of `width` x `height`.
+    fn new(width: u32, height: u32, fb_width: u32, fb_height: u32) -> Self {
+        let (vp_x, vp_y, vp_w, vp_h) = compute_viewport_math(width, height, fb_width, fb_height);
+        Self {
+            viewport: [vp_x, vp_y, vp_w, vp_h],
+            window_size: [width as f32, height as f32],
+            _pad: [0.0; 2],
+        }
+    }
 }
 
 const SHADER_SRC: &str = r#"
@@ -191,67 +217,48 @@ fn fs_main(in: VsOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-impl Renderer {
-    /// `display` is the event loop's display handle, the one `window` was
-    /// created on.
-    pub fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
-        let size = window.inner_size();
+/// The emulator's frame on the GPU: the texture the rasterised frame is
+/// uploaded to and the pipeline that draws it into a target of one format
+/// and one size. It never sees the surface: `draw` takes any texture view,
+/// which is what lets a test draw into a texture and read it back.
+struct FrameBlit {
+    pipeline: wgpu::RenderPipeline,
+    texture: wgpu::Texture,
+    sampler: wgpu::Sampler,
+    bind_group_layout: wgpu::BindGroupLayout,
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
 
-        // Every backend the build has. The GL backend presents through the
-        // display the instance was given, so it gets the event loop's.
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(display),
-        ));
+    // CPU-side framebuffer (RGBA)
+    framebuffer: Vec<u8>,
+    fb_width: u32,
+    fb_height: u32,
+    fb_format: wgpu::TextureFormat,
 
-        let surface = instance.create_surface(window.clone()).unwrap();
+    /// The video mode the frame texture is sized for.
+    current_mode: VideoMode,
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .expect("Failed to find GPU adapter");
+    // Target size in physical pixels, never zero.
+    target_width: u32,
+    target_height: u32,
+}
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("VGA Device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            ..Default::default()
-        }))
-        .expect("Failed to create GPU device");
-
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(surface_caps.formats[0]);
-
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            // For an 8-bit format `Auto` is sRGB at standard range, the
-            // encoding the frame's DAC colours are in.
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &surface_config);
-
+impl FrameBlit {
+    /// A blit into targets of `target_format` that are `width` x `height`
+    /// pixels.
+    fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Self {
         // Sized for text mode, the mode `current_mode` starts in.
         let fb_width = TEXT_WIDTH;
         let fb_height = TEXT_HEIGHT;
         let framebuffer = vec![0u8; (fb_width * fb_height * 4) as usize];
-        let fb_format = framebuffer_format(surface_format);
+        let fb_format = framebuffer_format(target_format);
 
-        let texture = create_framebuffer_texture(&device, fb_format, fb_width, fb_height);
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture = create_framebuffer_texture(device, fb_format, fb_width, fb_height);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Nearest Sampler"),
@@ -261,17 +268,16 @@ impl Renderer {
         });
 
         // The same integer-scaled viewport that a resize computes, so the
-        // first frames are not stretched to the window.
-        let (win_width, win_height) = (size.width.max(1), size.height.max(1));
-        let (vp_x, vp_y, vp_w, vp_h) =
-            compute_viewport_math(win_width, win_height, fb_width, fb_height);
+        // first frames are not stretched to the target.
+        let (target_width, target_height) = (width.max(1), height.max(1));
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Blit Uniforms"),
-            contents: bytemuck::cast_slice(&[BlitUniforms {
-                viewport: [vp_x, vp_y, vp_w, vp_h],
-                window_size: [win_width as f32, win_height as f32],
-                _pad: [0.0; 2],
-            }]),
+            contents: bytemuck::bytes_of(&BlitUniforms::new(
+                target_width,
+                target_height,
+                fb_width,
+                fb_height,
+            )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -307,24 +313,13 @@ impl Renderer {
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blit BG"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group = create_blit_bind_group(
+            device,
+            &bind_group_layout,
+            &texture,
+            &sampler,
+            &uniform_buffer,
+        );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Blit Pipeline Layout"),
@@ -350,7 +345,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: target_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -367,13 +362,8 @@ impl Renderer {
         });
 
         Self {
-            device,
-            queue,
-            surface,
-            surface_config,
             pipeline,
             texture,
-            texture_view,
             sampler,
             bind_group_layout,
             bind_group,
@@ -383,100 +373,83 @@ impl Renderer {
             fb_height,
             fb_format,
             current_mode: VideoMode::Text80x25,
-            win_width,
-            win_height,
-            started: Instant::now(),
+            target_width,
+            target_height,
         }
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        self.win_width = width;
-        self.win_height = height;
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
-        self.update_uniforms();
+    /// The target is `width` x `height` pixels from now on.
+    fn resize(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
+        self.target_width = width.max(1);
+        self.target_height = height.max(1);
+        self.update_uniforms(queue);
     }
 
-    fn update_uniforms(&self) {
-        let (vp_x, vp_y, vp_w, vp_h) = self.compute_viewport();
-        self.queue.write_buffer(
+    fn update_uniforms(&self, queue: &wgpu::Queue) {
+        queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::cast_slice(&[BlitUniforms {
-                viewport: [vp_x, vp_y, vp_w, vp_h],
-                window_size: [self.win_width as f32, self.win_height as f32],
-                _pad: [0.0; 2],
-            }]),
+            bytemuck::bytes_of(&BlitUniforms::new(
+                self.target_width,
+                self.target_height,
+                self.fb_width,
+                self.fb_height,
+            )),
         );
     }
 
-    /// Compute integer-scaled viewport centered in window.
-    fn compute_viewport(&self) -> (f32, f32, f32, f32) {
-        compute_viewport_math(
-            self.win_width,
-            self.win_height,
-            self.fb_width,
-            self.fb_height,
-        )
-    }
-
     /// Recreate the framebuffer texture when mode changes.
-    fn recreate_texture(&mut self, width: u32, height: u32) {
+    fn recreate_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+    ) {
         self.fb_width = width;
         self.fb_height = height;
         self.framebuffer.resize((width * height * 4) as usize, 0);
 
-        self.texture = create_framebuffer_texture(&self.device, self.fb_format, width, height);
-        self.texture_view = self
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.texture = create_framebuffer_texture(device, self.fb_format, width, height);
+        self.bind_group = create_blit_bind_group(
+            device,
+            &self.bind_group_layout,
+            &self.texture,
+            &self.sampler,
+            &self.uniform_buffer,
+        );
 
-        // The bind group holds the texture view, so it is rebuilt with it.
-        self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blit BG"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&self.texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        self.update_uniforms();
+        self.update_uniforms(queue);
     }
 
-    /// Render current VGA state to the window.
-    pub fn render(&mut self, vga: &VgaDevice, memory: &Memory) {
+    /// Rasterises the screen as it looks in blink phase `phase` and uploads
+    /// the frame to the texture.
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vga: &VgaDevice,
+        memory: &Memory,
+        phase: BlinkPhase,
+    ) {
         if vga.video_mode != self.current_mode {
             self.current_mode = vga.video_mode;
             match self.current_mode {
-                VideoMode::Text80x25 => self.recreate_texture(TEXT_WIDTH, TEXT_HEIGHT),
-                VideoMode::Mode13h => self.recreate_texture(GFX_WIDTH, GFX_HEIGHT),
+                VideoMode::Text80x25 => {
+                    self.recreate_texture(device, queue, TEXT_WIDTH, TEXT_HEIGHT)
+                }
+                VideoMode::Mode13h => self.recreate_texture(device, queue, GFX_WIDTH, GFX_HEIGHT),
             }
         }
 
         match self.current_mode {
             VideoMode::Text80x25 => {
-                let phase = raster::BlinkPhase::at(self.started.elapsed());
                 raster::rasterize_text(&mut self.framebuffer, vga, memory, phase);
             }
             VideoMode::Mode13h => raster::rasterize_mode13h(&mut self.framebuffer, vga, memory),
         }
 
-        self.queue.write_texture(
+        queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
@@ -495,6 +468,122 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    /// Records the pass that draws the uploaded frame into `target`, a view
+    /// of the format and the size the blit was told.
+    fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Blit Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+pub struct Renderer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: wgpu::Surface<'static>,
+    surface_config: wgpu::SurfaceConfiguration,
+    blit: FrameBlit,
+
+    /// Reference point for the blink phase of cursor and text.
+    started: Instant,
+}
+
+impl Renderer {
+    /// `display` is the event loop's display handle, the one `window` was
+    /// created on.
+    pub fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
+        let size = window.inner_size();
+
+        // Every backend the build has. The GL backend presents through the
+        // display the instance was given, so it gets the event loop's.
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(display),
+        ));
+
+        let surface = instance.create_surface(window.clone()).unwrap();
+
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .expect("Failed to find GPU adapter");
+
+        let (device, queue) = pollster::block_on(adapter.request_device(&device_descriptor()))
+            .expect("Failed to create GPU device");
+
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(surface_caps.formats[0]);
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            // For an 8-bit format `Auto` is sRGB at standard range, the
+            // encoding the frame's DAC colours are in.
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::AutoVsync,
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &surface_config);
+
+        let blit = FrameBlit::new(
+            &device,
+            surface_format,
+            surface_config.width,
+            surface_config.height,
+        );
+
+        Self {
+            device,
+            queue,
+            surface,
+            surface_config,
+            blit,
+            started: Instant::now(),
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
+        self.blit.resize(&self.queue, width, height);
+    }
+
+    /// Render current VGA state to the window.
+    pub fn render(&mut self, vga: &VgaDevice, memory: &Memory) {
+        let phase = BlinkPhase::at(self.started.elapsed());
+        self.blit
+            .upload(&self.device, &self.queue, vga, memory, phase);
 
         let output = match self.surface.get_current_texture() {
             // A suboptimal frame is drawn all the same: the resize that
@@ -523,26 +612,7 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Blit Encoder"),
             });
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blit Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
+        self.blit.draw(&mut encoder, &view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(output);
