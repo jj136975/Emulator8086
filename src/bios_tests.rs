@@ -263,8 +263,8 @@ fn boot_is_retried_after_a_keypress() {
     assert_eq!(machine.booted_drive(), Some(0x00));
 }
 
-/// The monitor's `reset` command: the guest starts over from the reset
-/// vector and boots again.
+/// `Runtime::reset` reboots the guest: it starts over from the reset vector
+/// and boots again.
 #[test]
 fn reset_reboots_the_guest() {
     let mut machine = Machine::boot(disks(vec![(0x00, bootable_floppy())]));
@@ -326,28 +326,6 @@ fn machine_uses_the_keyboard_supplied_by_the_frontend() {
         0x1F73,
         "scancode 1Fh, ASCII 's'"
     );
-}
-
-/// The terminal keyboard presses Shift according to the character, not the
-/// host's modifier flag: most terminals flag Shift for capital letters only,
-/// and a ':' reported without the flag still arrives as ':', not ';'.
-#[test]
-fn characters_typed_in_the_terminal_reach_the_guest_unchanged() {
-    use crate::io::keyboard::KeyTranslator;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    let mut machine = Machine::boot(disks(vec![]));
-    let mut keys = KeyTranslator::new(false); // a terminal that reports presses only
-    for c in ' '..='~' {
-        for event in keys.translate(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)) {
-            machine.keys.send(event).unwrap();
-        }
-        machine.run_stub(&[
-            0xB4, 0x00, // MOV AH,00h   (wait for a key)
-            0xCD, 0x16, // INT 16h
-        ]);
-        assert_eq!(machine.rt.cpu.registers.ax.low() as char, c);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +391,7 @@ fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
     // The BIOS has programmed 18.2 Hz and waits for a key in HLT.
     let mut machine = Machine::boot(disks(vec![]));
     let before = machine.timer_ticks();
-    assert!(machine.rt.run_slice(std::time::Duration::from_millis(250)));
+    machine.rt.run_slice(std::time::Duration::from_millis(250));
     let ticks = machine.timer_ticks() - before;
     assert!(
         (3..=6).contains(&ticks),
@@ -1047,6 +1025,53 @@ fn ctrl_alt_and_keypad_keys_follow_the_ibm_tables() {
         "Caps Lock, Shift+a"
     );
     assert_eq!(machine.typed(&[0x02, 0x82]), [0x0231], "Caps Lock, 1");
+}
+
+/// Every printable ASCII character has one key on the US layout: each of
+/// the 47 character keys queues one character alone and another with Shift,
+/// and the space bar a space. The window sends key positions, so this
+/// translation is all that stands between a key and its character.
+#[test]
+fn every_printable_character_has_its_key_on_the_us_layout() {
+    // Scancode of the first key of each row, then the characters its keys
+    // type without and with Shift.
+    const ROWS: [(u8, &str, &str); 4] = [
+        (0x02, "1234567890-=", "!@#$%^&*()_+"),
+        (0x10, "qwertyuiop[]", "QWERTYUIOP{}"),
+        (0x1E, "asdfghjkl;'`", "ASDFGHJKL:\"~"),
+        (0x2B, "\\zxcvbnm,./", "|ZXCVBNM<>?"),
+    ];
+    const SHIFT: u8 = 0x2A;
+
+    let mut machine = Machine::booted();
+    let mut characters = vec![b' '];
+    assert_eq!(machine.typed(&[0x39, 0xB9]), [0x3920], "space bar");
+    for (first, plain, shifted) in ROWS {
+        for (index, (plain, shifted)) in plain.bytes().zip(shifted.bytes()).enumerate() {
+            let scancode = first + index as u8;
+            let key = (scancode as u16) << 8;
+            assert_eq!(
+                machine.typed(&[scancode, scancode | 0x80]),
+                [key | plain as u16],
+                "{:?}",
+                plain as char
+            );
+            assert_eq!(
+                machine.typed(&[SHIFT, scancode, scancode | 0x80, SHIFT | 0x80]),
+                [key | shifted as u16],
+                "{:?}",
+                shifted as char
+            );
+            characters.extend([plain, shifted]);
+        }
+    }
+
+    characters.sort_unstable();
+    assert_eq!(
+        characters,
+        (b' '..=b'~').collect::<Vec<u8>>(),
+        "the keys type each printable character exactly once"
+    );
 }
 
 /// Ctrl+Scroll Lock is the Break key, not a Scroll Lock toggle: the buffer

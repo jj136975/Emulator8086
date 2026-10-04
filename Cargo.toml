@@ -4,26 +4,19 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-[features]
-default = []
-# The window frontend (winit + wgpu). Off by default: the terminal frontend
-# needs no GPU and is what the tests and a plain `cargo run` use.
-gui = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck"]
-
 [dependencies]
 clap = { version = "4.5.58", features = ["derive"] }
 log = "0.4.29"
 env_logger = "0.11.9"
-crossterm = "0.29.0"
 # Without fatfs's "alloc" feature no VFAT long-name entries are written:
 # MS-DOS 6 shows such an entry as the volume label of a disk that has none.
 fatfs = { version = "0.3", default-features = false, features = ["std", "chrono"] }
 
-# `gui` feature only.
-wgpu = { version = "24", optional = true }
-winit = { version = "0.30", optional = true }
-pollster = { version = "0.4", optional = true }
-bytemuck = { version = "1", features = ["derive"], optional = true }
+# The window: winit opens it and delivers the keys, wgpu draws into it.
+wgpu = "24"
+winit = "0.30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
 
 # The hardware-captured CPU vectors (the `8086` submodule) are gzipped JSON.
 [dev-dependencies]

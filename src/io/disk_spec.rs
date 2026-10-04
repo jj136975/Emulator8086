@@ -1,6 +1,6 @@
 //! Parsing of what the user types to name drives and disk images, and the
 //! opening of the images the command line names. The `--disk`, `--hd` and
-//! `--boot` options and the commands of the F12 monitor share these
+//! `--boot` options and the monitor's commands (`vm/cli.rs`) share these
 //! functions, so both accept the same spellings.
 //!
 //! The invariant: a colon separates the parts of a specification

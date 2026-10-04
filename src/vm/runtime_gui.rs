@@ -76,7 +76,7 @@ impl ApplicationHandler for EmulatorApp {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                // F12: dump VGA (CLI monitor not supported in GUI mode)
+                // F12 asks for a VGA dump and is not passed to the guest.
                 if let PhysicalKey::Code(winit::keyboard::KeyCode::F12) = event.physical_key
                     && event.state == ElementState::Pressed
                 {
@@ -99,10 +99,7 @@ impl ApplicationHandler for EmulatorApp {
             }
 
             WindowEvent::RedrawRequested => {
-                if !self.runtime.run_slice(CPU_SLICE) {
-                    event_loop.exit();
-                    return;
-                }
+                self.runtime.run_slice(CPU_SLICE);
 
                 if let (Some(renderer), Some(vga)) = (&mut self.renderer, &self.runtime.vga) {
                     let vga = vga.borrow();
@@ -126,11 +123,12 @@ impl ApplicationHandler for EmulatorApp {
 }
 
 impl Runtime {
-    /// GUI-mode main loop using winit + wgpu. `kbd_tx` feeds the keyboard
-    /// controller the machine was built with.
+    /// Opens the window and runs the machine in it until the window is
+    /// closed. `kbd_tx` feeds the keyboard controller the machine was built
+    /// with.
     pub fn run_gui(self, kbd_tx: mpsc::Sender<EmulatorEvent>) {
         log::debug!(
-            "Starting emulator (GUI) with boot order: {:02X?}",
+            "Starting emulator with boot order: {:02X?}",
             self.disks.borrow().boot_order()
         );
 

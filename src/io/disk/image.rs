@@ -304,6 +304,10 @@ impl DiskImage {
     /// writes already go straight to that file. Any other target is written
     /// to a temporary file beside it and renamed into place, so an existing
     /// file is replaced only by a complete copy.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only the test-only monitor calls it")
+    )]
     pub fn save_to_file(&mut self, path: &Path) -> std::io::Result<SaveOutcome> {
         if self.is_backed_by(path) {
             if let DiskStorage::FileBacked { file, .. } = &mut self.storage {

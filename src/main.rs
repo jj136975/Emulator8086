@@ -1,8 +1,8 @@
 //! The command line and start-up: `Cli` (its doc comments are the `--help`
 //! text), and `run`, which builds the machine the options describe, loads
-//! the ROM and hands the machine to the frontend: the terminal, or the
-//! window with the `gui` feature. The crate's modules are declared here,
-//! the crate-level test modules and the build script's tests among them.
+//! the ROM and hands the machine to the window. The crate's modules are
+//! declared here, the crate-level test modules and the build script's tests
+//! among them.
 //!
 //! The invariant: whatever the user can fix (a bad option value, a disk
 //! image or ROM that cannot be used) is an `Err` from `run` carrying a
@@ -67,23 +67,14 @@ fn run(args: Cli) -> Result<(), String> {
     let specs = parse_disk_specs(&args.disk)?;
     let boot_order = args.boot.as_deref().map(parse_boot_order).transpose()?;
 
-    // The frontend owns the source of key events — the window in GUI builds,
-    // a terminal reader thread otherwise — and feeds the keyboard controller
-    // through this channel.
+    // The window is the source of key events and feeds the keyboard
+    // controller through this channel.
     let (keys, key_events) = std::sync::mpsc::channel();
     let keyboard = KeyboardController::with_receiver(key_events);
     let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace, keyboard)?;
     runtime.load_rom(args.rom)?;
 
-    #[cfg(feature = "gui")]
-    {
-        runtime.run_gui(keys);
-    }
-    #[cfg(not(feature = "gui"))]
-    {
-        KeyboardController::spawn_terminal_reader(keys);
-        runtime.run();
-    }
+    runtime.run_gui(keys);
     Ok(())
 }
 

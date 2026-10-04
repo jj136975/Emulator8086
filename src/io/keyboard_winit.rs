@@ -1,7 +1,7 @@
-//! The window frontend's key map (`--features gui`): a winit physical key
-//! to the make code of the key in the same place on the PC/XT keyboard.
-//! The guest's keyboard driver turns that code into a character, so the
-//! host's keyboard layout plays no part.
+//! The window's key map: a winit physical key to the make code of the key
+//! in the same place on the PC/XT keyboard. The guest's keyboard driver
+//! turns that code into a character, so the host's keyboard layout plays no
+//! part.
 //!
 //! The invariant: a key maps to one make code below 80h, or to nothing.
 //! The window loop sends the break as the make with bit 7 set, and an XT

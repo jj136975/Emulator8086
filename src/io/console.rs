@@ -1,10 +1,9 @@
 //! The debug port E9h. The BIOS writes its progress markers there, and a
 //! copy of everything it prints through INT 10h teletype.
 //!
-//! The invariant: nothing written to the port reaches the terminal, which
-//! the terminal frontend draws the guest's screen on. The bytes are
-//! collected into lines and logged at debug level (`RUST_LOG=debug`), and
-//! the log is the only place they go.
+//! The invariant: the log is the only place the bytes go. They are
+//! collected into lines and logged at debug level (`RUST_LOG=debug`);
+//! nothing written to the port is printed or shown on the guest's screen.
 
 use log::debug;
 

@@ -1,10 +1,9 @@
 //! The machine: the CPU, the devices on the port bus, and the run loop that
 //! drives them. Each pass of `step_frame` makes one `process` call (a prefix
 //! byte takes a call of its own), hands the 8253 the timer clocks host time
-//! has earned, polls the keyboard (F12 opens the monitor of `cli.rs`) and
-//! takes a pending interrupt. Also here: the flag and segment encodings and
-//! the prefix latches the instruction code shares, interrupt entry, reset
-//! and the ROM loader.
+//! has earned, polls the keyboard and takes a pending interrupt. Also here:
+//! the flag and segment encodings and the prefix latches the instruction
+//! code shares, interrupt entry, reset and the ROM loader.
 //!
 //! The invariant: an interrupt is taken only between two whole instructions,
 //! never after a prefix byte (`prefixes.pending`) or an instruction that sets
@@ -20,11 +19,10 @@ use crate::io::disk_spec::open_drives;
 use crate::io::dma::{DmaController, DmaPageRegisters};
 use crate::io::fdc::FdcStub;
 use crate::io::hdc::HdcStub;
-use crate::io::keyboard::KeyboardController;
+use crate::io::keyboard::{EmulatorEvent, KeyboardController};
 use crate::io::pic::{Pic, PicDevice};
 use crate::io::pit::Pit;
 use crate::io::vga::VgaDevice;
-use crate::vm::cli::{MonitorAction, enter_monitor};
 use crate::vm::cpu::Cpu;
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
@@ -111,13 +109,9 @@ const PIT_CLOCKS_PER_INSTRUCTION: u64 = 4;
 const PIT_MAX_DEBT: u64 = PIT_CLOCK_HZ / 4;
 /// How long `run_slice` sleeps between two looks at a halted CPU.
 const IDLE_POLL: Duration = Duration::from_millis(1);
-/// The terminal frontend redraws the screen this often.
-#[cfg(not(feature = "gui"))]
-const TERMINAL_FRAME: Duration = Duration::from_millis(16);
 
 pub struct Runtime {
     pub(crate) cpu: Cpu,
-    running: bool,
     pub prefixes: Prefixes,
     pub instruction_count: u64,
     pub trace: bool,
@@ -156,7 +150,6 @@ impl Runtime {
                 halted: false,
                 pic: Pic::new(),
             },
-            running: true,
             prefixes: Prefixes::default(),
             io_bus: IoBus::new(),
             instruction_count: 0,
@@ -177,8 +170,8 @@ impl Runtime {
 
     /// Builds the machine with the disks the command line asked for. Fails,
     /// with a message for the user, if one of the images cannot be used.
-    /// `keyboard` is supplied by the frontend, which knows where key events
-    /// come from (terminal thread or window).
+    /// `keyboard` holds the receiving end of the channel the window sends
+    /// its key events down.
     pub fn new(
         disk_specs: Vec<DiskSpec>,
         hd_specs: Vec<String>,
@@ -235,7 +228,6 @@ impl Runtime {
                 halted: false,
                 pic: Pic::new(),
             },
-            running: true,
             prefixes: Prefixes::default(),
             io_bus,
             instruction_count: 0,
@@ -254,15 +246,12 @@ impl Runtime {
         }
     }
 
-    /// A fully wired machine for integration tests. The keyboard is fed
-    /// through the returned channel instead of a terminal thread.
+    /// A fully wired machine for integration tests. The test types on its
+    /// keyboard through the returned channel, as the window does.
     #[cfg(test)]
     pub fn new_test_machine(
         disk_ctrl: DiskController,
-    ) -> (
-        Self,
-        std::sync::mpsc::Sender<crate::io::keyboard::EmulatorEvent>,
-    ) {
+    ) -> (Self, std::sync::mpsc::Sender<EmulatorEvent>) {
         let (tx, rx) = std::sync::mpsc::channel();
         let vm = Self::with_devices(disk_ctrl, KeyboardController::with_receiver(rx));
         (vm, tx)
@@ -296,18 +285,13 @@ impl Runtime {
     }
 
     /// Execute one batch of CPU instructions, tick PIT, poll keyboard, and
-    /// handle interrupts. Returns `false` when the emulator should stop.
-    /// Both frontends call it through `run_slice`.
-    pub fn step_frame(&mut self) -> bool {
+    /// handle interrupts. The window calls it through `run_slice`.
+    pub fn step_frame(&mut self) {
         // Host time that went by between two calls (rendering, vsync,
         // sleeping) is credited on the first pass.
         let mut sample_clock = true;
 
         for _ in 0..RENDER_INTERVAL {
-            if !self.running {
-                return false;
-            }
-
             if self.trace {
                 debug!("{:#?}", self);
             }
@@ -333,34 +317,12 @@ impl Runtime {
                 self.run_pit();
             }
 
-            let mut reset_requested = false;
             if (self.instruction_count.is_multiple_of(1000) || self.cpu.halted)
                 && let Some(kb) = &self.keyboard
+                && let Some(EmulatorEvent::DumpVga) = kb.borrow_mut().poll(&mut self.cpu.pic)
+                && let Some(vga) = &self.vga
             {
-                match kb.borrow_mut().poll(&mut self.cpu.pic) {
-                    Some(crate::io::keyboard::EmulatorEvent::Quit) => {
-                        self.running = false;
-                        return false;
-                    }
-                    Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
-                        let action = enter_monitor(&mut self.disks.borrow_mut());
-                        reset_requested = action == MonitorAction::Reset;
-                        if let Some(vga) = &self.vga {
-                            vga.borrow_mut().queue_full_redraw();
-                        }
-                        self.last_clock_sample = Instant::now();
-                    }
-                    Some(crate::io::keyboard::EmulatorEvent::DumpVga) => {
-                        if let Some(vga) = &self.vga {
-                            vga.borrow().dump(&self.cpu.memory, "vga_dump.txt");
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if reset_requested {
-                self.reset();
-                continue;
+                vga.borrow().dump(&self.cpu.memory, "vga_dump.txt");
             }
 
             // Interrupts are not recognised between a prefix byte and the
@@ -385,24 +347,19 @@ impl Runtime {
                 break; // nothing to run until an interrupt arrives
             }
         }
-
-        self.running
     }
 
-    /// Runs the machine for about `slice` of host time and returns `false`
-    /// when the emulator should stop. Batches are executed back to back; a
-    /// halted CPU is looked at again every `IDLE_POLL` instead of leaving
-    /// the slice, so that timer ticks and key presses reach an idle guest
-    /// promptly.
-    pub fn run_slice(&mut self, slice: Duration) -> bool {
+    /// Runs the machine for about `slice` of host time. Batches are executed
+    /// back to back; a halted CPU is looked at again every `IDLE_POLL`
+    /// instead of leaving the slice, so that timer ticks and key presses
+    /// reach an idle guest promptly.
+    pub fn run_slice(&mut self, slice: Duration) {
         let deadline = Instant::now() + slice;
         loop {
-            if !self.step_frame() {
-                return false;
-            }
+            self.step_frame();
             let now = Instant::now();
             if now >= deadline {
-                return true;
+                return;
             }
             if self.cpu.halted {
                 std::thread::sleep(IDLE_POLL.min(deadline - now));
@@ -413,6 +370,10 @@ impl Runtime {
     /// Reboots the guest: the CPU continues at the reset vector in its
     /// power-on state. Memory and devices are left as they are; the BIOS
     /// initialises what it uses.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the overlay's reset control will call it")
+    )]
     pub fn reset(&mut self) {
         let registers = &mut self.cpu.registers;
         registers.cs.reg_mut().set(0xFFFF);
@@ -479,46 +440,6 @@ impl Runtime {
         self.manual_clock = true;
         self.pit_debt = 0;
         self.pit_frac = 0;
-    }
-
-    /// Terminal-mode main loop. Uses crossterm for display and keyboard.
-    #[cfg(not(feature = "gui"))]
-    pub fn run(&mut self) {
-        use crate::io::renderer_term::TermRenderer;
-        use crossterm::cursor::MoveTo;
-        use crossterm::terminal::{Clear, ClearType};
-        use std::io::Write;
-
-        debug!(
-            "Starting emulator with boot order: {:02X?}",
-            self.disks.borrow().boot_order()
-        );
-        if self.trace {
-            debug!("Tracing Enabled");
-        }
-
-        let _ = crossterm::terminal::enable_raw_mode();
-        // Going through crossterm here also switches a Windows console to
-        // escape-sequence processing, which the renderer relies on.
-        let _ = crossterm::execute!(std::io::stdout(), Clear(ClearType::All), MoveTo(0, 0));
-
-        let mut renderer = TermRenderer::new();
-        while self.running {
-            self.run_slice(TERMINAL_FRAME);
-
-            if let Some(vga) = &self.vga {
-                renderer.render(&mut vga.borrow_mut(), &self.cpu.memory);
-            }
-        }
-
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = writeln!(std::io::stdout(), "\x1B[0m\x1B[?25h");
-        let _ = std::io::stdout().flush();
-
-        debug!(
-            "Emulator exited after {} instructions",
-            self.instruction_count
-        );
     }
 
     pub fn port_in_byte(&mut self, port: u16) -> u8 {
@@ -628,13 +549,7 @@ impl Debug for Runtime {
             pc,
             self.cpu.registers.cs.read_byte(pc),
             self.cpu.registers.cs.read_byte(pc.wrapping_add(1)),
-            if self.cpu.halted {
-                "Halted"
-            } else if self.running {
-                "Running"
-            } else {
-                "Stopped"
-            }
+            if self.cpu.halted { "Halted" } else { "Running" }
         )?;
         Ok(())
     }

@@ -1,13 +1,14 @@
 //! The VGA's registers, ports 3C0h-3DAh: CRTC, sequencer, attribute and
 //! graphics controllers, DAC, the CGA mode and colour registers, and Input
 //! Status 1, whose retrace bits run on the timer clock the runtime
-//! advances. The renderers read the screen's state through it: the video
+//! advances. The rasterisers read the screen's state through it: the video
 //! mode, the colours, the cursor, and where each displayed text cell lies.
 //!
-//! The invariant: a write that changes how the terminal shows unchanged
-//! cell bytes (the video mode, or what attribute bit 7 means) requests a
-//! full redraw. The terminal renderer repaints only cells whose bytes
-//! changed, so a missed request leaves the old picture on screen.
+//! The invariant: nothing here draws. A rasteriser reads the registers and
+//! the two values derived from them, `video_mode` and `blink_mode`. Each is
+//! set again by every write to a register it comes from (graphics
+//! controller 05h; attribute controller 10h and the CGA mode port), so it
+//! never lags behind what the guest programmed.
 
 use std::cell::Cell;
 use std::io::Write;
@@ -87,8 +88,6 @@ pub struct VgaDevice {
 
     /// Attribute bit 7 means "blink" (true) or "bright background" (false).
     pub blink_mode: bool,
-    /// A renderer that only draws changes must repaint the whole screen.
-    needs_full_redraw: bool,
 }
 
 const VIDEO_BASE: usize = 0xB8000;
@@ -183,7 +182,6 @@ impl VgaDevice {
             video_mode: VideoMode::Text80x25,
 
             blink_mode: true,
-            needs_full_redraw: true,
         }
     }
 
@@ -254,7 +252,6 @@ impl VgaDevice {
     }
 
     /// Convert a DAC palette index to 8-bit RGB.
-    #[cfg(any(feature = "gui", test))]
     pub fn dac_to_rgb8(&self, index: u8) -> [u8; 3] {
         let [r6, g6, b6] = self.dac_palette[(index & self.dac_mask) as usize];
         [
@@ -264,37 +261,14 @@ impl VgaDevice {
         ]
     }
 
-    pub fn queue_full_redraw(&mut self) {
-        self.needs_full_redraw = true;
-    }
-
-    /// Switches attribute bit 7 between "blink" and "bright background".
-    /// Cells with that bit set change colour, so a change needs a repaint.
-    fn set_blink_mode(&mut self, blink: bool) {
-        if blink != self.blink_mode {
-            self.blink_mode = blink;
-            self.needs_full_redraw = true;
-        }
-    }
-
-    /// Returns whether a full repaint was requested since the last call.
-    #[cfg(any(not(feature = "gui"), test))]
-    pub fn take_full_redraw(&mut self) -> bool {
-        std::mem::take(&mut self.needs_full_redraw)
-    }
-
     /// Detect video mode from register state.
     fn detect_mode(&mut self) {
         // GC register 5 bit 6 = 256-color shift mode
-        let old = self.video_mode;
-        if self.gc_regs[0x05] & 0x40 != 0 {
-            self.video_mode = VideoMode::Mode13h;
+        self.video_mode = if self.gc_regs[0x05] & 0x40 != 0 {
+            VideoMode::Mode13h
         } else {
-            self.video_mode = VideoMode::Text80x25;
-        }
-        if old != self.video_mode {
-            self.needs_full_redraw = true;
-        }
+            VideoMode::Text80x25
+        };
     }
 
     /// Dump VGA text buffer to a file for debugging.
@@ -517,7 +491,7 @@ impl IoDevice for VgaDevice {
                     if index == 0x10 {
                         // Mode control bit 3: attribute bit 7 blinks the
                         // character (1) or brightens the background (0).
-                        self.set_blink_mode(value & 0x08 != 0);
+                        self.blink_mode = value & 0x08 != 0;
                     }
                 }
                 self.attr_flip_flop = !self.attr_flip_flop;
@@ -579,9 +553,12 @@ impl IoDevice for VgaDevice {
             }
 
             // --- CGA mode control ---
+            // Bit 5: attribute bit 7 blinks the character (1) or brightens
+            // the background (0), as attribute controller register 10h
+            // bit 3 does.
             0x3D8 => {
                 self.mode_register = value;
-                self.set_blink_mode(value & 0x20 != 0);
+                self.blink_mode = value & 0x20 != 0;
             }
 
             // --- CGA color select ---

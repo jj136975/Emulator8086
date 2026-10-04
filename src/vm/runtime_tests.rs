@@ -24,7 +24,7 @@ fn run_slice_runs_batches_back_to_back() {
     rt.cpu.registers.cs.reg_mut().set(0x1000);
     rt.cpu.registers.pc.set(0);
 
-    assert!(rt.run_slice(Duration::from_millis(100)));
+    rt.run_slice(Duration::from_millis(100));
     assert!(
         rt.instruction_count >= 2 * RENDER_INTERVAL,
         "only {} instructions ran",
@@ -42,7 +42,7 @@ fn run_slice_lasts_the_whole_slice_when_halted() {
 
     let slice = Duration::from_millis(30);
     let started = Instant::now();
-    assert!(rt.run_slice(slice));
+    rt.run_slice(slice);
     assert!(started.elapsed() >= slice);
     assert_eq!(rt.instruction_count, 0);
 }

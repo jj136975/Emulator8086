@@ -1,9 +1,12 @@
-//! The F12 monitor: a command prompt on the console, run while the guest is
-//! stopped, that works on the drives (`swap`, `new`, `move`, `save`, `eject`,
-//! `put`) and ends in a [`MonitorAction`], resume or reset, the one thing it
-//! hands back to the runtime. Only [`enter_monitor`] touches the terminal;
-//! the commands read and write the streams they are given, which is how the
-//! tests drive them.
+//! The monitor: commands that work on the drives (`swap`, `new`, `move`,
+//! `save`, `eject`, `put`), read as lines from one stream and answered on
+//! another, ending in a [`MonitorAction`], resume or reset, for the caller
+//! to carry out.
+//!
+//! Compiled for tests only (`#[cfg(test)]` on its declaration in
+//! `vm/mod.rs`): the window has no prompt to type the commands at. They are
+//! what the overlay's disk panel is to call, and the tests keep them working
+//! until it does.
 //!
 //! The invariant: a command that may have changed a hard disk tells the user
 //! to reboot the guest, and one that cannot have changed one says nothing.
@@ -19,8 +22,8 @@ use crate::io::disk_spec::{
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-/// Writes one line of monitor output. A failed write to the terminal has
-/// nowhere to be reported, so it is ignored.
+/// Writes one line of monitor output. A failed write to the output stream
+/// has nowhere to be reported, so it is ignored.
 macro_rules! say {
     ($out:expr) => {{
         let _ = writeln!($out);
@@ -30,7 +33,7 @@ macro_rules! say {
     }};
 }
 
-/// What the runtime has to do when the monitor returns.
+/// What the caller has to do when the monitor returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorAction {
     /// Continue the guest where it was interrupted.
@@ -58,21 +61,6 @@ fn warn_if_hard_disk(drive: u8, out: &mut dyn Write) {
             "         Reboot the guest (type 'reset') before the drive is used."
         );
     }
-}
-
-/// Suspends the terminal UI and runs the monitor on the console.
-pub fn enter_monitor(disk_ctrl: &mut DiskController) -> MonitorAction {
-    let mut stdout = std::io::stdout();
-    let _ = crossterm::terminal::disable_raw_mode();
-    let _ = write!(stdout, "\x1B[0m\x1B[2J\x1B[H");
-    let _ = stdout.flush();
-
-    let action = run_monitor(disk_ctrl, &mut std::io::stdin().lock(), &mut stdout);
-
-    let _ = crossterm::terminal::enable_raw_mode();
-    let _ = write!(stdout, "\x1B[2J\x1B[H");
-    let _ = stdout.flush();
-    action
 }
 
 /// The monitor itself: shows the drives, then executes commands read from
@@ -119,7 +107,7 @@ fn run_monitor(
 }
 
 fn show_drives(disk_ctrl: &mut DiskController, out: &mut dyn Write) {
-    say!(out, "=== Emulator Monitor (F12) ===");
+    say!(out, "=== Emulator Monitor ===");
     say!(out);
 
     say!(out, "Floppy Drives:");

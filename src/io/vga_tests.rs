@@ -193,31 +193,30 @@ fn index_registers_keep_only_their_implemented_bits() {
 }
 
 /// Bit 3 of attribute controller register 10h selects blinking or bright
-/// backgrounds, as bit 5 of the CGA mode port 3D8h does, and a change of
-/// it, and only a change, requests a repaint.
+/// backgrounds, as bit 5 of the CGA mode port 3D8h does: whichever of the
+/// two was written last decides.
 #[test]
 fn attribute_mode_bit_3_selects_blink_or_bright_background() {
     let mut vga = VgaDevice::new();
     let mut rt = Runtime::new_test();
     assert!(vga.blink_mode, "power-on");
-    assert!(vga.take_full_redraw());
 
-    let mut write_mode = |vga: &mut VgaDevice, value: u8| {
+    let write_mode = |vga: &mut VgaDevice, rt: &mut Runtime, value: u8| {
         vga.port_in_byte(0x3DA, &mut rt.cpu);
         vga.port_out_byte(0x3C0, 0x30, &mut rt.cpu);
         vga.port_out_byte(0x3C0, value, &mut rt.cpu);
     };
 
-    write_mode(&mut vga, 0x04);
+    write_mode(&mut vga, &mut rt, 0x04);
     assert!(!vga.blink_mode);
-    assert!(vga.take_full_redraw(), "cells with bit 7 set change colour");
 
-    write_mode(&mut vga, 0x04);
-    assert!(!vga.take_full_redraw(), "no change, no repaint");
-
-    write_mode(&mut vga, 0x0C);
+    write_mode(&mut vga, &mut rt, 0x0C);
     assert!(vga.blink_mode);
-    assert!(vga.take_full_redraw());
+
+    vga.port_out_byte(0x3D8, 0x09, &mut rt.cpu); // CGA mode port, bit 5 clear
+    assert!(!vga.blink_mode);
+    vga.port_out_byte(0x3D8, 0x29, &mut rt.cpu);
+    assert!(vga.blink_mode);
 }
 
 /// The DAC state port 3C7h tells whether the read index (03h) or the
