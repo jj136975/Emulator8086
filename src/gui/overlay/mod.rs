@@ -114,6 +114,9 @@ impl Overlay {
             options.zoom_with_keyboard = false;
             options.quit_shortcuts.clear();
         });
+        // So would Ctrl+C on text selected in a label, and there is no
+        // clipboard to copy it to: the text of the overlay is not selected.
+        ctx.all_styles_mut(|style| style.interaction.selectable_labels = false);
         Self {
             ctx,
             visible: false,

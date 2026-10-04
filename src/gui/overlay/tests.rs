@@ -254,6 +254,29 @@ fn the_overlay_has_the_keyboard_with_an_open_menu_or_the_focus() {
     assert!(!shell.target.overlay.wants_keyboard(), "hidden");
 }
 
+/// A key the guest gets is not a shortcut of the overlay as well. egui
+/// would zoom its whole UI on Ctrl with `-` or `+`, and copy the text
+/// selected in a label on Ctrl+C: the first is off, and there is no text
+/// to select.
+#[test]
+fn the_overlay_has_no_shortcut_on_keys_the_guest_gets() {
+    let mut shell = shown();
+    let ctrl_minus = egui::Event::Key {
+        key: egui::Key::Minus,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+    };
+    shell.frame(vec![ctrl_minus]);
+    shell.frame(Vec::new());
+    let ctx = shell.target.overlay.context();
+    assert_eq!(ctx.zoom_factor(), 1.0);
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        assert!(!ctx.style_of(theme).interaction.selectable_labels);
+    }
+}
+
 /// Ticks or unticks the checkbox of the panel titled `title` in the View
 /// menu, and gives its window the time to come or to go.
 fn toggle_in_view_menu(shell: &mut Driver<Shell>, title: &str) {
