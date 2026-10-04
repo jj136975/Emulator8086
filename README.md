@@ -83,6 +83,12 @@ F12 puts a menu bar over the picture; for the first seconds after start a hint i
 | Machine | Reset | Reboots the guest |
 | Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory (in a browser: offers it as a download) |
 | View | About | A panel with the key bindings, the version, and the machine: the image in each drive, whether it can be written, and the boot order |
+| View | Memory | A hex view of guest memory with an ASCII column: an address field (`B8000` or `B800:0000`), jumps to where the registers point and to the vector table, the BIOS data area, video memory and the ROM |
+| View | Interrupts (8259A) | Each interrupt line's request, in-service and mask bits, the vector base and the modes in force |
+| View | Timer (8253) | The three channels: mode, reload value, current count, output and gate, and the rate of the timer interrupt |
+| View | Video (VGA) | The video mode, the cursor, the registers a reader looks for first, and the 256 colours of the DAC |
+| View | Keyboard (8255) | The byte in port A, whether the guest still owes its acknowledge, the queued scancodes and port B's bits by name |
+| View | Port E9h log | The last lines the guest wrote to the debug port: the BIOS's progress markers and a copy of its teletype output |
 
 A panel is a window over the picture that can be moved and closed. What a tool did, or why it failed, shows for a few seconds below the menu bar.
 
