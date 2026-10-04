@@ -5,8 +5,6 @@ use log::debug;
 /// Per-channel DMA state.
 #[derive(Clone, Copy, Default)]
 struct DmaChannel {
-    base_address: u16,
-    base_count: u16,
     current_address: u16,
     current_count: u16,
 }
@@ -15,16 +13,12 @@ struct DmaChannel {
 ///
 /// The IBM PC uses this for memory-to-device transfers (floppy, etc.).
 /// Since the emulator traps disk I/O at the BIOS level, no actual DMA
-/// transfers are performed -- we just store register state so software
-/// that probes the DMA ports gets sensible values back.
+/// transfers are performed -- we just keep the registers that can be read
+/// back, so software that probes the DMA ports gets sensible values.
 pub struct DmaController {
     channels: [DmaChannel; 4],
     status: u8,
-    command: u8,
-    mask: u8,
-    mode: [u8; 4],
     flip_flop: bool,
-    temp: u8,
 }
 
 impl DmaController {
@@ -32,41 +26,33 @@ impl DmaController {
         Self {
             channels: [DmaChannel::default(); 4],
             status: 0x0F, // all channels TC reached (safe default)
-            command: 0,
-            mask: 0x0F, // all channels masked on reset
-            mode: [0; 4],
             flip_flop: false,
-            temp: 0,
         }
     }
 
-    /// Read one byte from a 16-bit register, toggling the flip-flop.
-    fn read_ff(&mut self, value: u16) -> u8 {
-        let byte = if !self.flip_flop {
-            value as u8 // low byte
+    /// The 16-bit register behind a channel port: even ports are the
+    /// address registers, odd ports the count registers.
+    fn channel_register(&mut self, port: u16) -> &mut u16 {
+        let channel = &mut self.channels[(port >> 1) as usize];
+        if port & 1 == 0 {
+            &mut channel.current_address
         } else {
-            (value >> 8) as u8 // high byte
-        };
-        self.flip_flop = !self.flip_flop;
-        byte
+            &mut channel.current_count
+        }
     }
-
 }
 
 impl IoDevice for DmaController {
     fn port_in_byte(&mut self, port: u16, _cpu: &mut Cpu) -> u8 {
         match port {
-            // Channel address registers (current)
-            0x00 => self.read_ff(self.channels[0].current_address),
-            0x02 => self.read_ff(self.channels[1].current_address),
-            0x04 => self.read_ff(self.channels[2].current_address),
-            0x06 => self.read_ff(self.channels[3].current_address),
-
-            // Channel count registers (current)
-            0x01 => self.read_ff(self.channels[0].current_count),
-            0x03 => self.read_ff(self.channels[1].current_count),
-            0x05 => self.read_ff(self.channels[2].current_count),
-            0x07 => self.read_ff(self.channels[3].current_count),
+            // Channel address and count registers: low byte, then high
+            // byte, as the flip-flop says
+            0x00..=0x07 => {
+                let value = *self.channel_register(port);
+                let byte = if self.flip_flop { (value >> 8) as u8 } else { value as u8 };
+                self.flip_flop = !self.flip_flop;
+                byte
+            }
 
             // Status register
             0x08 => {
@@ -75,8 +61,8 @@ impl IoDevice for DmaController {
                 s
             }
 
-            // Temp register (master clear read)
-            0x0D => self.temp,
+            // Temporary register: only memory-to-memory transfers load it
+            0x0D => 0x00,
 
             other => {
                 debug!("DMA: unhandled read from port {:04X}", other);
@@ -87,89 +73,21 @@ impl IoDevice for DmaController {
 
     fn port_out_byte(&mut self, port: u16, value: u8, _cpu: &mut Cpu) {
         match port {
-            // Channel base+current address registers
-            0x00 => {
-                let ch = &mut self.channels[0];
-                self.flip_flop = { let ff = self.flip_flop; Self::write_ff_static(ff, &mut ch.base_address, value); Self::write_ff_static(ff, &mut ch.current_address, value); !ff };
-            }
-            0x02 => {
-                let ff = self.flip_flop;
-                let ch = &mut self.channels[1];
-                Self::write_ff_static(ff, &mut ch.base_address, value);
-                Self::write_ff_static(ff, &mut ch.current_address, value);
-                self.flip_flop = !ff;
-            }
-            0x04 => {
-                let ff = self.flip_flop;
-                let ch = &mut self.channels[2];
-                Self::write_ff_static(ff, &mut ch.base_address, value);
-                Self::write_ff_static(ff, &mut ch.current_address, value);
-                self.flip_flop = !ff;
-            }
-            0x06 => {
-                let ff = self.flip_flop;
-                let ch = &mut self.channels[3];
-                Self::write_ff_static(ff, &mut ch.base_address, value);
-                Self::write_ff_static(ff, &mut ch.current_address, value);
-                self.flip_flop = !ff;
-            }
-
-            // Channel base+current count registers
-            0x01 => {
-                let ff = self.flip_flop;
-                let ch = &mut self.channels[0];
-                Self::write_ff_static(ff, &mut ch.base_count, value);
-                Self::write_ff_static(ff, &mut ch.current_count, value);
-                self.flip_flop = !ff;
-            }
-            0x03 => {
-                let ff = self.flip_flop;
-                let ch = &mut self.channels[1];
-                Self::write_ff_static(ff, &mut ch.base_count, value);
-                Self::write_ff_static(ff, &mut ch.current_count, value);
-                self.flip_flop = !ff;
-            }
-            0x05 => {
-                let ff = self.flip_flop;
-                let ch = &mut self.channels[2];
-                Self::write_ff_static(ff, &mut ch.base_count, value);
-                Self::write_ff_static(ff, &mut ch.current_count, value);
-                self.flip_flop = !ff;
-            }
-            0x07 => {
-                let ff = self.flip_flop;
-                let ch = &mut self.channels[3];
-                Self::write_ff_static(ff, &mut ch.base_count, value);
-                Self::write_ff_static(ff, &mut ch.current_count, value);
-                self.flip_flop = !ff;
-            }
-
-            // Command register
-            0x08 => {
-                self.command = value;
-            }
-
-            // Request register (write only)
-            0x09 => {
-                // Software DMA request -- ignored in stub
-                debug!("DMA: request register write {:02X}", value);
-            }
-
-            // Single channel mask
-            0x0A => {
-                let ch = (value & 0x03) as usize;
-                if value & 0x04 != 0 {
-                    self.mask |= 1 << ch;
+            // Channel address and count registers
+            0x00..=0x07 => {
+                let flip_flop = self.flip_flop;
+                let register = self.channel_register(port);
+                if flip_flop {
+                    *register = (*register & 0x00FF) | ((value as u16) << 8);
                 } else {
-                    self.mask &= !(1 << ch);
+                    *register = (*register & 0xFF00) | value as u16;
                 }
+                self.flip_flop = !flip_flop;
             }
 
-            // Mode register
-            0x0B => {
-                let ch = (value & 0x03) as usize;
-                self.mode[ch] = value;
-            }
+            // Command, request, mask and mode registers. They steer
+            // transfers, which never happen here, and cannot be read back.
+            0x08..=0x0B | 0x0E | 0x0F => {}
 
             // Clear flip-flop
             0x0C => {
@@ -178,37 +96,13 @@ impl IoDevice for DmaController {
 
             // Master clear (reset)
             0x0D => {
-                self.command = 0;
                 self.status = 0;
-                self.mask = 0x0F;
                 self.flip_flop = false;
-                self.temp = 0;
-            }
-
-            // Clear mask register (unmask all channels)
-            0x0E => {
-                self.mask = 0x00;
-            }
-
-            // Write all mask bits
-            0x0F => {
-                self.mask = value & 0x0F;
             }
 
             other => {
                 debug!("DMA: unhandled write to port {:04X} = {:02X}", other, value);
             }
-        }
-    }
-}
-
-impl DmaController {
-    /// Static helper for flip-flop writes (avoids borrow issues with &mut self).
-    fn write_ff_static(flip_flop: bool, reg: &mut u16, byte: u8) {
-        if !flip_flop {
-            *reg = (*reg & 0xFF00) | byte as u16;
-        } else {
-            *reg = (*reg & 0x00FF) | ((byte as u16) << 8);
         }
     }
 }
@@ -261,5 +155,86 @@ impl IoDevice for DmaPageRegisters {
                 debug!("DMA Page: unhandled write to port {:04X} = {:02X}", port, value);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::runtime::Runtime;
+
+    #[test]
+    fn address_and_count_registers_read_back_through_the_flip_flop() {
+        let mut rt = Runtime::new_test();
+        let mut dma = DmaController::new();
+        for channel in 0..4u16 {
+            let address_port = channel * 2;
+            let count_port = channel * 2 + 1;
+            let address = 0x1234 + channel * 0x1111;
+            let count = 0xA0B0 + channel;
+
+            dma.port_out_byte(0x0C, 0, &mut rt.cpu); // clear the flip-flop
+            dma.port_out_byte(address_port, address as u8, &mut rt.cpu);
+            dma.port_out_byte(address_port, (address >> 8) as u8, &mut rt.cpu);
+            dma.port_out_byte(count_port, count as u8, &mut rt.cpu);
+            dma.port_out_byte(count_port, (count >> 8) as u8, &mut rt.cpu);
+
+            let lo = dma.port_in_byte(address_port, &mut rt.cpu) as u16;
+            let hi = dma.port_in_byte(address_port, &mut rt.cpu) as u16;
+            assert_eq!(lo | (hi << 8), address, "channel {channel} address");
+            let lo = dma.port_in_byte(count_port, &mut rt.cpu) as u16;
+            let hi = dma.port_in_byte(count_port, &mut rt.cpu) as u16;
+            assert_eq!(lo | (hi << 8), count, "channel {channel} count");
+        }
+    }
+
+    #[test]
+    fn clearing_the_flip_flop_selects_the_low_byte_again() {
+        let mut rt = Runtime::new_test();
+        let mut dma = DmaController::new();
+        dma.port_out_byte(0x04, 0x34, &mut rt.cpu);
+        dma.port_out_byte(0x04, 0x12, &mut rt.cpu);
+
+        assert_eq!(dma.port_in_byte(0x04, &mut rt.cpu), 0x34);
+        dma.port_out_byte(0x0C, 0, &mut rt.cpu);
+        assert_eq!(dma.port_in_byte(0x04, &mut rt.cpu), 0x34, "low byte again, not the high byte");
+        assert_eq!(dma.port_in_byte(0x04, &mut rt.cpu), 0x12);
+    }
+
+    #[test]
+    fn status_is_cleared_by_reading_it_and_by_master_clear() {
+        let mut rt = Runtime::new_test();
+        let mut dma = DmaController::new();
+        assert_eq!(dma.port_in_byte(0x08, &mut rt.cpu), 0x0F);
+        assert_eq!(dma.port_in_byte(0x08, &mut rt.cpu), 0x00);
+
+        let mut dma = DmaController::new();
+        dma.port_out_byte(0x02, 0x55, &mut rt.cpu); // leaves the flip-flop on the high byte
+        dma.port_out_byte(0x0D, 0, &mut rt.cpu); // master clear
+        assert_eq!(dma.port_in_byte(0x08, &mut rt.cpu), 0x00);
+        assert_eq!(dma.port_in_byte(0x02, &mut rt.cpu), 0x55, "flip-flop is back on the low byte");
+    }
+
+    #[test]
+    fn temporary_register_reads_zero_and_write_only_ports_read_ff() {
+        let mut rt = Runtime::new_test();
+        let mut dma = DmaController::new();
+        assert_eq!(dma.port_in_byte(0x0D, &mut rt.cpu), 0x00);
+        for port in [0x09, 0x0A, 0x0B, 0x0C, 0x0E, 0x0F] {
+            assert_eq!(dma.port_in_byte(port, &mut rt.cpu), 0xFF, "port {port:02X}h");
+        }
+    }
+
+    #[test]
+    fn page_registers_hold_one_byte_per_channel() {
+        let mut rt = Runtime::new_test();
+        let mut pages = DmaPageRegisters::new();
+        for (port, value) in [(0x87, 0x10), (0x83, 0x21), (0x81, 0x32), (0x82, 0x43)] {
+            pages.port_out_byte(port, value, &mut rt.cpu);
+        }
+        for (port, value) in [(0x87, 0x10), (0x83, 0x21), (0x81, 0x32), (0x82, 0x43)] {
+            assert_eq!(pages.port_in_byte(port, &mut rt.cpu), value, "port {port:02X}h");
+        }
+        assert_eq!(pages.port_in_byte(0x84, &mut rt.cpu), 0xFF, "no register at 84h");
     }
 }

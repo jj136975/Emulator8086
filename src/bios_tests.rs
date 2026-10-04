@@ -287,6 +287,29 @@ fn machine_uses_the_keyboard_supplied_by_the_frontend() {
     assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1F73, "scancode 1Fh, ASCII 's'");
 }
 
+/// Regression: the terminal keyboard pressed Shift according to the host's
+/// modifier flag rather than the character, so a character the host reports
+/// without that flag (most terminals flag Shift for capital letters only)
+/// arrived as the other character on its key: ':' became ';'.
+#[test]
+fn characters_typed_in_the_terminal_reach_the_guest_unchanged() {
+    use crate::io::keyboard::KeyTranslator;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut machine = Machine::boot(disks(vec![]));
+    let mut keys = KeyTranslator::new(false); // a terminal that reports presses only
+    for c in ' '..='~' {
+        for event in keys.translate(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)) {
+            machine.keys.send(event).unwrap();
+        }
+        machine.run_stub(&[
+            0xB4, 0x00, // MOV AH,00h   (wait for a key)
+            0xCD, 0x16, // INT 16h
+        ]);
+        assert_eq!(machine.rt.cpu.registers.ax.low() as char, c);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // INT 13h — disk
 // ---------------------------------------------------------------------------
@@ -425,4 +448,21 @@ fn timer_ticks_owed_after_a_frame_gap_are_all_delivered() {
     let mut machine = machine_with_timer(0x36, 1000, &IDLE_BUSY);
     machine.feed_time(1, 14_000_000); // one 14 ms gap = 16,704 clocks
     assert_eq!(machine.timer_ticks(), 16);
+}
+
+/// Regression: a mode 0 one-shot re-armed by writing only a new count kept
+/// its output high, so the second and later interrupts never came.
+#[test]
+fn one_shot_timer_rearmed_with_a_new_count_interrupts_again() {
+    let rearm_and_wait = [
+        0xF4, // HLT                 (until the first interrupt)
+        0xB0, 0xE8, 0xE6, 0x40, // MOV AL,E8h ; OUT 40h,AL
+        0xB0, 0x03, 0xE6, 0x40, // MOV AL,03h ; OUT 40h,AL   (count 1000 again)
+        0xF4, // HLT                 (until the second interrupt)
+        0xFA, 0xF4, // CLI ; HLT
+    ];
+    let mut machine = machine_with_timer(0x30, 1000, &rearm_and_wait);
+    machine.feed_time(2, 1_000_000); // 1 ms = 1,193 clocks each
+    assert_eq!(machine.timer_ticks(), 2);
+    assert!(Machine::parked(&machine.rt), "the guest must get past its second HLT");
 }
