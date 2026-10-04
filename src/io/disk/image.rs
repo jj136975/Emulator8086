@@ -150,7 +150,7 @@ impl DiskImage {
     }
 
     /// Number of sectors the geometry addresses.
-    pub fn total_sectors(&self) -> u64 {
+    pub(super) fn total_sectors(&self) -> u64 {
         self.cylinders as u64 * self.heads as u64 * self.sectors_per_track as u64
     }
 
@@ -199,7 +199,13 @@ impl DiskImage {
         Ok(self.chs_to_offset(c, h, s))
     }
 
-    pub fn read_sectors(&mut self, c: u16, h: u8, s: u8, count: u8) -> std::io::Result<Vec<u8>> {
+    pub(super) fn read_sectors(
+        &mut self,
+        c: u16,
+        h: u8,
+        s: u8,
+        count: u8,
+    ) -> std::io::Result<Vec<u8>> {
         let byte_offset = self.checked_offset(c, h, s, count)?;
         let total_bytes = count as usize * SECTOR_SIZE;
         let mut buf = vec![0u8; total_bytes];
@@ -257,7 +263,7 @@ impl DiskImage {
     }
 
     /// Validate that the CHS range is within disk geometry.
-    pub fn verify_sectors(&self, c: u16, h: u8, s: u8, count: u8) -> bool {
+    pub(super) fn verify_sectors(&self, c: u16, h: u8, s: u8, count: u8) -> bool {
         if s == 0 || s > self.sectors_per_track {
             return false;
         }
@@ -271,7 +277,7 @@ impl DiskImage {
     }
 
     /// Fill a track with the standard DOS format fill byte (0xF6).
-    pub fn format_track(&mut self, c: u16, h: u8) -> std::io::Result<()> {
+    pub(super) fn format_track(&mut self, c: u16, h: u8) -> std::io::Result<()> {
         let fill = vec![0xF6u8; self.sectors_per_track as usize * SECTOR_SIZE];
         self.write_sectors(c, h, 1, self.sectors_per_track, &fill)
     }
@@ -285,7 +291,7 @@ impl DiskImage {
     }
 
     /// Whether `path` names the host file this image lives in.
-    pub fn is_backed_by(&self, path: &Path) -> bool {
+    pub(super) fn is_backed_by(&self, path: &Path) -> bool {
         match (self.backing_path(), std::fs::canonicalize(path)) {
             (Some(own), Ok(target)) => own == target,
             _ => false,
@@ -343,7 +349,7 @@ impl DiskImage {
 
     /// The CHS address of the sector with the number `lba`, or `None` if
     /// the disk has no such sector.
-    pub fn lba_to_chs(&self, lba: u64) -> Option<(u16, u8, u8)> {
+    pub(super) fn lba_to_chs(&self, lba: u64) -> Option<(u16, u8, u8)> {
         if lba >= self.total_sectors() {
             return None;
         }

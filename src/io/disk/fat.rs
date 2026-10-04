@@ -154,7 +154,7 @@ impl DiskImage {
     /// Copy all files from a host directory into the FAT filesystem on this
     /// disk, replacing files that already exist there. Returns the number of
     /// files copied.
-    pub fn copy_dir_to_fat(&mut self, host_dir: &Path) -> std::io::Result<usize> {
+    pub(super) fn copy_dir_to_fat(&mut self, host_dir: &Path) -> std::io::Result<usize> {
         self.require_writable()?;
         let volume = self.fat_volume()?;
         put_dir(&volume.root_dir(), host_dir)
@@ -219,7 +219,7 @@ impl DiskImage {
     /// path ("\DOS\GAME.EXE") whose directories exist. Returns the path under
     /// which DOS sees the file: a name that is not a valid 8.3 name is stored
     /// under a generated one.
-    pub fn copy_file_to_fat(
+    pub(super) fn copy_file_to_fat(
         &mut self,
         host_data: &[u8],
         dos_path: &str,

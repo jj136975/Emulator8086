@@ -75,7 +75,7 @@ impl DiskController {
 
     /// Raises the change line of a floppy drive after its disk was modified
     /// from the host, so the guest drops what it has cached of that disk.
-    pub fn mark_changed(&mut self, drive: u8) {
+    pub(super) fn mark_changed(&mut self, drive: u8) {
         if let Some(unit) = Self::floppy_unit(drive) {
             self.floppy_changed[unit] = true;
         }
