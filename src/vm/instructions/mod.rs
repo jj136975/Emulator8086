@@ -6,6 +6,9 @@ mod string;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod regression_tests;
+
 use crate::utils::number::{div_rem, SpecialOps};
 use crate::vm::modrm::{direct_address, rm_address, ModRM};
 use crate::vm::runtime::CpuFlag::*;
@@ -892,7 +895,10 @@ pub fn process(vm: &mut Runtime) {
             vm.cpu.registers.cx.set(cx);
             vm.cpu.registers.ax.set(ax);
         }
-        // BOUND (80186+) — check array index; just consume operands
+        // BOUND (80186+). The range check is deliberately not performed: its
+        // exception is INT 5, which on a PC is the BIOS print-screen service,
+        // so a failing BOUND would be re-executed forever. Only the operands
+        // are consumed.
         0x62 => {
             let _ = u16::mod_rm_single(vm);
         }
@@ -910,8 +916,10 @@ pub fn process(vm: &mut Runtime) {
             vm.prefixes.segment = Some(SegmentType::DS);
             vm.prefixes.pending = true;
         }
-        // Operand/Address size override (386+) — ignore in real mode (NOP prefix)
-        0x66 | 0x67 => {}
+        // Operand/Address size override (386+) — ignored: a prefix with no effect
+        0x66 | 0x67 => {
+            vm.prefixes.pending = true;
+        }
         // PUSH imm16 (80186+)
         0x68 => {
             let imm = vm.cpu.fetch_word();
@@ -1384,16 +1392,6 @@ pub fn process(vm: &mut Runtime) {
                 let byte = modrm.operation(byte, u8::bitxor);
                 update_logical_flags_byte(vm, byte);
             }
-        }
-        opcode => {
-            eprintln!(
-                "[ERROR] Unknown instruction: {:#04X} at {:04X}:{:04X}",
-                opcode,
-                vm.cpu.registers.cs.reg().word(),
-                vm.cpu.registers.op_pc
-            );
-            vm.dump_trace();
-            vm.exit(1);
         }
     }
 }

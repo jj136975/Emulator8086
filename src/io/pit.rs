@@ -9,9 +9,12 @@ use crate::vm::cpu::Cpu;
 ///   0x42 - Channel 2 data (speaker)
 ///   0x43 - Mode/command register
 
-pub struct PitTickResult {
+/// Outcome of `Pit::advance`.
+pub struct PitAdvance {
+    /// Input clocks actually consumed.
+    pub clocks: u32,
+    /// Channel 0's output went from low to high on the last clock consumed.
     pub ch0_rising_edge: bool,
-    pub ch0_falling_edge: bool,
 }
 
 pub struct Pit {
@@ -251,10 +254,11 @@ impl PitChannel {
         }
     }
 
-    /// Process a single PIT clock tick. Returns (rising_edge, falling_edge) of output.
-    fn tick_one(&mut self) -> (bool, bool) {
+    /// Process a single PIT clock tick. Returns whether the output went from
+    /// low to high.
+    fn tick_one(&mut self) -> bool {
         if !self.enabled {
-            return (false, false);
+            return false;
         }
 
         let old_output = self.output;
@@ -274,9 +278,7 @@ impl PitChannel {
             self.output_latch = self.counting_element;
         }
 
-        let rising = self.output && !old_output;
-        let falling = !self.output && old_output;
-        (rising, falling)
+        self.output && !old_output
     }
 
     /// Mode 0: Interrupt on Terminal Count
@@ -447,33 +449,21 @@ impl Pit {
         }
     }
 
-    /// Tick all channels by `ticks` PIT clock cycles.
-    /// Iterates one cycle at a time for accuracy.
-    ///
-    /// The PIT runs at 1,193,182 Hz. If your CPU runs at ~4.77 MHz,
-    /// that's roughly 1 PIT tick per 4 CPU cycles.
-    pub fn tick(&mut self, ticks: u16) -> PitTickResult {
-        let mut result = PitTickResult {
-            ch0_rising_edge: false,
-            ch0_falling_edge: false,
-        };
-
-        for _ in 0..ticks {
-            // Tick channel 0
-            let (rising, falling) = self.channels[0].tick_one();
-            if rising {
-                result.ch0_rising_edge = true;
-            }
-            if falling {
-                result.ch0_falling_edge = true;
-            }
-
-            // Tick channels 1 and 2
+    /// Advances all channels by up to `max_clocks` input clocks (1,193,182 Hz),
+    /// one clock at a time, stopping right after a rising edge of channel 0's
+    /// output so the caller can raise IRQ0 before more timer time goes by.
+    pub fn advance(&mut self, max_clocks: u32) -> PitAdvance {
+        let mut clocks = 0;
+        while clocks < max_clocks {
+            let ch0_rising_edge = self.channels[0].tick_one();
             self.channels[1].tick_one();
             self.channels[2].tick_one();
+            clocks += 1;
+            if ch0_rising_edge {
+                return PitAdvance { clocks, ch0_rising_edge: true };
+            }
         }
-
-        result
+        PitAdvance { clocks, ch0_rising_edge: false }
     }
 
     /// Get channel 2 output state (used by port 0x61 bit 5).

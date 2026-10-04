@@ -78,49 +78,30 @@ pub struct Prefixes {
     pub pending: bool,
 }
 
-const RENDER_INTERVAL: u64 = 50_000; // every ~50K instructions
-const TRACE_RING_SIZE: usize = 32;
-const CS_CHANGE_RING_SIZE: usize = 16;
+/// Instructions executed per `step_frame` call.
+const RENDER_INTERVAL: u64 = 50_000;
 
-#[derive(Clone, Copy, Default)]
-pub struct TraceEntry {
-    pub cs: u16,
-    pub ip: u16,
-    pub bytes: [u8; 8],
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct CsChangeEntry {
-    pub instr_count: u64,
-    pub old_cs: u16,
-    pub old_ip: u16,
-    pub new_cs: u16,
-    pub new_ip: u16,
-    pub ax: u16,
-    pub bx: u16,
-    pub cx: u16,
-    pub dx: u16,
-    pub sp: u16,
-    pub ss: u16,
-    pub ds: u16,
-    pub es: u16,
-    pub flags: u16,
-    pub bytes_at_old: [u8; 8],
-}
+/// Input clock of the 8253 timer, in Hz.
+const PIT_CLOCK_HZ: u64 = 1_193_182;
+const NANOS_PER_SEC: u64 = 1_000_000_000;
+/// The host clock is read once per this many instructions (and whenever the
+/// CPU is halted); reading it for every instruction would dominate run time.
+const CLOCK_SAMPLE_INTERVAL: u64 = 256;
+/// Timer clocks handed to the 8253 per executed instruction while it is
+/// behind: few enough that the guest gets to service every timer interrupt,
+/// enough to catch up within a few thousand instructions.
+const PIT_CLOCKS_PER_INSTRUCTION: u64 = 4;
+/// Most timer clocks the guest can be owed (250 ms worth). After a longer
+/// stall the excess is dropped rather than replayed as a burst of ticks.
+const PIT_MAX_DEBT: u64 = PIT_CLOCK_HZ / 4;
 
 pub struct Runtime {
     pub(crate) cpu: Cpu,
     running: bool,
-    status: u16,
     pub prefixes: Prefixes,
     pub instruction_count: u64,
     pub trace: bool,
     pub interrupt_inhibit: bool,
-    pub trace_ring: [TraceEntry; TRACE_RING_SIZE],
-    pub trace_ring_pos: usize,
-    pub cs_change_ring: [CsChangeEntry; CS_CHANGE_RING_SIZE],
-    pub cs_change_ring_pos: usize,
-    pub last_cs: u16,
 
     // Devices
     io_bus: IoBus,
@@ -130,7 +111,14 @@ pub struct Runtime {
     pit: Rc<RefCell<Pit>>,
 
     // Timing
-    last_pit_tick: Instant,
+    /// Host time of the last clock sample.
+    last_clock_sample: Instant,
+    /// Timer clocks owed to the 8253 for host time that has already passed.
+    pit_debt: u64,
+    /// Remainder of the time-to-clocks conversion, in units of 1e-9 clock.
+    pit_frac: u64,
+    /// Timer time is fed in by hand (tests) instead of from the host clock.
+    manual_clock: bool,
 }
 
 impl Runtime {
@@ -150,23 +138,20 @@ impl Runtime {
                 pic: Pic::new(),
             },
             running: true,
-            status: 0,
             prefixes: Prefixes::default(),
             io_bus: IoBus::new(),
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
-            trace_ring: [TraceEntry::default(); TRACE_RING_SIZE],
-            trace_ring_pos: 0,
-            cs_change_ring: [CsChangeEntry::default(); CS_CHANGE_RING_SIZE],
-            cs_change_ring_pos: 0,
-            last_cs: 0,
 
             disks: Rc::new(RefCell::new(DiskController::new())),
             keyboard: None,
             vga: None,
             pit: Rc::new(RefCell::new(Pit::new())),
-            last_pit_tick: Instant::now(),
+            last_clock_sample: Instant::now(),
+            pit_debt: 0,
+            pit_frac: 0,
+            manual_clock: false,
         }
     }
 
@@ -246,37 +231,31 @@ impl Runtime {
         io_bus.register(0x3C0, 0x3DA, Box::new(Rc::clone(&vga)));
         io_bus.register(0x3F0, 0x3F7, Box::new(FdcStub::new()));
 
-        let mut vm = Self {
+        Self {
             cpu: Cpu {
                 cpu_type: CpuType::Intel8086,
                 registers,
                 memory,
-                flags: 0,
+                flags: 0xF002, // 8086 reset state: interrupts disabled
                 halted: false,
                 pic: Pic::new(),
             },
             running: true,
-            status: 0,
             prefixes: Prefixes::default(),
             io_bus,
             instruction_count: 0,
             trace: false,
             interrupt_inhibit: false,
-            trace_ring: [TraceEntry::default(); TRACE_RING_SIZE],
-            trace_ring_pos: 0,
-            cs_change_ring: [CsChangeEntry::default(); CS_CHANGE_RING_SIZE],
-            cs_change_ring_pos: 0,
-            last_cs: 0xF000,
 
             disks: disk_ctrl,
             keyboard: Some(keyboard),
             vga: Some(vga),
             pit,
-            last_pit_tick: Instant::now(),
-        };
-
-        vm.cpu.set_flag(Interrupt);
-        vm
+            last_clock_sample: Instant::now(),
+            pit_debt: 0,
+            pit_frac: 0,
+            manual_clock: false,
+        }
     }
 
     /// A fully wired machine for integration tests. The keyboard is fed
@@ -288,82 +267,6 @@ impl Runtime {
         let (tx, rx) = std::sync::mpsc::channel();
         let vm = Self::with_devices(disk_ctrl, KeyboardController::with_receiver(rx));
         (vm, tx)
-    }
-
-    pub fn exit(&mut self, status: u16) {
-        self.running = false;
-        self.status = status;
-    }
-
-    pub fn record_trace(&mut self) {
-        let cs = self.cpu.registers.cs.reg().word();
-        let ip = self.cpu.registers.pc.word();
-        let mut bytes = [0u8; 8];
-        for i in 0..8 {
-            bytes[i] = self.cpu.registers.cs.read_byte(ip.wrapping_add(i as u16));
-        }
-        self.trace_ring[self.trace_ring_pos] = TraceEntry { cs, ip, bytes };
-        self.trace_ring_pos = (self.trace_ring_pos + 1) % TRACE_RING_SIZE;
-
-        // Detect CS changes
-        if cs != self.last_cs {
-            let old_cs = self.last_cs;
-            // Read bytes at old CS:IP (from previous trace entry)
-            let prev_idx = (self.trace_ring_pos + TRACE_RING_SIZE - 2) % TRACE_RING_SIZE;
-            let old_entry = &self.trace_ring[prev_idx];
-            self.cs_change_ring[self.cs_change_ring_pos] = CsChangeEntry {
-                instr_count: self.instruction_count,
-                old_cs,
-                old_ip: old_entry.ip,
-                new_cs: cs,
-                new_ip: ip,
-                ax: self.cpu.registers.ax.word(),
-                bx: self.cpu.registers.bx.word(),
-                cx: self.cpu.registers.cx.word(),
-                dx: self.cpu.registers.dx.word(),
-                sp: self.cpu.registers.sp.word(),
-                ss: self.cpu.registers.ss.reg().word(),
-                ds: self.cpu.registers.ds.reg().word(),
-                es: self.cpu.registers.es.reg().word(),
-                flags: self.cpu.flags,
-                bytes_at_old: old_entry.bytes,
-            };
-            self.cs_change_ring_pos = (self.cs_change_ring_pos + 1) % CS_CHANGE_RING_SIZE;
-            self.last_cs = cs;
-        }
-    }
-
-    pub fn dump_trace(&self) {
-        eprintln!("=== Last {} CS changes ===", CS_CHANGE_RING_SIZE);
-        for i in 0..CS_CHANGE_RING_SIZE {
-            let idx = (self.cs_change_ring_pos + i) % CS_CHANGE_RING_SIZE;
-            let e = &self.cs_change_ring[idx];
-            if e.old_cs == 0 && e.new_cs == 0 && e.instr_count == 0 {
-                continue;
-            }
-            eprintln!(
-                "  #{:<10} {:04X}:{:04X} -> {:04X}:{:04X}  AX={:04X} BX={:04X} CX={:04X} DX={:04X} SP={:04X} SS={:04X} DS={:04X} ES={:04X} F={:04X}  [{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}]",
-                e.instr_count, e.old_cs, e.old_ip, e.new_cs, e.new_ip,
-                e.ax, e.bx, e.cx, e.dx, e.sp, e.ss, e.ds, e.es, e.flags,
-                e.bytes_at_old[0], e.bytes_at_old[1], e.bytes_at_old[2], e.bytes_at_old[3],
-                e.bytes_at_old[4], e.bytes_at_old[5], e.bytes_at_old[6], e.bytes_at_old[7],
-            );
-        }
-        eprintln!("=== Last {} instructions before crash ===", TRACE_RING_SIZE);
-        for i in 0..TRACE_RING_SIZE {
-            let idx = (self.trace_ring_pos + i) % TRACE_RING_SIZE;
-            let entry = &self.trace_ring[idx];
-            if entry.cs == 0 && entry.ip == 0 && entry.bytes == [0; 8] {
-                continue;
-            }
-            eprintln!(
-                "  {:04X}:{:04X}  {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                entry.cs, entry.ip,
-                entry.bytes[0], entry.bytes[1], entry.bytes[2], entry.bytes[3],
-                entry.bytes[4], entry.bytes[5], entry.bytes[6], entry.bytes[7],
-            );
-        }
-        eprintln!("=========================================");
     }
 
     pub(crate) fn load_rom(&mut self, path: PathBuf) {
@@ -388,7 +291,9 @@ impl Runtime {
     /// handle interrupts. Returns `false` when the emulator should stop.
     /// Called from the terminal `run()` loop and the GUI event loop.
     pub fn step_frame(&mut self) -> bool {
-        const PIT_CLOCK_HZ: f64 = 1_193_182.0;
+        // Host time that went by between two calls (rendering, vsync,
+        // sleeping) is credited on the first pass.
+        let mut sample_clock = true;
 
         for _ in 0..RENDER_INTERVAL {
             if !self.running {
@@ -399,25 +304,26 @@ impl Runtime {
                 debug!("{:#?}", self);
             }
 
+            // The trap flag is sampled before the instruction runs: the
+            // instruction after a POPF or IRET that sets TF still executes,
+            // and only then does the single-step interrupt fire.
+            let mut single_step = false;
             if !self.cpu.halted {
-                self.record_trace();
+                single_step = self.cpu.check_flag(Trap);
                 process(self);
                 self.instruction_count += 1;
             }
 
-            // PIT timing
-            let now = Instant::now();
-            let elapsed = now.duration_since(self.last_pit_tick).as_secs_f64();
-            let pit_ticks = ((elapsed * PIT_CLOCK_HZ) as u64).min(65535) as u16;
-            if pit_ticks > 0 {
-                self.last_pit_tick = now;
-                let pit_result = self.pit.borrow_mut().tick(pit_ticks);
-                if pit_result.ch0_rising_edge {
-                    self.cpu.pic.request_interrupt(0);
-                }
-                if pit_result.ch0_falling_edge {
-                    self.cpu.pic.clear_interrupt(0);
-                }
+            // Timer
+            if sample_clock
+                || self.cpu.halted
+                || self.instruction_count % CLOCK_SAMPLE_INTERVAL == 0
+            {
+                sample_clock = false;
+                self.sample_host_clock();
+            }
+            if self.pit_debt > 0 {
+                self.run_pit();
             }
 
             // Keyboard polling
@@ -433,7 +339,7 @@ impl Runtime {
                             if let Some(vga) = &self.vga {
                                 vga.borrow_mut().queue_full_redraw();
                             }
-                            self.last_pit_tick = Instant::now();
+                            self.last_clock_sample = Instant::now();
                         }
                         Some(crate::io::keyboard::EmulatorEvent::DumpVga) => {
                             if let Some(vga) = &self.vga {
@@ -446,19 +352,82 @@ impl Runtime {
             }
 
             // Interrupt handling. Interrupts are not recognised between a
-            // prefix byte and the instruction it belongs to.
+            // prefix byte and the instruction it belongs to, nor at the
+            // boundary right after STI or a load of SS.
             if self.interrupt_inhibit || self.prefixes.pending {
                 self.interrupt_inhibit = false;
-            } else if self.cpu.check_flag(Interrupt) && self.cpu.pic.has_interrupt() {
+                continue;
+            }
+            if self.cpu.check_flag(Interrupt) && self.cpu.pic.has_interrupt() {
                 let vector = self.cpu.pic.acknowledge();
                 self.cpu.halted = false;
                 self.handle_interrupt(vector);
-            } else if self.cpu.halted {
-                break; // exit batch early when halted
+            }
+            // Single-step has the lowest priority: if an IRQ was taken at this
+            // boundary too, the trap fires on entry to its handler.
+            if single_step {
+                self.cpu.halted = false;
+                self.handle_interrupt(1);
+            }
+            if self.cpu.halted {
+                break; // nothing to run until an interrupt arrives
             }
         }
 
         self.running
+    }
+
+    /// Credits the timer with the host time elapsed since the last sample.
+    fn sample_host_clock(&mut self) {
+        if self.manual_clock {
+            return;
+        }
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_clock_sample);
+        self.last_clock_sample = now;
+        self.credit_pit_time(elapsed.as_nanos().min(NANOS_PER_SEC as u128) as u64);
+    }
+
+    /// Converts `nanos` of elapsed time (at most one second per call) into
+    /// timer clocks owed to the 8253. The sub-clock remainder is carried
+    /// over, so no time is lost to rounding however often this is called.
+    pub(crate) fn credit_pit_time(&mut self, nanos: u64) {
+        self.pit_frac += nanos.min(NANOS_PER_SEC) * PIT_CLOCK_HZ;
+        self.pit_debt = (self.pit_debt + self.pit_frac / NANOS_PER_SEC).min(PIT_MAX_DEBT);
+        self.pit_frac %= NANOS_PER_SEC;
+    }
+
+    /// Hands owed clocks to the 8253 and raises IRQ0 on each rising edge of
+    /// channel 0's output. The request stays latched until it is
+    /// acknowledged, so an edge is never lost however much time is delivered
+    /// at once. A running CPU gets a few clocks per instruction; a halted
+    /// one gets everything up to the edge that can wake it.
+    fn run_pit(&mut self) {
+        loop {
+            let budget = if self.cpu.halted {
+                self.pit_debt
+            } else {
+                self.pit_debt.min(PIT_CLOCKS_PER_INSTRUCTION)
+            };
+            let advance = self.pit.borrow_mut().advance(budget as u32);
+            self.pit_debt -= advance.clocks as u64;
+            if advance.ch0_rising_edge {
+                self.cpu.pic.request_interrupt(0);
+            }
+            let wakes_cpu = self.cpu.check_flag(Interrupt) && self.cpu.pic.has_interrupt();
+            if !self.cpu.halted || self.pit_debt == 0 || wakes_cpu {
+                break;
+            }
+        }
+    }
+
+    /// Stops following the host clock, so a test can feed timer time by hand
+    /// through `credit_pit_time`.
+    #[cfg(test)]
+    pub(crate) fn use_manual_clock(&mut self) {
+        self.manual_clock = true;
+        self.pit_debt = 0;
+        self.pit_frac = 0;
     }
 
     /// Terminal-mode main loop. Uses crossterm for display and keyboard.
@@ -495,10 +464,7 @@ impl Runtime {
         let _ = write!(std::io::stdout(), "\x1B[0m\x1B[?25h\n");
         let _ = std::io::stdout().flush();
 
-        debug!(
-            "Emulator exited with status {:04X} after {} instructions",
-            self.status, self.instruction_count
-        );
+        debug!("Emulator exited after {} instructions", self.instruction_count);
     }
 
     pub fn port_in_byte(&mut self, port: u16) -> u8 {
@@ -624,5 +590,33 @@ impl Debug for Runtime {
             if self.cpu.halted { "Halted" } else if self.running { "Running" } else { "Stopped" }
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the fraction of a timer clock left over after each host
+    /// clock sample was discarded, which made the timer run several percent
+    /// slow while the guest was busy.
+    #[test]
+    fn timer_time_is_not_lost_to_rounding() {
+        let mut rt = Runtime::new_test();
+        rt.use_manual_clock();
+        for _ in 0..1_000_000 {
+            rt.credit_pit_time(100); // less than one timer clock
+        }
+        assert_eq!(rt.pit_debt, 119_318); // 0.1 s of a 1,193,182 Hz clock
+    }
+
+    #[test]
+    fn timer_debt_is_capped_after_a_long_stall() {
+        let mut rt = Runtime::new_test();
+        rt.use_manual_clock();
+        for _ in 0..3 {
+            rt.credit_pit_time(NANOS_PER_SEC);
+        }
+        assert_eq!(rt.pit_debt, PIT_MAX_DEBT);
     }
 }

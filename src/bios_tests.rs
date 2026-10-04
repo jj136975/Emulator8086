@@ -58,11 +58,11 @@ impl Machine {
         rt.cpu.halted && !rt.cpu.check_flag(CpuFlag::Interrupt)
     }
 
-    /// Runs `code` at STUB_SEG:0000 on its own stack, with interrupts
-    /// enabled, until it falls into the `CLI; HLT` appended here.
-    fn run_stub(&mut self, code: &[u8]) {
+    /// Points the CPU at `code`, loaded at STUB_SEG:0000, on its own stack
+    /// and with interrupts enabled. Nothing is executed yet.
+    fn load_stub(&mut self, code: &[u8]) {
         let base = (STUB_SEG as usize) << 4;
-        for (i, byte) in code.iter().chain(&[0xFA, 0xF4]).enumerate() {
+        for (i, byte) in code.iter().enumerate() {
             self.rt.cpu.memory.write_byte(base + i, *byte);
         }
         let registers = &mut self.rt.cpu.registers;
@@ -73,7 +73,28 @@ impl Machine {
         self.rt.cpu.halted = false;
         self.rt.cpu.set_flag(CpuFlag::Interrupt);
         self.rt.prefixes = Prefixes::default();
+    }
+
+    /// Runs `code` until it falls into the `CLI; HLT` appended here.
+    fn run_stub(&mut self, code: &[u8]) {
+        let mut program = code.to_vec();
+        program.extend_from_slice(&[0xFA, 0xF4]);
+        self.load_stub(&program);
         self.run_until(Self::parked);
+    }
+
+    /// Lets `nanos` of timer time go by, then runs one frame; `steps` times.
+    fn feed_time(&mut self, steps: usize, nanos: u64) {
+        for _ in 0..steps {
+            self.rt.credit_pit_time(nanos);
+            self.rt.step_frame();
+        }
+    }
+
+    /// The BIOS tick counter at 0040:006C, incremented by every INT 08h.
+    fn timer_ticks(&self) -> u32 {
+        let memory = &self.rt.cpu.memory;
+        memory.read_word(0x046C) as u32 | (memory.read_word(0x046E) as u32) << 16
     }
 
     /// Sends a key press followed by its release.
@@ -266,4 +287,63 @@ fn int10_set_mode_preserves_registers() {
     assert_eq!(registers.si.word(), 0x1111, "SI");
     assert_eq!(registers.di.word(), 0x2222, "DI");
     assert_eq!(registers.bp.word(), 0x3333, "BP");
+}
+
+// ---------------------------------------------------------------------------
+// Timer — 8253 channel 0 -> IRQ0 -> INT 08h
+// ---------------------------------------------------------------------------
+
+/// Guest idle loops: halted between interrupts, or spinning.
+const IDLE_HALTED: [u8; 3] = [0xF4, 0xEB, 0xFD]; // HLT ; JMP back to the HLT
+const IDLE_BUSY: [u8; 2] = [0xEB, 0xFE]; // JMP $
+
+/// Boots, switches to a hand-fed clock, and starts a guest that programs
+/// timer channel 0 with `control` and `divisor` and then idles in `idle`.
+/// The BIOS tick counter is zero when this returns.
+fn machine_with_timer(control: u8, divisor: u16, idle: &[u8]) -> Machine {
+    let [lo, hi] = divisor.to_le_bytes();
+    let mut code = vec![
+        0xB0, control, 0xE6, 0x43, // MOV AL,control ; OUT 43h,AL
+        0xB0, lo, 0xE6, 0x40, // MOV AL,lo ; OUT 40h,AL
+        0xB0, hi, 0xE6, 0x40, // MOV AL,hi ; OUT 40h,AL
+        0xFB, // STI
+    ];
+    code.extend_from_slice(idle);
+
+    let mut machine = Machine::boot(disks(vec![]));
+    machine.rt.use_manual_clock();
+    machine.load_stub(&code);
+    machine.rt.step_frame(); // runs the programming sequence; no time passes
+    for addr in 0x046C..0x0470 {
+        machine.rt.cpu.memory.write_byte(addr, 0);
+    }
+    machine
+}
+
+/// Regression: mode 2 holds its output low for a single clock, so both edges
+/// always fell into the same batch of timer time and the interrupt request
+/// was withdrawn before a halted guest could see it.
+#[test]
+fn rate_generator_ticks_reach_a_halted_guest() {
+    let mut machine = machine_with_timer(0x34, 0, &IDLE_HALTED);
+    machine.feed_time(50, 20_000_000); // one second, 20 ms at a time
+    assert_eq!(machine.timer_ticks(), 18); // 1,193,182 clocks / 65,536
+}
+
+/// Regression: a timer faster than the rate at which a halted guest is
+/// polled lost every tick.
+#[test]
+fn fast_timer_ticks_reach_a_halted_guest() {
+    let mut machine = machine_with_timer(0x36, 1000, &IDLE_HALTED);
+    machine.feed_time(50, 20_000_000);
+    assert_eq!(machine.timer_ticks(), 1193); // 1,193,182 clocks / 1,000
+}
+
+/// Regression: the time that goes by between two frames arrived as one
+/// batch, which yielded at most one tick and usually none.
+#[test]
+fn timer_ticks_owed_after_a_frame_gap_are_all_delivered() {
+    let mut machine = machine_with_timer(0x36, 1000, &IDLE_BUSY);
+    machine.feed_time(1, 14_000_000); // one 14 ms gap = 16,704 clocks
+    assert_eq!(machine.timer_ticks(), 16);
 }

@@ -5,7 +5,9 @@ pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
 
 pub struct Memory {
     mem: Box<[u8]>,
-    pub(crate) boundary_buf: [u8; 2],
+    /// Scratch bytes that operand references into ROM point at, so stores
+    /// through them are dropped like any other write to ROM.
+    rom_sink: [u8; 2],
     rom_start: usize,
 }
 
@@ -13,7 +15,7 @@ impl Memory {
     pub fn new() -> Self {
         Self {
             mem: vec![0u8; MEMORY_SIZE].into_boxed_slice(),
-            boundary_buf: [0; 2],
+            rom_sink: [0; 2],
             rom_start: MEMORY_SIZE, // above 1MB -- protection disabled until explicitly enabled
         }
     }
@@ -35,29 +37,34 @@ impl Memory {
         memory.mem[offset..offset+data.len()].copy_from_slice(data);
     }
 
+    /// The byte an operand reference to `addr` (already wrapped to 20 bits)
+    /// reads and writes. A ROM byte is copied to scratch slot `slot` first,
+    /// so the operand reads it normally but cannot change it.
     #[inline]
-    pub fn ref_byte(&mut self, address: usize) -> ByteWrapper {
-        ByteWrapper::new(&mut self.mem[address & 0xFFFFF])
+    fn operand_byte(&mut self, addr: usize, slot: usize) -> &mut u8 {
+        if addr >= self.rom_start {
+            self.rom_sink[slot] = self.mem[addr];
+            &mut self.rom_sink[slot]
+        } else {
+            &mut self.mem[addr]
+        }
     }
 
     #[inline]
-    pub fn ref_word(&mut self, address: usize) -> WordWrapper {
-        let addr = address & 0xFFFFF;
-        if addr == 0xFFFFF {
-            // Word straddles the 1MB wrap: low byte at 0xFFFFF, high byte
-            // wraps to 0x00000. Route through boundary_buf so the caller
-            // gets a usable WordWrapper. Writes through the wrapper land
-            // in boundary_buf (consistent with Segment::ref_word at offset
-            // 0xFFFF) — callers needing write-through at the wrap must use
-            // byte-by-byte access via write_word.
-            self.boundary_buf[0] = self.mem[0xFFFFF];
-            self.boundary_buf[1] = self.mem[0x00000];
-            return WordWrapper::from_slice(&mut self.boundary_buf);
-        }
-        let slice: &mut [u8; 2] = (&mut self.mem[addr..=addr + 1])
-            .try_into()
-            .expect("slice length 2 by construction");
-        WordWrapper::from_slice(slice)
+    pub fn ref_byte(&mut self, address: usize) -> ByteWrapper {
+        ByteWrapper::new(self.operand_byte(address & 0xFFFFF, 0))
+    }
+
+    /// Reference to the word whose low byte is at `lo` and high byte at `hi`
+    /// (both already wrapped to 20 bits). The bytes are addressed separately,
+    /// so a word that wraps around the end of a segment or of memory is read
+    /// and written correctly.
+    #[inline]
+    pub fn ref_word_at(&mut self, lo: usize, hi: usize) -> WordWrapper {
+        let lo: *mut u8 = self.operand_byte(lo, 0);
+        let hi: *mut u8 = self.operand_byte(hi, 1);
+        // SAFETY: both pointers address live bytes owned by `self`.
+        unsafe { WordWrapper::from_parts(lo, hi) }
     }
 
     #[inline]
@@ -122,20 +129,10 @@ impl Segment {
 
     #[inline]
     pub fn ref_word(&mut self, address: u16) -> WordWrapper {
-        if address == 0xFFFF {
-            // Offset wraps within segment: low byte from :FFFF, high byte from :0000
-            let lo = self.phys_address(0xFFFF);
-            let hi = self.phys_address(0x0000);
-            unsafe {
-                let mem = &mut *self.mem;
-                mem.boundary_buf[0] = mem.mem[lo];
-                mem.boundary_buf[1] = mem.mem[hi];
-                WordWrapper::from_slice(&mut mem.boundary_buf)
-            }
-        } else {
-            let address = self.phys_address(address);
-            unsafe { (*self.mem).ref_word(address) }
-        }
+        // The high byte's offset wraps inside the segment (FFFFh -> 0000h).
+        let lo = self.phys_address(address);
+        let hi = self.phys_address(address.wrapping_add(1));
+        unsafe { (*self.mem).ref_word_at(lo, hi) }
     }
 
     #[inline]
@@ -183,17 +180,45 @@ impl Segment {
 mod inspection_tests {
     use super::*;
 
-    /// Regression: `ref_word(0xFFFFF)` must not panic. The word straddles
-    /// the 1MB wrap, so the low byte comes from 0xFFFFF and the high byte
-    /// wraps to 0x00000. The wrapper routes through `boundary_buf` so
-    /// reads are correct; writes to the wrap slot are dropped (documented).
+    /// A word at the last physical address has its high byte at address 0,
+    /// for reads and for writes.
     #[test]
-    fn ref_word_at_last_physical_address_does_not_panic_and_wraps_read() {
+    fn word_reference_at_last_physical_address_wraps_to_zero() {
         let mut mem = Memory::new();
         mem.write_byte_unchecked(0xFFFFF, 0x11);
         mem.write_byte_unchecked(0x00000, 0x22);
-        let w = mem.ref_word(0xFFFFF);
+        let w = mem.ref_word_at(0xFFFFF, 0x00000);
         assert_eq!(w.word(), 0x2211, "low from 0xFFFFF, high wraps to 0x00000");
+        w.set(0xBBAA);
+        assert_eq!(mem.read_byte(0xFFFFF), 0xAA);
+        assert_eq!(mem.read_byte(0x00000), 0xBB);
+    }
+
+    /// Operand references into ROM read the ROM bytes but drop writes, byte
+    /// by byte: a word straddling the RAM/ROM boundary stores only its RAM half.
+    #[test]
+    fn operand_references_cannot_modify_rom() {
+        let mut mem = Memory::new();
+        mem.write_byte_unchecked(0xEFFFF, 0x11);
+        mem.write_byte_unchecked(0xF0000, 0x22);
+        mem.write_byte_unchecked(0xF0001, 0x33);
+        mem.enable_rom_protection();
+
+        let b = mem.ref_byte(0xF0000);
+        assert_eq!(b.byte(), 0x22);
+        b.set(0x99);
+        assert_eq!(mem.read_byte(0xF0000), 0x22);
+
+        let w = mem.ref_word_at(0xF0000, 0xF0001);
+        assert_eq!(w.word(), 0x3322);
+        w.set(0x7788);
+        assert_eq!(mem.read_word(0xF0000), 0x3322);
+
+        let straddling = mem.ref_word_at(0xEFFFF, 0xF0000);
+        assert_eq!(straddling.word(), 0x2211);
+        straddling.set(0x5566);
+        assert_eq!(mem.read_byte(0xEFFFF), 0x66, "the RAM byte is written");
+        assert_eq!(mem.read_byte(0xF0000), 0x22, "the ROM byte is not");
     }
 
     /// FINDING (Phase 2): Segment::read_word at offset 0xFFFF must wrap

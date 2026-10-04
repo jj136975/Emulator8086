@@ -195,10 +195,10 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 if denum == 0 {
                     div_zero(vm);
                 } else {
-                    let mut quot = numerator / denum;
+                    // A REP prefix has no effect here: the 8086 only consults
+                    // its F1 flag when fixing up signs for IDIV.
+                    let quot = numerator / denum;
                     let rem = numerator % denum;
-                    // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
-                    if vm.prefixes.rep.is_some() { quot = (quot as i32).wrapping_neg() as u32; }
                     if quot > u16::MAX as u32 {
                         div_zero(vm);
                     } else {
@@ -209,8 +209,10 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             },
             // IDIV - sign-extend divisor, truncated division, no flags defined
             0b_111 => {
-                let numerator: i32 = ((vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32)) as i32;
-                let denum = modrm.word() as i16 as i32;
+                // Computed in i64 so that 8000:0000h / -1 fails the range
+                // check below instead of overflowing the host's division.
+                let numerator = (((vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32)) as i32) as i64;
+                let denum = modrm.word() as i16 as i64;
 
                 if denum == 0 {
                     div_zero(vm);
@@ -284,10 +286,9 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 if denum == 0 {
                     div_zero(vm);
                 } else {
-                    let mut quot = numerator / denum;
+                    // A REP prefix has no effect here (see the word form).
+                    let quot = numerator / denum;
                     let rem = numerator % denum;
-                    // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
-                    if vm.prefixes.rep.is_some() { quot = (quot as i16).wrapping_neg() as u16; }
                     if quot > u8::MAX as u16 {
                         div_zero(vm);
                     } else {
@@ -298,8 +299,10 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             },
             // IDIV - truncated division, no flags defined
             0b_111 => {
-                let numerator: i16 = vm.cpu.registers.ax.word() as i16;
-                let denum = modrm.byte() as i8 as i16;
+                // Computed in i32 so that 8000h / -1 fails the range check
+                // below instead of overflowing the host's division.
+                let numerator = vm.cpu.registers.ax.word() as i16 as i32;
+                let denum = modrm.byte() as i8 as i32;
 
                 if denum == 0 {
                     div_zero(vm);

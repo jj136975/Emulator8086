@@ -55,31 +55,40 @@ impl ByteWrapper {
     }
 }
 
+/// A 16-bit operand addressed as two independent byte pointers, so that a
+/// word whose second byte wraps (segment offset FFFFh -> 0000h, or physical
+/// FFFFFh -> 00000h) reads and writes the right guest bytes.
 pub struct WordWrapper {
-    inner: *mut [u8; 2],
+    lo: *mut u8,
+    hi: *mut u8,
 }
 
 impl WordWrapper {
     pub fn from_register(register: &mut Register) -> Self {
+        let bytes = unsafe { register.byte.as_mut_ptr() };
         Self {
-            inner: unsafe { &mut register.byte },
+            lo: unsafe { bytes.add(LOW_IDX) },
+            hi: unsafe { bytes.add(HIGH_IDX) },
         }
     }
 
-    pub fn from_slice(slice: &mut [u8; 2]) -> Self {
-        Self { inner: slice }
+    /// # Safety
+    /// `lo` and `hi` must each point at a byte that stays valid for reads and
+    /// writes for as long as the wrapper is used.
+    pub unsafe fn from_parts(lo: *mut u8, hi: *mut u8) -> Self {
+        Self { lo, hi }
     }
 
     #[inline(always)]
     pub fn word(&self) -> u16 {
-        u16::from_le_bytes(unsafe { *self.inner })
+        u16::from_le_bytes(unsafe { [*self.lo, *self.hi] })
     }
 
     #[inline(always)]
     pub fn set(&self, word: u16) {
         let bytes = word.to_le_bytes();
-        unsafe { (*self.inner)[0] = bytes[0] };
-        unsafe { (*self.inner)[1] = bytes[1] };
+        unsafe { *self.lo = bytes[0] };
+        unsafe { *self.hi = bytes[1] };
     }
 
     #[inline(always)]
@@ -91,19 +100,16 @@ impl WordWrapper {
 
     #[inline]
     pub fn swap(&mut self, other: &mut WordWrapper) {
-        unsafe { core::ptr::swap(self.inner, other.inner) };
+        let mine = self.word();
+        self.set(other.word());
+        other.set(mine);
     }
 
     #[inline]
     pub fn swap_register(&mut self, register: &mut Register) {
-        unsafe { core::ptr::swap(self.inner as *mut u16, &mut register.word) };
-    }
-
-    pub unsafe fn read_next_word(&self) -> u16 {
-        let ptr = self.inner as *const u8;
-        let lo = *ptr.add(2);
-        let hi = *ptr.add(3);
-        u16::from_le_bytes([lo, hi])
+        let mine = self.word();
+        self.set(register.word());
+        register.set(mine);
     }
 }
 
