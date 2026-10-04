@@ -11,7 +11,7 @@
 
 use crate::io::disk::{
     BOOT_ORDER_END, DiskController, DiskImage, DiskSource, DiskSpec, FLOPPY_144_SIZE,
-    HD_DEFAULT_SIZE_MB,
+    HD_DEFAULT_SIZE_MB, WallClock,
 };
 use std::path::{Path, PathBuf};
 
@@ -187,10 +187,11 @@ pub fn parse_boot_order(spec: &str) -> Result<Vec<u8>, String> {
 /// The image for floppy drive A: has to exist. An image for another floppy
 /// drive or for a hard disk is created when its file does not exist. That,
 /// and a hard disk image too large to be used in full, is reported on
-/// stderr.
+/// stderr. A floppy held in memory is formatted, at the time `clock` shows.
 pub fn open_drives(
     disk_specs: Vec<DiskSpec>,
     hd_specs: &[String],
+    clock: &dyn WallClock,
 ) -> Result<DiskController, String> {
     let mut controller = DiskController::new();
 
@@ -199,7 +200,7 @@ pub fn open_drives(
         let image = match spec.source {
             DiskSource::Memory(size) => {
                 let mut image = DiskImage::new_in_memory_sized(size, spec.readonly);
-                if let Err(error) = image.format_fat() {
+                if let Err(error) = image.format_fat(clock) {
                     eprintln!("Warning: could not format floppy: {}", error);
                 }
                 image

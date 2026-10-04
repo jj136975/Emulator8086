@@ -2,7 +2,9 @@
 //! `emu8086_core` crate. `Cli` (its doc comments are the `--help` text),
 //! `machine`, which builds the machine the options describe and loads its
 //! ROM (the image the command line names, or the core's built-in BIOS), and
-//! `run`, which hands that machine to the window (`gui`).
+//! `run`, which hands that machine to the window (`gui`). The machine reads
+//! no clock: the window's pacer tells it the time that passes, and
+//! `wall_clock` is the clock its disks are formatted by.
 //!
 //! The invariant: whatever the user can fix (a bad option value, a disk
 //! image or ROM that cannot be used) is an `Err` from `run` carrying a
@@ -19,7 +21,10 @@ use emu8086_core::io::disk_spec::{parse_boot_order, parse_disk_specs};
 use emu8086_core::io::keyboard::{EmulatorEvent, KeyboardController};
 use emu8086_core::vm::runtime::Runtime;
 
+use crate::wall_clock::HostClock;
+
 mod gui;
+mod wall_clock;
 
 #[derive(Parser, Debug)]
 #[command(name = "emulator8086", about = "Intel 8086 emulator")]
@@ -56,7 +61,7 @@ fn machine(args: Cli) -> Result<(Runtime, Sender<EmulatorEvent>), String> {
     // controller through this channel.
     let (keys, key_events) = std::sync::mpsc::channel();
     let keyboard = KeyboardController::with_receiver(key_events);
-    let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace, keyboard)?;
+    let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace, keyboard, &HostClock)?;
     match args.rom {
         Some(path) => runtime.load_rom(path)?,
         None => runtime.load_rom_image(BIOS_ROM),

@@ -18,7 +18,7 @@
 
 use crate::io::bus::IoBus;
 use crate::io::console::DebugConsole;
-use crate::io::disk::{BOOT_ORDER_PORT, DISK_TRAP_PORT, DiskController, DiskSpec};
+use crate::io::disk::{BOOT_ORDER_PORT, DISK_TRAP_PORT, DiskController, DiskSpec, WallClock};
 use crate::io::disk_spec::open_drives;
 use crate::io::dma::{DmaController, DmaPageRegisters};
 use crate::io::fdc::FdcStub;
@@ -167,15 +167,17 @@ impl Runtime {
     /// Builds the machine with the disks the command line asked for. Fails,
     /// with a message for the user, if one of the images cannot be used.
     /// `keyboard` holds the receiving end of the channel the window sends
-    /// its key events down.
+    /// its key events down. `clock` is the host's wall clock, for the disks
+    /// that are formatted here.
     pub fn new(
         disk_specs: Vec<DiskSpec>,
         hd_specs: Vec<String>,
         boot_order: Option<Vec<u8>>,
         trace: bool,
         keyboard: KeyboardController,
+        clock: &dyn WallClock,
     ) -> Result<Self, String> {
-        let mut disk_ctrl = open_drives(disk_specs, &hd_specs)?;
+        let mut disk_ctrl = open_drives(disk_specs, &hd_specs, clock)?;
 
         if let Some(order) = boot_order {
             disk_ctrl.set_boot_order(order);

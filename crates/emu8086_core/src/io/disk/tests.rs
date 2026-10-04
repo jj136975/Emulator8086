@@ -501,9 +501,23 @@ fn volume_serial(image: &mut DiskImage) -> u32 {
 fn formatted_floppies_get_distinct_volume_serials() {
     let mut first = floppy(FLOPPY_144_SIZE);
     let mut second = floppy(FLOPPY_144_SIZE);
-    first.format_fat().unwrap();
-    second.format_fat().unwrap();
+    first.format_fat(&FixedClock).unwrap();
+    second.format_fat(&FixedClock).unwrap();
     assert_ne!(volume_serial(&mut first), volume_serial(&mut second));
+}
+
+/// A serial comes from the time on the clock that was passed in and from
+/// the number of volumes formatted before: disks formatted at different
+/// times differ, and so do disks formatted within one tick of the clock.
+#[test]
+fn volume_serial_follows_the_clock_and_the_order_of_formatting() {
+    let now = FixedClock.unix_nanos();
+    assert_ne!(fat::volume_serial(now, 0), fat::volume_serial(now + 1, 0));
+    assert_ne!(
+        fat::volume_serial(now, 0),
+        fat::volume_serial(now + 1_000_000_000, 0)
+    );
+    assert_ne!(fat::volume_serial(now, 0), fat::volume_serial(now, 1));
 }
 
 /// A file written into the disk from the host changes what the guest
@@ -513,11 +527,13 @@ fn host_side_write_raises_the_change_line() {
     let mut rt = Runtime::new_test();
     let mut disk_ctrl = DiskController::new();
     let mut image = floppy(FLOPPY_144_SIZE);
-    image.format_fat().unwrap();
+    image.format_fat(&FixedClock).unwrap();
     disk_ctrl.attach(0x00, image);
     int13(&mut disk_ctrl, &mut rt, 0x1600, 0, 0x0000); // consume the insertion
 
-    disk_ctrl.put_file(0x00, b"hello", "HELLO.TXT").unwrap();
+    disk_ctrl
+        .put_file(0x00, b"hello", "HELLO.TXT", &FixedClock)
+        .unwrap();
     int13(&mut disk_ctrl, &mut rt, 0x1600, 0, 0x0000);
     assert!(carry(&rt));
     assert_eq!(rt.cpu.registers.ax.high(), 0x06);
@@ -525,7 +541,9 @@ fn host_side_write_raises_the_change_line() {
     assert_eq!(rt.cpu.registers.ax.high(), 0x00);
 
     assert!(
-        disk_ctrl.put_file(0x01, b"hello", "HELLO.TXT").is_err(),
+        disk_ctrl
+            .put_file(0x01, b"hello", "HELLO.TXT", &FixedClock)
+            .is_err(),
         "B: is empty"
     );
 }
@@ -537,7 +555,7 @@ fn host_side_write_raises_the_change_line() {
 /// The contents of a 1.44M floppy with an empty FAT volume.
 fn formatted_floppy_bytes() -> Vec<u8> {
     let mut image = floppy(FLOPPY_144_SIZE);
-    image.format_fat().unwrap();
+    image.format_fat(&FixedClock).unwrap();
     (0..160u16)
         .flat_map(|track| {
             image
@@ -1361,7 +1379,7 @@ fn extended_drive_parameters_describe_the_disk() {
 
 fn formatted_floppy() -> DiskImage {
     let mut image = floppy(FLOPPY_144_SIZE);
-    image.format_fat().unwrap();
+    image.format_fat(&FixedClock).unwrap();
     image
 }
 
@@ -1372,7 +1390,7 @@ fn fat_file(image: &mut DiskImage, path: &str) -> Option<Vec<u8>> {
         panic!("in-memory image expected");
     };
     let volume = std::io::Cursor::new(data.as_mut_slice());
-    let fs = fatfs::FileSystem::new(volume, fatfs::FsOptions::new()).unwrap();
+    let fs = fatfs::FileSystem::new(volume, FixedClock.fat_options()).unwrap();
     let mut file = fs.root_dir().open_file(path).ok()?;
     let mut content = Vec::new();
     file.read_to_end(&mut content).unwrap();
@@ -1418,6 +1436,96 @@ fn root_directory(image: &mut DiskImage) -> (usize, Vec<String>) {
     (long_names, names)
 }
 
+/// When the root directory entry `name` of an unpartitioned in-memory
+/// image was created and last modified.
+fn fat_stamps(image: &mut DiskImage, name: &str) -> (fatfs::DateTime, fatfs::DateTime) {
+    let DiskStorage::InMemory(data) = &mut image.storage else {
+        panic!("in-memory image expected");
+    };
+    let volume = std::io::Cursor::new(data.as_mut_slice());
+    let fs = fatfs::FileSystem::new(volume, FixedClock.fat_options()).unwrap();
+    let entry = fs
+        .root_dir()
+        .iter()
+        .map(|entry| entry.unwrap())
+        .find(|entry| entry.short_file_name_as_bytes() == name.as_bytes())
+        .expect("the file is in the root directory");
+    (entry.created(), entry.modified())
+}
+
+/// A clock that shows another time than `FixedClock`: the first second of
+/// the year 2000.
+#[derive(Debug)]
+struct ClockAt2000;
+
+impl ClockAt2000 {
+    const NOW: fatfs::DateTime = fatfs::DateTime {
+        date: fatfs::Date {
+            year: 2000,
+            month: 1,
+            day: 1,
+        },
+        time: fatfs::Time {
+            hour: 0,
+            min: 0,
+            sec: 0,
+            millis: 0,
+        },
+    };
+}
+
+impl fatfs::TimeProvider for ClockAt2000 {
+    fn get_current_date(&self) -> fatfs::Date {
+        Self::NOW.date
+    }
+
+    fn get_current_date_time(&self) -> fatfs::DateTime {
+        Self::NOW
+    }
+}
+
+impl WallClock for ClockAt2000 {
+    fn fat_options(&self) -> fatfs::FsOptions {
+        fatfs::FsOptions::new().time_provider(&ClockAt2000)
+    }
+
+    fn unix_nanos(&self) -> u64 {
+        946_684_800_000_000_000
+    }
+}
+
+/// A file is stamped with the time on the clock its copy was given, and
+/// with no other: the same disk takes the time of whichever clock comes
+/// with each file.
+#[test]
+fn put_stamps_a_file_with_the_time_of_the_clock_passed_in() {
+    let mut image = formatted_floppy();
+    image
+        .copy_file_to_fat(b"old", "OLD.TXT", &FixedClock)
+        .unwrap();
+    image
+        .copy_file_to_fat(b"new", "NEW.TXT", &ClockAt2000)
+        .unwrap();
+
+    assert_eq!(
+        fat_stamps(&mut image, "OLD.TXT"),
+        (FixedClock::NOW, FixedClock::NOW)
+    );
+    assert_eq!(
+        fat_stamps(&mut image, "NEW.TXT"),
+        (ClockAt2000::NOW, ClockAt2000::NOW)
+    );
+
+    // Writing a file again leaves its creation time and moves the other.
+    image
+        .copy_file_to_fat(b"newer", "OLD.TXT", &ClockAt2000)
+        .unwrap();
+    assert_eq!(
+        fat_stamps(&mut image, "OLD.TXT"),
+        (FixedClock::NOW, ClockAt2000::NOW)
+    );
+}
+
 /// Putting a file over an existing longer one replaces it as a whole:
 /// nothing of the old tail stays, and the file has the new length.
 #[test]
@@ -1431,13 +1539,19 @@ fn put_over_an_existing_file_replaces_it() {
         .collect();
     let new = b"@ECHO NEW\r\n".to_vec();
 
-    image.copy_file_to_fat(&old, "AUTOEXEC.BAT").unwrap();
-    image.copy_file_to_fat(&new, "AUTOEXEC.BAT").unwrap();
+    image
+        .copy_file_to_fat(&old, "AUTOEXEC.BAT", &FixedClock)
+        .unwrap();
+    image
+        .copy_file_to_fat(&new, "AUTOEXEC.BAT", &FixedClock)
+        .unwrap();
     assert_eq!(fat_file(&mut image, "AUTOEXEC.BAT"), Some(new));
 
     // Growing again works too, across several clusters.
     let big: Vec<u8> = (0..5000u32).map(|i| i as u8).collect();
-    image.copy_file_to_fat(&big, "autoexec.bat").unwrap();
+    image
+        .copy_file_to_fat(&big, "autoexec.bat", &FixedClock)
+        .unwrap();
     assert_eq!(fat_file(&mut image, "AUTOEXEC.BAT"), Some(big));
     assert_eq!(root_directory(&mut image).1, ["AUTOEXEC.BAT"]);
 }
@@ -1447,10 +1561,14 @@ fn put_over_an_existing_file_replaces_it() {
 #[test]
 fn put_writes_no_long_name_entries() {
     let mut image = formatted_floppy();
-    image.copy_file_to_fat(b"hello", "GAME.EXE").unwrap();
-    image.copy_file_to_fat(b"hello", "readme.txt").unwrap();
     image
-        .copy_file_to_fat(b"hello", "My Document.final.txt")
+        .copy_file_to_fat(b"hello", "GAME.EXE", &FixedClock)
+        .unwrap();
+    image
+        .copy_file_to_fat(b"hello", "readme.txt", &FixedClock)
+        .unwrap();
+    image
+        .copy_file_to_fat(b"hello", "My Document.final.txt", &FixedClock)
         .unwrap();
 
     let (long_names, names) = root_directory(&mut image);
@@ -1461,10 +1579,12 @@ fn put_writes_no_long_name_entries() {
 #[test]
 fn put_respects_the_write_protection() {
     let mut image = DiskImage::new_in_memory_sized(FLOPPY_144_SIZE, false);
-    image.format_fat().unwrap();
+    image.format_fat(&FixedClock).unwrap();
     image.readonly = true;
 
-    let error = image.copy_file_to_fat(b"hello", "HELLO.TXT").unwrap_err();
+    let error = image
+        .copy_file_to_fat(b"hello", "HELLO.TXT", &FixedClock)
+        .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert_eq!(root_directory(&mut image).1, Vec::<String>::new());
 }
@@ -1478,14 +1598,14 @@ fn put_refuses_dos_device_names() {
         "CON", "nul", "NUL.TXT", "prn.log", "AUX", "COM1", "lpt3.dat", "CLOCK$",
     ] {
         assert!(
-            image.copy_file_to_fat(b"x", name).is_err(),
+            image.copy_file_to_fat(b"x", name, &FixedClock).is_err(),
             "{} is a device",
             name
         );
     }
     for name in ["CONSOLE.TXT", "COM5", "NULL", "LPT.TXT"] {
         assert!(
-            image.copy_file_to_fat(b"x", name).is_ok(),
+            image.copy_file_to_fat(b"x", name, &FixedClock).is_ok(),
             "{} is a plain file name",
             name
         );
@@ -1501,16 +1621,20 @@ fn put_reports_the_name_the_file_has_in_dos() {
     let mut image = formatted_floppy();
 
     assert_eq!(
-        image.copy_file_to_fat(b"1", "game.exe").unwrap(),
-        "GAME.EXE"
-    );
-    assert_eq!(
-        image.copy_file_to_fat(b"2", "\\GAME.EXE").unwrap(),
+        image
+            .copy_file_to_fat(b"1", "game.exe", &FixedClock)
+            .unwrap(),
         "GAME.EXE"
     );
     assert_eq!(
         image
-            .copy_file_to_fat(b"3", "My Document.final.txt")
+            .copy_file_to_fat(b"2", "\\GAME.EXE", &FixedClock)
+            .unwrap(),
+        "GAME.EXE"
+    );
+    assert_eq!(
+        image
+            .copy_file_to_fat(b"3", "My Document.final.txt", &FixedClock)
             .unwrap(),
         "MYDOCU~1.TXT"
     );
@@ -1519,17 +1643,23 @@ fn put_reports_the_name_the_file_has_in_dos() {
     // overwriting one that merely shares the generated name.
     assert_eq!(
         image
-            .copy_file_to_fat(b"4", "My Document.final.txt")
+            .copy_file_to_fat(b"4", "My Document.final.txt", &FixedClock)
             .unwrap(),
         "MYDOCU~2.TXT"
     );
     assert_eq!(fat_file(&mut image, "GAME.EXE"), Some(b"2".to_vec()));
     assert_eq!(fat_file(&mut image, "MYDOCU~1.TXT"), Some(b"3".to_vec()));
 
-    let error = image.copy_file_to_fat(b"5", "NODIR\\FILE.TXT").unwrap_err();
+    let error = image
+        .copy_file_to_fat(b"5", "NODIR\\FILE.TXT", &FixedClock)
+        .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-    assert!(image.copy_file_to_fat(b"6", "what?.txt").is_err());
-    assert!(image.copy_file_to_fat(b"7", "\\").is_err());
+    assert!(
+        image
+            .copy_file_to_fat(b"6", "what?.txt", &FixedClock)
+            .is_err()
+    );
+    assert!(image.copy_file_to_fat(b"7", "\\", &FixedClock).is_err());
 }
 
 /// A directory tree on the host, removed again on drop.
@@ -1565,7 +1695,7 @@ fn put_of_a_directory_copies_the_tree_and_replaces_existing_files() {
     host.write("data/deep/level2.dat", b"level two");
 
     let mut image = formatted_floppy();
-    assert_eq!(image.copy_dir_to_fat(&host.0).unwrap(), 3);
+    assert_eq!(image.copy_dir_to_fat(&host.0, &FixedClock).unwrap(), 3);
     assert_eq!(fat_file(&mut image, "README.TXT"), Some(vec![b'r'; 3000]));
     assert_eq!(
         fat_file(&mut image, "DATA/LEVEL1.DAT"),
@@ -1578,7 +1708,7 @@ fn put_of_a_directory_copies_the_tree_and_replaces_existing_files() {
 
     // A second copy goes into the same directories and files.
     host.write("readme.txt", b"short");
-    assert_eq!(image.copy_dir_to_fat(&host.0).unwrap(), 3);
+    assert_eq!(image.copy_dir_to_fat(&host.0, &FixedClock).unwrap(), 3);
     assert_eq!(fat_file(&mut image, "README.TXT"), Some(b"short".to_vec()));
     let (long_names, mut names) = root_directory(&mut image);
     names.sort();
@@ -1590,7 +1720,7 @@ fn put_of_a_directory_copies_the_tree_and_replaces_existing_files() {
     // A file can also be put into one of the copied directories.
     assert_eq!(
         image
-            .copy_file_to_fat(b"new", "data\\deep\\level3.dat")
+            .copy_file_to_fat(b"new", "data\\deep\\level3.dat", &FixedClock)
             .unwrap(),
         "DATA\\DEEP\\LEVEL3.DAT"
     );
@@ -1746,7 +1876,7 @@ fn put_finds_the_fat_partition_in_any_entry() {
         ],
     ] {
         let mut image = hard_disk_with_a_fat_volume(&master_boot_record(&partitions));
-        let stored = image.copy_file_to_fat(b"hello", "HELLO.TXT");
+        let stored = image.copy_file_to_fat(b"hello", "HELLO.TXT", &FixedClock);
         assert_eq!(
             stored.ok().as_deref(),
             Some("HELLO.TXT"),
@@ -1767,7 +1897,9 @@ fn put_reports_a_disk_without_a_fat_partition() {
         vec![(0x06, 9000, 100)], // behind the end of the disk
     ] {
         let mut image = hard_disk_with_a_fat_volume(&master_boot_record(&partitions));
-        let error = image.copy_file_to_fat(b"hello", "HELLO.TXT").unwrap_err();
+        let error = image
+            .copy_file_to_fat(b"hello", "HELLO.TXT", &FixedClock)
+            .unwrap_err();
         assert!(
             error.to_string().contains("no FAT partition"),
             "{:?}: {}",

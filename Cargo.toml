@@ -10,6 +10,11 @@ emu8086_core.workspace = true
 clap.workspace = true
 log.workspace = true
 env_logger.workspace = true
+# The app is the machine's wall clock (src/wall_clock.rs). The local time
+# files on a FAT volume are stamped with comes from fatfs's own time
+# provider, which is there only with `chrono`: the app turns the feature
+# on, and the core, which reads no clock, lists fatfs without it.
+fatfs = { workspace = true, features = ["chrono"] }
 
 # The window: winit opens it and delivers the keys, wgpu draws into it.
 wgpu.workspace = true
@@ -35,7 +40,8 @@ log = "0.4.29"
 env_logger = "0.11.9"
 # Without fatfs's "alloc" feature no VFAT long-name entries are written:
 # MS-DOS 6 shows such an entry as the volume label of a disk that has none.
-fatfs = { version = "0.3", default-features = false, features = ["std", "chrono"] }
+# Without "chrono" fatfs has no clock of its own: the app adds that feature.
+fatfs = { version = "0.3", default-features = false, features = ["std"] }
 wgpu = "30"
 winit = "0.30.13"
 pollster = "0.4"

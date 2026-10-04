@@ -3,11 +3,17 @@
 //! the BIOS a machine runs unless it is given another. The crate-level test
 //! modules and the build script's tests are declared here.
 //!
-//! The invariant: nothing here opens a window or touches a GPU, and no
-//! dependency of this crate does. Keys arrive as scancodes down a channel
-//! and the picture leaves as a frame in memory (`io::raster`); the app, the
-//! root package of the workspace, shows the one and sends the other. The
-//! crate has to keep building for wasm32-unknown-unknown on its own.
+//! The invariants, which let the crate build and run where there is neither
+//! a window nor a clock to read (a browser, a test):
+//!
+//! - Nothing here opens a window or touches a GPU, and no dependency of
+//!   this crate does. Keys arrive as scancodes down a channel and the
+//!   picture leaves as a frame in memory (`io::raster`); the app, the root
+//!   package of the workspace, shows the one and sends the other.
+//! - Nothing here reads a clock or waits for one. The owner of a machine
+//!   measures host time and tells the machine how much has passed
+//!   (`Runtime::credit_pit_time`), and hands its wall clock to whatever
+//!   formats a disk or copies a file onto one (`io::disk::WallClock`).
 
 pub mod io;
 mod utils;

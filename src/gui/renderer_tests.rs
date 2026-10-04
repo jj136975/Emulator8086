@@ -10,6 +10,7 @@ use std::cell::Ref;
 use std::time::Duration;
 
 use super::*;
+use crate::wall_clock::HostClock;
 use emu8086_core::io::keyboard::KeyboardController;
 use emu8086_core::vm::runtime::Runtime;
 
@@ -167,7 +168,7 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 fn text_screen() -> Runtime {
     let (_keys, key_events) = std::sync::mpsc::channel();
     let keyboard = KeyboardController::with_receiver(key_events);
-    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard)
+    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard, &HostClock)
         .expect("a machine without disks has nothing to open");
     for cell in 0..80 * 25 {
         rt.cpu.memory.write_byte(0xB8000 + cell * 2, cell as u8);

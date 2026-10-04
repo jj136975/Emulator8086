@@ -12,8 +12,14 @@
 //! A copy changes the disk behind the guest's back, so it has to go through
 //! `DiskController::put_file` or `put_dir`, which raise the change line of
 //! the drive.
+//!
+//! The time a file is stamped with and the time a serial comes from are
+//! those of the `WallClock` the caller passes. Nothing here reads a clock,
+//! and a volume is mounted with the options that clock gives, never with
+//! `FsOptions::new()`: fatfs's own options may come with a clock of its own.
 
 use super::SECTOR_SIZE;
+use super::clock::WallClock;
 use super::image::{DiskImage, DiskStorage};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -108,7 +114,8 @@ impl DiskImage {
     /// Format this disk with a FAT filesystem using the fatfs crate.
     /// Sets BPB geometry, media descriptor, cluster size, and root directory entries
     /// to match standard DOS floppy formats. Forces FAT12 for floppy-sized disks.
-    pub fn format_fat(&mut self) -> std::io::Result<()> {
+    /// The volume serial comes from the time `clock` shows.
+    pub fn format_fat(&mut self, clock: &dyn WallClock) -> std::io::Result<()> {
         let total_sectors = self.total_sectors() as u32;
 
         // Standard DOS floppy format parameters: (media_byte, sectors_per_cluster, root_dir_entries)
@@ -131,7 +138,7 @@ impl DiskImage {
             .max_root_dir_entries(root_entries)
             .sectors_per_track(self.sectors_per_track as u16)
             .heads(self.heads as u16)
-            .volume_id(new_volume_serial());
+            .volume_id(new_volume_serial(clock));
 
         // Force FAT12 for floppy-sized disks — DOS expects FAT12 on floppies
         if self.heads <= 2 {
@@ -154,20 +161,22 @@ impl DiskImage {
     /// Copy all files from a host directory into the FAT filesystem on this
     /// disk, replacing files that already exist there. Returns the number of
     /// files copied.
-    pub(super) fn copy_dir_to_fat(&mut self, host_dir: &Path) -> std::io::Result<usize> {
+    pub(super) fn copy_dir_to_fat(
+        &mut self,
+        host_dir: &Path,
+        clock: &dyn WallClock,
+    ) -> std::io::Result<usize> {
         self.require_writable()?;
-        let volume = self.fat_volume()?;
+        let volume = self.fat_volume(clock)?;
         put_dir(&volume.root_dir(), host_dir)
     }
 
-    /// Mounts the FAT volume on this disk.
-    fn fat_volume(&mut self) -> std::io::Result<FatVolume<'_>> {
+    /// Mounts the FAT volume on this disk. What is written to it is stamped
+    /// with the time `clock` shows.
+    fn fat_volume(&mut self, clock: &dyn WallClock) -> std::io::Result<FatVolume<'_>> {
         let (start, length) = self.fat_volume_extent()?;
         let io = self.image_io();
-        fatfs::FileSystem::new(
-            PartitionSlice::new(io, start, length)?,
-            fatfs::FsOptions::new(),
-        )
+        fatfs::FileSystem::new(PartitionSlice::new(io, start, length)?, clock.fat_options())
     }
 
     /// Where the FAT volume of this disk lies, as a byte offset and a
@@ -223,9 +232,10 @@ impl DiskImage {
         &mut self,
         host_data: &[u8],
         dos_path: &str,
+        clock: &dyn WallClock,
     ) -> std::io::Result<String> {
         self.require_writable()?;
-        let volume = self.fat_volume()?;
+        let volume = self.fat_volume(clock)?;
         put_path(&volume.root_dir(), dos_path, host_data)
     }
 }
@@ -233,17 +243,18 @@ impl DiskImage {
 /// A volume serial number for a freshly formatted disk, derived from the
 /// clock like the one DOS writes. DOS tells disks apart by this number when
 /// the change line fires, so two formatted disks must not share one.
-fn new_volume_serial() -> u32 {
+fn new_volume_serial(clock: &dyn WallClock) -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     static SEQUENCE: AtomicU32 = AtomicU32::new(0);
-    let clock = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos() as u64)
-        .unwrap_or(0);
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    ((clock >> 32) as u32 ^ clock as u32).wrapping_add(sequence.wrapping_mul(0x9E37_79B9))
+    volume_serial(clock.unix_nanos(), SEQUENCE.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The serial of the `sequence`-th volume this process formats, at the time
+/// `unix_nanos`. The time tells apart disks formatted in different runs,
+/// the sequence number those formatted within one tick of the clock.
+pub(super) fn volume_serial(unix_nanos: u64, sequence: u32) -> u32 {
+    ((unix_nanos >> 32) as u32 ^ unix_nanos as u32).wrapping_add(sequence.wrapping_mul(0x9E37_79B9))
 }
 
 /// Names DOS resolves to a device in every directory and with any

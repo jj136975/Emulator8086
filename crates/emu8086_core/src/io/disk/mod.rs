@@ -5,6 +5,7 @@
 //! - `image`: one disk, in a host file or in memory, addressed by CHS.
 //! - `geometry`: the cylinders, heads and sectors an image is given.
 //! - `fat`: the FAT volume on an image, formatted and written from the host.
+//! - `clock`: the host's wall clock, which the caller of `fat` passes in.
 //! - `controller`: the drives, their change lines and the boot order.
 //! - `int13`, `int13_ext`: the INT 13h services behind the BIOS trap.
 //!
@@ -14,6 +15,7 @@
 //! its disk: a floppy image of another size would be opened with another
 //! geometry the next time.
 
+mod clock;
 mod controller;
 mod fat;
 mod geometry;
@@ -24,6 +26,9 @@ mod int13_ext;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use clock::FixedClock;
+pub use clock::WallClock;
 pub use controller::{BOOT_ORDER_END, BOOT_ORDER_PORT, DISK_TRAP_PORT, DiskController};
 pub use geometry::{FLOPPY_144_SIZE, HD_DEFAULT_SIZE_MB};
 pub use image::{DiskImage, SaveOutcome};

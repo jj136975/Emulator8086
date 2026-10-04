@@ -13,7 +13,7 @@
 use std::sync::mpsc::Sender;
 
 use crate::BIOS_ROM;
-use crate::io::disk::{DiskController, DiskImage, FLOPPY_144_SIZE};
+use crate::io::disk::{DiskController, DiskImage, FLOPPY_144_SIZE, FixedClock};
 use crate::io::keyboard::{EmulatorEvent, KeyboardController};
 use crate::vm::runtime::{CpuFlag, Prefixes, Runtime};
 
@@ -310,7 +310,7 @@ fn key_pressed_before_boot_does_not_block_the_keyboard() {
 fn machine_uses_the_keyboard_supplied_by_the_frontend() {
     let (keys, key_events) = std::sync::mpsc::channel();
     let keyboard = KeyboardController::with_receiver(key_events);
-    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard).unwrap();
+    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard, &FixedClock).unwrap();
     rt.load_rom_image(BIOS_ROM);
     let mut machine = Machine { rt, keys };
     machine.run_until(|rt| rt.cpu.halted);

@@ -11,6 +11,7 @@
 //! of that drive, and the guest is told exactly once. A hard disk has no
 //! change line: what the host changes on one takes a reboot of the guest.
 
+use super::clock::WallClock;
 use super::image::DiskImage;
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
@@ -82,17 +83,30 @@ impl DiskController {
     }
 
     /// Copies a host file into the FAT volume on the disk in `drive` and
-    /// returns the path under which DOS sees it.
-    pub fn put_file(&mut self, drive: u8, data: &[u8], dos_path: &str) -> std::io::Result<String> {
-        let result = self.disk_in(drive)?.copy_file_to_fat(data, dos_path);
+    /// returns the path under which DOS sees it. The file is stamped with
+    /// the time `clock` shows.
+    pub fn put_file(
+        &mut self,
+        drive: u8,
+        data: &[u8],
+        dos_path: &str,
+        clock: &dyn WallClock,
+    ) -> std::io::Result<String> {
+        let result = self.disk_in(drive)?.copy_file_to_fat(data, dos_path, clock);
         self.mark_changed(drive);
         result
     }
 
     /// Copies a host directory into the FAT volume on the disk in `drive`
-    /// and returns the number of files copied.
-    pub fn put_dir(&mut self, drive: u8, host_dir: &Path) -> std::io::Result<usize> {
-        let result = self.disk_in(drive)?.copy_dir_to_fat(host_dir);
+    /// and returns the number of files copied. The files are stamped with
+    /// the time `clock` shows.
+    pub fn put_dir(
+        &mut self,
+        drive: u8,
+        host_dir: &Path,
+        clock: &dyn WallClock,
+    ) -> std::io::Result<usize> {
+        let result = self.disk_in(drive)?.copy_dir_to_fat(host_dir, clock);
         self.mark_changed(drive);
         result
     }

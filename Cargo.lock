@@ -537,6 +537,7 @@ dependencies = [
  "clap",
  "emu8086_core",
  "env_logger",
+ "fatfs",
  "log",
  "pollster",
  "wgpu",

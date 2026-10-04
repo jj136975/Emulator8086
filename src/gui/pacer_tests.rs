@@ -2,6 +2,7 @@
 //! measure, a few hundred milliseconds in all.
 
 use super::*;
+use crate::wall_clock::HostClock;
 use emu8086_core::BIOS_ROM;
 use emu8086_core::io::keyboard::KeyboardController;
 
@@ -10,7 +11,7 @@ use emu8086_core::io::keyboard::KeyboardController;
 fn machine(rom: &[u8]) -> Runtime {
     let (_keys, key_events) = std::sync::mpsc::channel();
     let keyboard = KeyboardController::with_receiver(key_events);
-    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard)
+    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard, &HostClock)
         .expect("a machine without disks has nothing to open");
     rt.load_rom_image(rom);
     rt

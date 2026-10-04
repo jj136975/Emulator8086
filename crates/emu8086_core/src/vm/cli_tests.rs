@@ -1,11 +1,12 @@
 use super::*;
+use crate::io::disk::FixedClock;
 use std::path::PathBuf;
 
 /// Runs the monitor over `commands` and returns what it printed in
 /// reply, i.e. everything from the first prompt on.
 fn monitor(disk_ctrl: &mut DiskController, commands: &str) -> String {
     let mut out = Vec::new();
-    run_monitor(disk_ctrl, &mut commands.as_bytes(), &mut out);
+    run_monitor(disk_ctrl, &mut commands.as_bytes(), &mut out, &FixedClock);
     let text = String::from_utf8(out).unwrap();
     let (_, replies) = text.split_once("\n> ").unwrap();
     replies.to_string()
@@ -13,13 +14,13 @@ fn monitor(disk_ctrl: &mut DiskController, commands: &str) -> String {
 
 fn formatted_floppy() -> DiskImage {
     let mut image = DiskImage::new_in_memory_sized(FLOPPY_144_SIZE, false);
-    image.format_fat().unwrap();
+    image.format_fat(&FixedClock).unwrap();
     image
 }
 
 fn formatted_hard_disk() -> DiskImage {
     let mut image = DiskImage::new_in_memory_hard_disk(1);
-    image.format_fat().unwrap();
+    image.format_fat(&FixedClock).unwrap();
     image
 }
 
@@ -114,6 +115,7 @@ fn monitor_lists_the_drives_and_stops_at_resume() {
         &mut disk_ctrl,
         &mut "resume\neject a\n".as_bytes(),
         &mut out,
+        &FixedClock,
     );
     let text = String::from_utf8(out).unwrap();
 
@@ -526,7 +528,12 @@ fn reset_command_asks_the_runtime_to_reboot_the_guest() {
         ("", MonitorAction::Resume),
         ("eject b\n", MonitorAction::Resume),
     ] {
-        let action = run_monitor(&mut disk_ctrl, &mut commands.as_bytes(), &mut out);
+        let action = run_monitor(
+            &mut disk_ctrl,
+            &mut commands.as_bytes(),
+            &mut out,
+            &FixedClock,
+        );
         assert_eq!(action, expected, "commands {:?}", commands);
     }
     assert!(
@@ -538,7 +545,12 @@ fn reset_command_asks_the_runtime_to_reboot_the_guest() {
 #[test]
 fn help_shows_how_to_get_files_onto_a_hard_disk_safely() {
     let mut out = Vec::new();
-    run_monitor(&mut DiskController::new(), &mut "".as_bytes(), &mut out);
+    run_monitor(
+        &mut DiskController::new(),
+        &mut "".as_bytes(),
+        &mut out,
+        &FixedClock,
+    );
     let help = String::from_utf8(out).unwrap();
     assert!(help.contains("reset"), "{}", help);
     assert!(help.contains("COPY A:"), "{}", help);

@@ -15,6 +15,7 @@
 
 use crate::io::disk::{
     DiskController, DiskImage, DiskSource, FLOPPY_144_SIZE, HD_DEFAULT_SIZE_MB, SaveOutcome,
+    WallClock,
 };
 use crate::io::disk_spec::{
     drive_label, parse_drive, parse_hd_source, parse_source, require_unshared,
@@ -65,10 +66,13 @@ fn warn_if_hard_disk(drive: u8, out: &mut dyn Write) {
 
 /// The monitor itself: shows the drives, then executes commands read from
 /// `input` until `resume`, `reset`, an empty line or the end of the input.
+/// `clock` is the host's wall clock, for the commands that format a disk or
+/// copy files onto one.
 fn run_monitor(
     disk_ctrl: &mut DiskController,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
+    clock: &dyn WallClock,
 ) -> MonitorAction {
     show_drives(disk_ctrl, out);
     show_help(out);
@@ -92,12 +96,12 @@ fn run_monitor(
         let result = match command.to_ascii_lowercase().as_str() {
             "resume" if arguments.is_empty() => return MonitorAction::Resume,
             "reset" if arguments.is_empty() => return MonitorAction::Reset,
-            "swap" => swap(disk_ctrl, arguments, out),
-            "new" => create(disk_ctrl, arguments, out),
+            "swap" => swap(disk_ctrl, arguments, out, clock),
+            "new" => create(disk_ctrl, arguments, out, clock),
             "move" => move_disk(disk_ctrl, arguments, out),
             "save" => save(disk_ctrl, arguments, out),
             "eject" => eject(disk_ctrl, arguments, out),
-            "put" => put(disk_ctrl, arguments, out),
+            "put" => put(disk_ctrl, arguments, out, clock),
             _ => Err("unknown command (type 'resume' or press Enter to continue)".to_string()),
         };
         if let Err(message) = result {
@@ -276,6 +280,7 @@ fn swap(
     disk_ctrl: &mut DiskController,
     arguments: &str,
     out: &mut dyn Write,
+    clock: &dyn WallClock,
 ) -> Result<(), String> {
     let args = split_args(arguments, 2)?;
     let [drive, source] = args.as_slice() else {
@@ -319,7 +324,7 @@ fn swap(
             DiskSource::Memory(size) => {
                 let mut image = DiskImage::new_in_memory_sized(size, false);
                 image
-                    .format_fat()
+                    .format_fat(clock)
                     .map_err(|error| format!("could not format the floppy: {}", error))?;
                 image.readonly = readonly;
                 disk_ctrl.attach(drive, image);
@@ -351,6 +356,7 @@ fn create(
     disk_ctrl: &mut DiskController,
     arguments: &str,
     out: &mut dyn Write,
+    clock: &dyn WallClock,
 ) -> Result<(), String> {
     let args = split_args(arguments, 2)?;
     let [drive, path] = args.as_slice() else {
@@ -374,7 +380,7 @@ fn create(
         );
     } else {
         let mut image = DiskImage::create(path, FLOPPY_144_SIZE).map_err(cannot_create)?;
-        image.format_fat().map_err(cannot_create)?;
+        image.format_fat(clock).map_err(cannot_create)?;
         disk_ctrl.attach(drive, image);
         say!(
             out,
@@ -470,7 +476,12 @@ fn eject(
     Ok(())
 }
 
-fn put(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> Result<(), String> {
+fn put(
+    disk_ctrl: &mut DiskController,
+    arguments: &str,
+    out: &mut dyn Write,
+    clock: &dyn WallClock,
+) -> Result<(), String> {
     let args = split_args(arguments, 3)?;
     let (host_path, drive, dos_name) = match args.as_slice() {
         [host_path, drive] => (host_path, drive, None),
@@ -490,7 +501,7 @@ fn put(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> 
 
     let result = if host.is_dir() {
         disk_ctrl
-            .put_dir(drive, host)
+            .put_dir(drive, host, clock)
             .map(|count| format!("Copied {} files from '{}' -> {}\\", count, host_path, label))
     } else {
         let data = std::fs::read(host)
@@ -504,15 +515,17 @@ fn put(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> 
         };
         // The reply shows the name the file has in DOS, which is a generated
         // one if `name` is not a valid 8.3 name.
-        disk_ctrl.put_file(drive, &data, &name).map(|stored| {
-            format!(
-                "Copied '{}' -> {}\\{} ({} bytes)",
-                host_path,
-                label,
-                stored,
-                data.len()
-            )
-        })
+        disk_ctrl
+            .put_file(drive, &data, &name, clock)
+            .map(|stored| {
+                format!(
+                    "Copied '{}' -> {}\\{} ({} bytes)",
+                    host_path,
+                    label,
+                    stored,
+                    data.len()
+                )
+            })
     };
 
     match result {

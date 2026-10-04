@@ -1,4 +1,5 @@
 use super::*;
+use crate::io::disk::FixedClock;
 
 fn file(path: &str) -> DiskSource {
     DiskSource::FilePath(PathBuf::from(path))
@@ -202,7 +203,7 @@ impl Drop for ScratchDir {
 #[test]
 fn missing_boot_floppy_is_an_error_that_names_the_file() {
     let dir = ScratchDir::new("missing-a");
-    let error = open_drives(vec![dir.spec("a", "nothere.img")], &[])
+    let error = open_drives(vec![dir.spec("a", "nothere.img")], &[], &FixedClock)
         .err()
         .unwrap();
     assert!(
@@ -224,7 +225,7 @@ fn images_for_other_drives_are_created_when_missing() {
         dir.spec("b", "new.img"),
         parse_disk_spec("a:memory").unwrap(),
     ];
-    let mut controller = open_drives(specs, std::slice::from_ref(&hd)).unwrap();
+    let mut controller = open_drives(specs, std::slice::from_ref(&hd), &FixedClock).unwrap();
 
     assert_eq!(
         std::fs::metadata(dir.path("new.img")).unwrap().len(),
@@ -240,8 +241,12 @@ fn images_for_other_drives_are_created_when_missing() {
 
     // The second time the files exist and are opened as they are.
     std::fs::write(dir.path("new.img"), vec![0x5Au8; 737_280]).unwrap();
-    let mut controller =
-        open_drives(vec![dir.spec("b", "new.img:ro")], &[format!("{}:ro", hd)]).unwrap();
+    let mut controller = open_drives(
+        vec![dir.spec("b", "new.img:ro")],
+        &[format!("{}:ro", hd)],
+        &FixedClock,
+    )
+    .unwrap();
     let floppy = controller.find_drive(0x01).unwrap();
     assert!(floppy.readonly);
     assert_eq!((floppy.cylinders, floppy.sectors_per_track), (80, 9));
@@ -256,7 +261,7 @@ fn one_image_file_cannot_be_given_to_two_drives() {
     std::fs::write(dir.path("one.img"), vec![0u8; 737_280]).unwrap();
 
     let specs = vec![dir.spec("a", "one.img"), dir.spec("b", "one.img")];
-    let error = open_drives(specs, &[]).err().unwrap();
+    let error = open_drives(specs, &[], &FixedClock).err().unwrap();
     assert!(
         error.contains("one.img") && error.contains("A:"),
         "{}",
@@ -264,7 +269,9 @@ fn one_image_file_cannot_be_given_to_two_drives() {
     );
 
     let hd = dir.path("one.vhd").display().to_string();
-    let error = open_drives(Vec::new(), &[hd.clone(), hd]).err().unwrap();
+    let error = open_drives(Vec::new(), &[hd.clone(), hd], &FixedClock)
+        .err()
+        .unwrap();
     assert!(
         error.contains("one.vhd") && error.contains("HD0"),
         "{}",
@@ -275,7 +282,7 @@ fn one_image_file_cannot_be_given_to_two_drives() {
 #[test]
 fn a_directory_given_as_an_image_is_an_error_not_a_panic() {
     let dir = ScratchDir::new("dir-as-image");
-    let error = open_drives(Vec::new(), &[dir.0.display().to_string()])
+    let error = open_drives(Vec::new(), &[dir.0.display().to_string()], &FixedClock)
         .err()
         .unwrap();
     assert!(error.contains("HD0"), "{}", error);
