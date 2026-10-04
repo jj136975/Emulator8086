@@ -2265,3 +2265,36 @@ fn the_machine_lends_its_timer_to_be_read() {
     );
     assert_eq!((ch2.gate, ch2.counting), (false, false));
 }
+
+/// The machine lends its keyboard interface to be read, as POST left it:
+/// port B with the keyboard clock running and the keyboard enabled, port A
+/// empty. A key shows in port A once the machine has polled the keyboard,
+/// waiting for the acknowledge of INT 09h, its break code queued behind
+/// it. A machine without a keyboard lends none.
+#[test]
+fn the_machine_lends_its_keyboard_to_be_read() {
+    let mut machine = Machine::booted();
+    let keyboard = |machine: &Machine| {
+        let keyboard = machine.rt.keyboard().expect("the machine has a keyboard");
+        keyboard.view()
+    };
+    let view = keyboard(&machine);
+    assert_eq!(
+        (
+            view.port_b,
+            view.port_a,
+            view.awaiting_acknowledge,
+            view.queued
+        ),
+        (0x48, 0x00, false, 0)
+    );
+
+    machine.press(0x1E);
+    machine.rt.run(1); // the poll loads the key, and IRQ1 is taken
+    let view = keyboard(&machine);
+    assert_eq!(
+        (view.port_a, view.awaiting_acknowledge, view.queued),
+        (0x1E, true, 1)
+    );
+    assert!(Runtime::new_test().keyboard().is_none());
+}

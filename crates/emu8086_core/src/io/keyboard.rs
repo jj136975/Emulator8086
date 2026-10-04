@@ -2,7 +2,8 @@
 //! sends `EmulatorEvent`s down a channel; `KeyboardController::poll` loads
 //! their scancodes into port A one at a time and raises IRQ1 for each. Port
 //! B carries the acknowledge, the keyboard clock and timer 2's gate and
-//! speaker bits; port C reads timer 2's output back.
+//! speaker bits; port C reads timer 2's output back. `view` describes the
+//! interface to a reader without a port access.
 //!
 //! The invariant: port A holds a byte until the guest acknowledges it by
 //! taking port B bit 7 high and back low, as the BIOS's INT 09h handler
@@ -24,6 +25,33 @@ use std::sync::mpsc;
 pub enum EmulatorEvent {
     Scancode(u8),    // make code
     ScanRelease(u8), // break code (scancode | 0x80)
+}
+
+/// The keyboard interface as a reader of the 8255's ports finds it. A copy:
+/// holding one changes nothing in the interface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyboardView {
+    /// Port A (60h): the byte in the shift register, zero once the guest
+    /// has acknowledged it.
+    pub port_a: u8,
+    /// Port B (61h) as the guest wrote it, but for bit 4, which every read
+    /// of the port flips, as the refresh bit of an AT does.
+    pub port_b: u8,
+    /// Port A holds a byte the guest has not acknowledged: IRQ1 was raised
+    /// for it, and no byte follows until port B bit 7 goes high and low.
+    pub awaiting_acknowledge: bool,
+    /// Port B bit 7 is high: the keyboard is held clear, and nothing is
+    /// loaded into port A.
+    pub held_clear: bool,
+    /// Port B bit 6 is low: the keyboard clock is held low. Its release
+    /// resets the keyboard.
+    pub clock_held_low: bool,
+    /// The keyboard was reset and answers AAh at the next poll.
+    pub reset_pending: bool,
+    /// Scancodes taken from the window and waiting for port A. Keys the
+    /// window sent since the run loop last polled the keyboard are still
+    /// in the channel, and not counted.
+    pub queued: usize,
 }
 
 /// IBM PC/XT 8255 PPI keyboard controller.
@@ -81,6 +109,20 @@ impl KeyboardController {
 
     pub(crate) fn set_pit(&mut self, pit: Rc<RefCell<Pit>>) {
         self.pit = Some(pit);
+    }
+
+    /// The interface as a reader sees it. No port is read: port B's bit 4
+    /// is not flipped, and the window's channel is not drained.
+    pub fn view(&self) -> KeyboardView {
+        KeyboardView {
+            port_a: self.kb_byte,
+            port_b: self.port_b,
+            awaiting_acknowledge: !self.ksr_cleared,
+            held_clear: !self.kb_enabled,
+            clock_held_low: self.kb_clock_low,
+            reset_pending: self.kb_reset_pending,
+            queued: self.pending.len(),
+        }
     }
 
     /// Call this periodically from the main loop (e.g. every ~1000 instructions).

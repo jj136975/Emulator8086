@@ -95,3 +95,55 @@ fn ports_b_and_c_report_timer_channel_2() {
     bench.out(0x61, 0x02); // speaker data enabled
     assert_eq!(bench.inp(0x62), 0x30);
 }
+
+/// The view follows the interface: a scancode in port A waits for its
+/// acknowledge with the next one queued behind it; the keyboard is held
+/// clear while port B bit 7 is high; the clock is held low while bit 6 is,
+/// and its release starts a reset. Looking flips no bit of port B and
+/// drains nothing from the channel; a read of port 61h flips bit 4.
+#[test]
+fn the_view_follows_the_interface() {
+    let mut bench = Bench::new();
+    assert_eq!(
+        bench.keyboard.view(),
+        KeyboardView {
+            port_a: 0x00,
+            port_b: 0x00,
+            awaiting_acknowledge: false,
+            held_clear: false,
+            clock_held_low: false,
+            reset_pending: false,
+            queued: 0,
+        }
+    );
+
+    bench.keys.send(EmulatorEvent::Scancode(0x1E)).unwrap();
+    bench.keys.send(EmulatorEvent::ScanRelease(0x9E)).unwrap();
+    assert_eq!(bench.keyboard.view().queued, 0, "not polled yet");
+    bench.poll();
+    let view = bench.keyboard.view();
+    assert_eq!(
+        (view.port_a, view.awaiting_acknowledge, view.queued),
+        (0x1E, true, 1)
+    );
+
+    bench.out(0x61, 0xC8); // bit 7 high: the keyboard is held clear
+    let view = bench.keyboard.view();
+    assert_eq!((view.port_b, view.held_clear), (0xC8, true));
+    bench.out(0x61, 0x48); // and low again: the acknowledge
+    let view = bench.keyboard.view();
+    assert_eq!(
+        (view.port_a, view.awaiting_acknowledge, view.held_clear),
+        (0x00, false, false)
+    );
+
+    bench.out(0x61, 0x08); // the clock held low
+    assert!(bench.keyboard.view().clock_held_low);
+    bench.out(0x61, 0x48); // released: the keyboard resets
+    let view = bench.keyboard.view();
+    assert!(!view.clock_held_low && view.reset_pending);
+
+    assert_eq!(bench.keyboard.view().port_b, 0x48, "looking flips nothing");
+    bench.inp(0x61);
+    assert_eq!(bench.keyboard.view().port_b, 0x58, "a read flips bit 4");
+}

@@ -378,6 +378,13 @@ impl Runtime {
         self.pit.borrow()
     }
 
+    /// The keyboard interface, lent to be read (`KeyboardController::view`),
+    /// or `None` on a machine without one. The loan borrows the machine:
+    /// nothing runs while it is out.
+    pub fn keyboard(&self) -> Option<Ref<'_, KeyboardController>> {
+        self.keyboard.as_ref().map(|keyboard| keyboard.borrow())
+    }
+
     /// Tells the machine that `nanos` of host time have passed (at most one
     /// second per call; what is more is dropped). The time becomes timer
     /// clocks owed to the 8253, which `run` hands over as the guest
