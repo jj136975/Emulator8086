@@ -1,19 +1,67 @@
 use std::sync::Arc;
+use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::io::font_cp437::VGA_FONT_8X16;
+use crate::io::raster;
 use crate::io::vga::{VgaDevice, VideoMode};
 use crate::vm::memory::Memory;
 
-const TEXT_WIDTH: u32 = 640;  // 80 * 8
-const TEXT_HEIGHT: u32 = 400; // 25 * 16
-const GFX_WIDTH: u32 = 320;
-const GFX_HEIGHT: u32 = 200;
+const TEXT_WIDTH: u32 = raster::TEXT_WIDTH as u32;
+const TEXT_HEIGHT: u32 = raster::TEXT_HEIGHT as u32;
+const GFX_WIDTH: u32 = raster::GFX_WIDTH as u32;
+const GFX_HEIGHT: u32 = raster::GFX_HEIGHT as u32;
+
+/// Initial window size in physical pixels: the text frame doubled, which
+/// is also the mode 13h frame times four, so both fill the window.
+pub const DEFAULT_WINDOW_WIDTH: u32 = 2 * TEXT_WIDTH;
+pub const DEFAULT_WINDOW_HEIGHT: u32 = 2 * TEXT_HEIGHT;
 
 #[cfg(test)]
 mod inspection_tests {
-    use super::compute_viewport_math;
+    use super::*;
+
+    /// Regression: the default window was 960x600, which holds the 640x400
+    /// text frame only at scale 1 and left more than half of it black.
+    #[test]
+    fn default_window_is_filled_by_both_frame_sizes() {
+        let filled = (0.0, 0.0, DEFAULT_WINDOW_WIDTH as f32, DEFAULT_WINDOW_HEIGHT as f32);
+        assert_eq!(
+            compute_viewport_math(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, TEXT_WIDTH, TEXT_HEIGHT),
+            filled
+        );
+        assert_eq!(
+            compute_viewport_math(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, GFX_WIDTH, GFX_HEIGHT),
+            filled
+        );
+    }
+
+    /// Regression: the frame texture was always sRGB. On a surface without
+    /// an sRGB format the decoded values were written back unencoded and
+    /// the picture came out too dark.
+    #[test]
+    fn frame_texture_matches_the_colour_encoding_of_the_surface() {
+        use wgpu::TextureFormat::*;
+        assert_eq!(framebuffer_format(Bgra8UnormSrgb), Rgba8UnormSrgb);
+        assert_eq!(framebuffer_format(Rgba8UnormSrgb), Rgba8UnormSrgb);
+        assert_eq!(framebuffer_format(Bgra8Unorm), Rgba8Unorm);
+        assert_eq!(framebuffer_format(Rgba8Unorm), Rgba8Unorm);
+    }
+
+    /// The blit shader parses and validates, including the check that
+    /// implicit-derivative sampling is not used after a conditional return.
+    #[test]
+    fn blit_shader_is_valid_wgsl() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(SHADER_SRC).expect("shader parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("shader validates");
+        assert!(!SHADER_SRC.contains("textureSample("));
+    }
 
     /// Regression: when the window is at least as large as the framebuffer,
     /// the viewport is integer-scaled and centered.
@@ -97,6 +145,40 @@ pub(crate) fn compute_viewport_math(
     (offset_x as f32, offset_y as f32, scaled_w as f32, scaled_h as f32)
 }
 
+/// Format of the frame texture for a given surface format. The frame holds
+/// DAC values, which are display-encoded. With an sRGB surface the texture
+/// is sRGB too (decoded on sampling, encoded again on output); with any
+/// other surface it must be plain, or the picture would be decoded only.
+fn framebuffer_format(surface_format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if surface_format.is_srgb() {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
+}
+
+fn create_framebuffer_texture(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("VGA Framebuffer"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
 /// Uniform buffer for the fullscreen blit shader.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -125,6 +207,7 @@ pub struct WgpuRenderer {
     framebuffer: Vec<u8>,
     fb_width: u32,
     fb_height: u32,
+    fb_format: wgpu::TextureFormat,
 
     // Current mode tracking
     current_mode: VideoMode,
@@ -132,6 +215,9 @@ pub struct WgpuRenderer {
     // Window dimensions
     win_width: u32,
     win_height: u32,
+
+    /// Reference point for the blink phase of cursor and text.
+    started: Instant,
 }
 
 const SHADER_SRC: &str = r#"
@@ -181,9 +267,10 @@ fn fs_main(in: VsOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0); // black border
     }
 
-    // Map to texture UV
+    // Map to texture UV. The texture has a single level, and naming it
+    // keeps the lookup legal after the conditional return above.
     let tex_uv = (pixel - vp.xy) / vp.zw;
-    return textureSample(tex, tex_sampler, tex_uv);
+    return textureSampleLevel(tex, tex_sampler, tex_uv, 0.0);
 }
 "#;
 
@@ -240,21 +327,9 @@ impl WgpuRenderer {
         let fb_width = TEXT_WIDTH;
         let fb_height = TEXT_HEIGHT;
         let framebuffer = vec![0u8; (fb_width * fb_height * 4) as usize];
+        let fb_format = framebuffer_format(surface_format);
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("VGA Framebuffer"),
-            size: wgpu::Extent3d {
-                width: fb_width,
-                height: fb_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let texture = create_framebuffer_texture(&device, fb_format, fb_width, fb_height);
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -264,11 +339,16 @@ impl WgpuRenderer {
             ..Default::default()
         });
 
+        // The same integer-scaled viewport that a resize computes, so the
+        // first frames are not stretched to the window.
+        let (win_width, win_height) = (size.width.max(1), size.height.max(1));
+        let (vp_x, vp_y, vp_w, vp_h) =
+            compute_viewport_math(win_width, win_height, fb_width, fb_height);
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Blit Uniforms"),
             contents: bytemuck::cast_slice(&[BlitUniforms {
-                viewport: [0.0, 0.0, size.width as f32, size.height as f32],
-                window_size: [size.width as f32, size.height as f32],
+                viewport: [vp_x, vp_y, vp_w, vp_h],
+                window_size: [win_width as f32, win_height as f32],
                 _pad: [0.0; 2],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -381,9 +461,11 @@ impl WgpuRenderer {
             framebuffer,
             fb_width,
             fb_height,
+            fb_format,
             current_mode: VideoMode::Text80x25,
-            win_width: size.width.max(1),
-            win_height: size.height.max(1),
+            win_width,
+            win_height,
+            started: Instant::now(),
         }
     }
 
@@ -423,20 +505,7 @@ impl WgpuRenderer {
         self.fb_height = height;
         self.framebuffer.resize((width * height * 4) as usize, 0);
 
-        self.texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("VGA Framebuffer"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        self.texture = create_framebuffer_texture(&self.device, self.fb_format, width, height);
         self.texture_view = self.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Rebuild bind group with new texture view
@@ -475,8 +544,11 @@ impl WgpuRenderer {
 
         // Rasterize to CPU framebuffer
         match self.current_mode {
-            VideoMode::Text80x25 => self.rasterize_text(vga, memory),
-            VideoMode::Mode13h => self.rasterize_mode13h(vga, memory),
+            VideoMode::Text80x25 => {
+                let phase = raster::BlinkPhase::at(self.started.elapsed());
+                raster::rasterize_text(&mut self.framebuffer, vga, memory, phase);
+            }
+            VideoMode::Mode13h => raster::rasterize_mode13h(&mut self.framebuffer, vga, memory),
         }
 
         // Upload to GPU texture
@@ -544,62 +616,5 @@ impl WgpuRenderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-    }
-
-    /// Rasterize 80x25 text mode to 640x400 RGBA framebuffer.
-    fn rasterize_text(&mut self, vga: &VgaDevice, memory: &Memory) {
-        let start = vga.start_address();
-        let cols = vga.cols();
-
-        for row in 0..25usize {
-            for col in 0..cols {
-                let cell_index = (start + row * cols + col) & 0x1FFF;
-                let addr = 0xB8000 + cell_index * 2;
-                let ch = memory.read_byte(addr) as usize;
-                let attr = memory.read_byte(addr + 1);
-
-                let (fg_idx, bg_idx) = if vga.blink_mode {
-                    (attr & 0x0F, (attr >> 4) & 0x07)
-                } else {
-                    (attr & 0x0F, (attr >> 4) & 0x0F)
-                };
-
-                // Map through attribute controller palette → DAC
-                let fg_dac = vga.attr_regs[fg_idx as usize] & 0x3F;
-                let bg_dac = vga.attr_regs[bg_idx as usize] & 0x3F;
-                let fg = vga.dac_to_rgb8(fg_dac);
-                let bg = vga.dac_to_rgb8(bg_dac);
-
-                let glyph_offset = ch * 16;
-                for scanline in 0..16usize {
-                    let bits = VGA_FONT_8X16[glyph_offset + scanline];
-                    let y = row * 16 + scanline;
-                    for bit in 0..8usize {
-                        let x = col * 8 + bit;
-                        let pixel = if bits & (0x80 >> bit) != 0 { fg } else { bg };
-                        let offset = (y * TEXT_WIDTH as usize + x) * 4;
-                        self.framebuffer[offset] = pixel[0];
-                        self.framebuffer[offset + 1] = pixel[1];
-                        self.framebuffer[offset + 2] = pixel[2];
-                        self.framebuffer[offset + 3] = 255;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Rasterize Mode 13h (320x200x256) to RGBA framebuffer.
-    fn rasterize_mode13h(&mut self, vga: &VgaDevice, memory: &Memory) {
-        for y in 0..200usize {
-            for x in 0..320usize {
-                let pixel_index = memory.read_byte(0xA0000 + y * 320 + x);
-                let rgb = vga.dac_to_rgb8(pixel_index);
-                let offset = (y * 320 + x) * 4;
-                self.framebuffer[offset] = rgb[0];
-                self.framebuffer[offset + 1] = rgb[1];
-                self.framebuffer[offset + 2] = rgb[2];
-                self.framebuffer[offset + 3] = 255;
-            }
-        }
     }
 }

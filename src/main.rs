@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use crate::io::disk::{DiskSource, DiskSpec, FLOPPY_144_SIZE};
+use crate::io::keyboard::KeyboardController;
 use crate::vm::runtime::Runtime;
 
 mod io;
@@ -124,15 +125,21 @@ fn main() {
     let specs: Vec<DiskSpec> = args.disk.iter().map(|s| parse_disk_spec(s)).collect();
     let boot_order = args.boot.as_deref().map(parse_boot_order);
 
-    let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace);
-    runtime.load_rom(args.rom);
-
+    // The frontend owns the source of key events: the window in GUI builds,
+    // a terminal reader thread otherwise.
     #[cfg(feature = "gui")]
     {
-        runtime.run_gui();
+        let (keys, key_events) = std::sync::mpsc::channel();
+        let keyboard = KeyboardController::with_receiver(key_events);
+        let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace, keyboard);
+        runtime.load_rom(args.rom);
+        runtime.run_gui(keys);
     }
     #[cfg(not(feature = "gui"))]
     {
+        let keyboard = KeyboardController::new();
+        let mut runtime = Runtime::new(specs, args.hd, boot_order, args.trace, keyboard);
+        runtime.load_rom(args.rom);
         runtime.run();
     }
 }

@@ -7,7 +7,7 @@
 use std::sync::mpsc::Sender;
 
 use crate::io::disk::{DiskController, DiskImage, FLOPPY_144_SIZE};
-use crate::io::keyboard::EmulatorEvent;
+use crate::io::keyboard::{EmulatorEvent, KeyboardController};
 use crate::vm::runtime::{CpuFlag, Prefixes, Runtime};
 
 const BIOS_BIN: &[u8] = include_bytes!("../assets/rom/bios.bin");
@@ -268,6 +268,25 @@ fn key_pressed_before_boot_does_not_block_the_keyboard() {
     assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1F73, "scancode 1Fh, ASCII 's'");
 }
 
+/// The machine is wired to the keyboard controller its frontend hands to
+/// `Runtime::new`, so the frontend decides where key events come from.
+#[test]
+fn machine_uses_the_keyboard_supplied_by_the_frontend() {
+    let (keys, key_events) = std::sync::mpsc::channel();
+    let keyboard = KeyboardController::with_receiver(key_events);
+    let mut rt = Runtime::new(vec![], vec![], None, false, keyboard);
+    rt.load_rom_image(BIOS_BIN);
+    let mut machine = Machine { rt, keys };
+    machine.run_until(|rt| rt.cpu.halted);
+
+    machine.press(0x1F); // 's'
+    machine.run_stub(&[
+        0xB4, 0x00, // MOV AH,00h   (wait for a key)
+        0xCD, 0x16, // INT 16h
+    ]);
+    assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1F73, "scancode 1Fh, ASCII 's'");
+}
+
 // ---------------------------------------------------------------------------
 // INT 13h — disk
 // ---------------------------------------------------------------------------
@@ -319,6 +338,39 @@ fn int10_set_mode_preserves_registers() {
 // ---------------------------------------------------------------------------
 // Timer — 8253 channel 0 -> IRQ0 -> INT 08h
 // ---------------------------------------------------------------------------
+
+/// Regression: the GUI ran one batch of instructions per displayed frame, so
+/// a guest idling in HLT was looked at once per frame. Within a time slice
+/// it is polled every millisecond and its timer keeps ticking.
+#[test]
+fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
+    // The BIOS has programmed 18.2 Hz and waits for a key in HLT.
+    let mut machine = Machine::boot(disks(vec![]));
+    let before = machine.timer_ticks();
+    assert!(machine.rt.run_slice(std::time::Duration::from_millis(250)));
+    let ticks = machine.timer_ticks() - before;
+    assert!((3..=6).contains(&ticks), "{ticks} ticks in 250 ms, expected 4 or 5");
+}
+
+/// Regression: the vertical retrace bit of port 3DAh advanced with every
+/// read of the port, so a program that paces itself by waiting for retrace
+/// ran at a speed set by the host. It follows timer time: 70 frames in a
+/// second, however that second is delivered.
+#[test]
+fn vertical_retrace_comes_70_times_per_second_of_timer_time() {
+    let mut machine = Machine::boot(disks(vec![]));
+    machine.rt.use_manual_clock();
+    machine.load_stub(&[
+        0xBA, 0xDA, 0x03, // MOV DX,03DAh
+        0x31, 0xDB, // XOR BX,BX
+        0xEC, 0xA8, 0x08, 0x75, 0xFB, // wait while in retrace: IN AL,DX ; TEST AL,8 ; JNZ
+        0xEC, 0xA8, 0x08, 0x74, 0xFB, // wait for retrace:      IN AL,DX ; TEST AL,8 ; JZ
+        0x43, // INC BX
+        0xEB, 0xF3, // JMP back to the first wait
+    ]);
+    machine.feed_time(50, 20_000_000); // one second, 20 ms at a time
+    assert_eq!(machine.rt.cpu.registers.bx.word(), 70);
+}
 
 /// Guest idle loops: halted between interrupts, or spinning.
 const IDLE_HALTED: [u8; 3] = [0xF4, 0xEB, 0xFD]; // HLT ; JMP back to the HLT

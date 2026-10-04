@@ -38,7 +38,7 @@ fn keycode_to_scancode(code: KeyCode) -> Option<u8> {
         KeyCode::KeyP => Some(0x19),
         KeyCode::BracketLeft => Some(0x1A),
         KeyCode::BracketRight => Some(0x1B),
-        KeyCode::Enter => Some(0x1C),
+        KeyCode::Enter | KeyCode::NumpadEnter => Some(0x1C),
         KeyCode::ControlLeft | KeyCode::ControlRight => Some(0x1D),
         KeyCode::KeyA => Some(0x1E),
         KeyCode::KeyS => Some(0x1F),
@@ -63,7 +63,7 @@ fn keycode_to_scancode(code: KeyCode) -> Option<u8> {
         KeyCode::KeyM => Some(0x32),
         KeyCode::Comma => Some(0x33),
         KeyCode::Period => Some(0x34),
-        KeyCode::Slash => Some(0x35),
+        KeyCode::Slash | KeyCode::NumpadDivide => Some(0x35),
         KeyCode::ShiftRight => Some(0x36),
         KeyCode::NumpadMultiply => Some(0x37),
         KeyCode::AltLeft | KeyCode::AltRight => Some(0x38),
@@ -81,19 +81,75 @@ fn keycode_to_scancode(code: KeyCode) -> Option<u8> {
         KeyCode::F10 => Some(0x44),
         KeyCode::NumLock => Some(0x45),
         KeyCode::ScrollLock => Some(0x46),
-        KeyCode::Home => Some(0x47),
-        KeyCode::ArrowUp => Some(0x48),
-        KeyCode::PageUp => Some(0x49),
+        // The 83-key keyboard has one cursor/number pad: the dedicated
+        // cursor keys of later keyboards send the same codes as the keypad.
+        KeyCode::Home | KeyCode::Numpad7 => Some(0x47),
+        KeyCode::ArrowUp | KeyCode::Numpad8 => Some(0x48),
+        KeyCode::PageUp | KeyCode::Numpad9 => Some(0x49),
         KeyCode::NumpadSubtract => Some(0x4A),
-        KeyCode::ArrowLeft => Some(0x4B),
+        KeyCode::ArrowLeft | KeyCode::Numpad4 => Some(0x4B),
         KeyCode::Numpad5 => Some(0x4C),
-        KeyCode::ArrowRight => Some(0x4D),
+        KeyCode::ArrowRight | KeyCode::Numpad6 => Some(0x4D),
         KeyCode::NumpadAdd => Some(0x4E),
-        KeyCode::End => Some(0x4F),
-        KeyCode::ArrowDown => Some(0x50),
-        KeyCode::PageDown => Some(0x51),
-        KeyCode::Insert => Some(0x52),
-        KeyCode::Delete => Some(0x53),
+        KeyCode::End | KeyCode::Numpad1 => Some(0x4F),
+        KeyCode::ArrowDown | KeyCode::Numpad2 => Some(0x50),
+        KeyCode::PageDown | KeyCode::Numpad3 => Some(0x51),
+        KeyCode::Insert | KeyCode::Numpad0 => Some(0x52),
+        KeyCode::Delete | KeyCode::NumpadDecimal => Some(0x53),
+        // The extra key of 102-key (ISO) keyboards, left of Z.
+        KeyCode::IntlBackslash => Some(0x56),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scancode(code: KeyCode) -> Option<u8> {
+        physical_key_to_scancode(PhysicalKey::Code(code))
+    }
+
+    /// Regression: the digit keys of the numeric keypad, keypad Enter,
+    /// keypad `/` and `.`, and the 102nd key were not mapped, so pressing
+    /// them sent nothing to the guest.
+    #[test]
+    fn keypad_and_102nd_key_send_their_scancodes() {
+        let expected = [
+            (KeyCode::Numpad7, 0x47),
+            (KeyCode::Numpad8, 0x48),
+            (KeyCode::Numpad9, 0x49),
+            (KeyCode::NumpadSubtract, 0x4A),
+            (KeyCode::Numpad4, 0x4B),
+            (KeyCode::Numpad5, 0x4C),
+            (KeyCode::Numpad6, 0x4D),
+            (KeyCode::NumpadAdd, 0x4E),
+            (KeyCode::Numpad1, 0x4F),
+            (KeyCode::Numpad2, 0x50),
+            (KeyCode::Numpad3, 0x51),
+            (KeyCode::Numpad0, 0x52),
+            (KeyCode::NumpadDecimal, 0x53),
+            (KeyCode::NumpadMultiply, 0x37),
+            (KeyCode::NumpadEnter, 0x1C),
+            (KeyCode::NumpadDivide, 0x35),
+            (KeyCode::IntlBackslash, 0x56),
+        ];
+        for (code, xt) in expected {
+            assert_eq!(scancode(code), Some(xt), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn cursor_keys_share_the_keypad_scancodes() {
+        assert_eq!(scancode(KeyCode::ArrowUp), scancode(KeyCode::Numpad8));
+        assert_eq!(scancode(KeyCode::Home), scancode(KeyCode::Numpad7));
+        assert_eq!(scancode(KeyCode::Delete), scancode(KeyCode::NumpadDecimal));
+    }
+
+    #[test]
+    fn keys_the_83_key_keyboard_lacks_send_nothing() {
+        for code in [KeyCode::F11, KeyCode::F12, KeyCode::PrintScreen, KeyCode::Pause] {
+            assert_eq!(scancode(code), None, "{code:?}");
+        }
     }
 }

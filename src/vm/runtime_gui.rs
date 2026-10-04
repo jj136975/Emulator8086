@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -9,8 +10,12 @@ use winit::window::{Window, WindowId};
 
 use crate::io::keyboard::EmulatorEvent;
 use crate::io::keyboard_winit::physical_key_to_scancode;
-use crate::io::renderer_wgpu::WgpuRenderer;
+use crate::io::renderer_wgpu::{WgpuRenderer, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH};
 use crate::vm::runtime::Runtime;
+
+/// Host time the CPU runs for before each frame is drawn. The rest of the
+/// frame period is left for rasterising and for waiting on vsync.
+const CPU_SLICE: Duration = Duration::from_millis(10);
 
 struct EmulatorApp {
     runtime: Runtime,
@@ -30,7 +35,10 @@ impl ApplicationHandler for EmulatorApp {
                 .create_window(
                     Window::default_attributes()
                         .with_title("Emulator 8086")
-                        .with_inner_size(winit::dpi::LogicalSize::new(960, 600)),
+                        .with_inner_size(winit::dpi::PhysicalSize::new(
+                            DEFAULT_WINDOW_WIDTH,
+                            DEFAULT_WINDOW_HEIGHT,
+                        )),
                 )
                 .expect("Failed to create window"),
         );
@@ -80,8 +88,8 @@ impl ApplicationHandler for EmulatorApp {
             }
 
             WindowEvent::RedrawRequested => {
-                // Run CPU for one frame
-                if !self.runtime.step_frame() {
+                // Run the CPU for one time slice
+                if !self.runtime.run_slice(CPU_SLICE) {
                     event_loop.exit();
                     return;
                 }
@@ -112,8 +120,9 @@ impl ApplicationHandler for EmulatorApp {
 }
 
 impl Runtime {
-    /// GUI-mode main loop using winit + wgpu.
-    pub fn run_gui(mut self) {
+    /// GUI-mode main loop using winit + wgpu. `kbd_tx` feeds the keyboard
+    /// controller the machine was built with.
+    pub fn run_gui(self, kbd_tx: mpsc::Sender<EmulatorEvent>) {
         log::debug!(
             "Starting emulator (GUI) with boot order: {:02X?}",
             self.disks.borrow().boot_order()
@@ -121,19 +130,6 @@ impl Runtime {
 
         let event_loop = EventLoop::new().expect("Failed to create event loop");
         event_loop.set_control_flow(ControlFlow::Poll);
-
-        // Create keyboard channel and replace the controller
-        let (kbd_tx, kbd_rx) = mpsc::channel();
-        let keyboard =
-            crate::io::keyboard::KeyboardController::with_receiver(kbd_rx);
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let keyboard = Rc::new(RefCell::new(keyboard));
-        keyboard
-            .borrow_mut()
-            .set_pit(Rc::clone(self.pit_ref()));
-        // Re-register keyboard on IO bus (port range 0x60-0x63)
-        self.replace_keyboard(keyboard);
 
         let mut app = EmulatorApp {
             runtime: self,

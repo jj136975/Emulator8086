@@ -17,13 +17,12 @@ use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
 use log::debug;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::{Debug, Formatter};
-use std::io::Write;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use crate::io::pit::Pit;
 
 #[derive(Clone, Copy)]
@@ -94,6 +93,11 @@ const PIT_CLOCKS_PER_INSTRUCTION: u64 = 4;
 /// Most timer clocks the guest can be owed (250 ms worth). After a longer
 /// stall the excess is dropped rather than replayed as a burst of ticks.
 const PIT_MAX_DEBT: u64 = PIT_CLOCK_HZ / 4;
+/// How long `run_slice` sleeps between two looks at a halted CPU.
+const IDLE_POLL: Duration = Duration::from_millis(1);
+/// The terminal frontend redraws the screen this often.
+#[cfg(not(feature = "gui"))]
+const TERMINAL_FRAME: Duration = Duration::from_millis(16);
 
 pub struct Runtime {
     pub(crate) cpu: Cpu,
@@ -119,6 +123,9 @@ pub struct Runtime {
     pit_frac: u64,
     /// Timer time is fed in by hand (tests) instead of from the host clock.
     manual_clock: bool,
+    /// Timer clocks delivered to the 8253 so far; the VGA derives its
+    /// retrace timing from this count.
+    video_clock: Rc<Cell<u64>>,
 }
 
 impl Runtime {
@@ -151,14 +158,18 @@ impl Runtime {
             pit_debt: 0,
             pit_frac: 0,
             manual_clock: false,
+            video_clock: Rc::new(Cell::new(0)),
         }
     }
 
+    /// Builds the machine. `keyboard` is supplied by the frontend, which
+    /// knows where key events come from (terminal thread or window).
     pub fn new(
         disk_specs: Vec<DiskSpec>,
         hd_specs: Vec<String>,
         boot_order: Option<Vec<u8>>,
         trace: bool,
+        keyboard: KeyboardController,
     ) -> Self {
         let mut disk_ctrl = DiskController::new();
 
@@ -201,7 +212,7 @@ impl Runtime {
             disk_ctrl.set_boot_order(order);
         }
 
-        let mut vm = Self::with_devices(disk_ctrl, KeyboardController::new());
+        let mut vm = Self::with_devices(disk_ctrl, keyboard);
         vm.trace = trace;
         vm
     }
@@ -217,6 +228,8 @@ impl Runtime {
         let disk_ctrl = Rc::new(RefCell::new(disk_ctrl));
         let pit = Rc::new(RefCell::new(Pit::new()));
 
+        let video_clock = vga.borrow().timer_clock();
+
         keyboard.borrow_mut().set_pit(Rc::clone(&pit));
 
         io_bus.register(0x00, 0x0F, Box::new(DmaController::new()));
@@ -225,7 +238,7 @@ impl Runtime {
         io_bus.register(0x60, 0x63, Box::new(Rc::clone(&keyboard)));
         io_bus.register(0x81, 0x87, Box::new(DmaPageRegisters::new()));
         io_bus.register(DISK_TRAP_PORT, BOOT_ORDER_PORT, Box::new(Rc::clone(&disk_ctrl)));
-        io_bus.register(0xE9, 0xE9, Box::new(DebugConsole));
+        io_bus.register(0xE9, 0xE9, Box::new(DebugConsole::new()));
         io_bus.register(0x320, 0x323, Box::new(HdcStub::new()));
         io_bus.register(0x3C0, 0x3DA, Box::new(Rc::clone(&vga)));
         io_bus.register(0x3F0, 0x3F7, Box::new(FdcStub::new()));
@@ -254,6 +267,7 @@ impl Runtime {
             pit_debt: 0,
             pit_frac: 0,
             manual_clock: false,
+            video_clock,
         }
     }
 
@@ -286,7 +300,7 @@ impl Runtime {
 
     /// Execute one batch of CPU instructions, tick PIT, poll keyboard, and
     /// handle interrupts. Returns `false` when the emulator should stop.
-    /// Called from the terminal `run()` loop and the GUI event loop.
+    /// Both frontends call it through `run_slice`.
     pub fn step_frame(&mut self) -> bool {
         // Host time that went by between two calls (rendering, vsync,
         // sleeping) is credited on the first pass.
@@ -374,6 +388,27 @@ impl Runtime {
         self.running
     }
 
+    /// Runs the machine for about `slice` of host time and returns `false`
+    /// when the emulator should stop. Batches are executed back to back; a
+    /// halted CPU is looked at again every `IDLE_POLL` instead of leaving
+    /// the slice, so that timer ticks and key presses reach an idle guest
+    /// promptly.
+    pub fn run_slice(&mut self, slice: Duration) -> bool {
+        let deadline = Instant::now() + slice;
+        loop {
+            if !self.step_frame() {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return true;
+            }
+            if self.cpu.halted {
+                std::thread::sleep(IDLE_POLL.min(deadline - now));
+            }
+        }
+    }
+
     /// Credits the timer with the host time elapsed since the last sample.
     fn sample_host_clock(&mut self) {
         if self.manual_clock {
@@ -408,6 +443,7 @@ impl Runtime {
             };
             let advance = self.pit.borrow_mut().advance(budget as u32);
             self.pit_debt -= advance.clocks as u64;
+            self.video_clock.set(self.video_clock.get() + advance.clocks as u64);
             if advance.ch0_rising_edge {
                 self.cpu.pic.request_interrupt(0);
             }
@@ -428,7 +464,13 @@ impl Runtime {
     }
 
     /// Terminal-mode main loop. Uses crossterm for display and keyboard.
+    #[cfg(not(feature = "gui"))]
     pub fn run(&mut self) {
+        use crate::io::renderer_term::TermRenderer;
+        use crossterm::cursor::MoveTo;
+        use crossterm::terminal::{Clear, ClearType};
+        use std::io::Write;
+
         debug!(
             "Starting emulator with boot order: {:02X?}",
             self.disks.borrow().boot_order()
@@ -438,22 +480,16 @@ impl Runtime {
         }
 
         let _ = crossterm::terminal::enable_raw_mode();
-        let _ = write!(std::io::stdout(), "\x1B[2J\x1B[H");
-        let _ = std::io::stdout().flush();
+        // Going through crossterm here also switches a Windows console to
+        // escape-sequence processing, which the renderer relies on.
+        let _ = crossterm::execute!(std::io::stdout(), Clear(ClearType::All), MoveTo(0, 0));
 
+        let mut renderer = TermRenderer::new();
         while self.running {
-            self.step_frame();
+            self.run_slice(TERMINAL_FRAME);
 
-            // Render VGA
             if let Some(vga) = &self.vga {
-                let mut vga = vga.borrow_mut();
-                vga.tick(RENDER_INTERVAL);
-                vga.render(&self.cpu.memory);
-            }
-
-            // Sleep when halted to avoid busy-waiting
-            if self.cpu.halted {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                renderer.render(&mut vga.borrow_mut(), &self.cpu.memory);
             }
         }
 
@@ -478,20 +514,6 @@ impl Runtime {
 
     pub fn port_out_word(&mut self, port: u16, value: u16) {
         self.io_bus.port_out_word(port, value, &mut self.cpu);
-    }
-
-    /// Get a reference to the PIT (for keyboard controller setup).
-    #[cfg(feature = "gui")]
-    pub fn pit_ref(&self) -> &Rc<RefCell<crate::io::pit::Pit>> {
-        &self.pit
-    }
-
-    /// Replace the keyboard controller (used by GUI mode to swap in a
-    /// winit-driven controller). Also re-registers ports 0x60-0x63.
-    #[cfg(feature = "gui")]
-    pub fn replace_keyboard(&mut self, kb: Rc<RefCell<KeyboardController>>) {
-        self.io_bus.replace(0x60, 0x63, Box::new(Rc::clone(&kb)));
-        self.keyboard = Some(kb);
     }
 
     pub(crate) fn handle_interrupt(&mut self, vector: u8) {
@@ -605,6 +627,41 @@ mod tests {
             rt.credit_pit_time(100); // less than one timer clock
         }
         assert_eq!(rt.pit_debt, 119_318); // 0.1 s of a 1,193,182 Hz clock
+    }
+
+    /// A frontend that ran one batch per displayed frame held the guest to
+    /// 50,000 instructions per frame; a time slice runs as many batches as
+    /// fit.
+    #[test]
+    fn run_slice_runs_batches_back_to_back() {
+        let mut rt = Runtime::new_test();
+        rt.use_manual_clock();
+        rt.cpu.memory.write_byte(0x10000, 0xEB); // JMP $
+        rt.cpu.memory.write_byte(0x10001, 0xFE);
+        rt.cpu.registers.cs.reg_mut().set(0x1000);
+        rt.cpu.registers.pc.set(0);
+
+        assert!(rt.run_slice(Duration::from_millis(100)));
+        assert!(
+            rt.instruction_count >= 2 * RENDER_INTERVAL,
+            "only {} instructions ran",
+            rt.instruction_count
+        );
+    }
+
+    /// A halted CPU does not end the slice early: the machine keeps being
+    /// polled until the slice is over.
+    #[test]
+    fn run_slice_lasts_the_whole_slice_when_halted() {
+        let mut rt = Runtime::new_test();
+        rt.use_manual_clock();
+        rt.cpu.halted = true; // interrupts disabled: nothing can wake it
+
+        let slice = Duration::from_millis(30);
+        let started = Instant::now();
+        assert!(rt.run_slice(slice));
+        assert!(started.elapsed() >= slice);
+        assert_eq!(rt.instruction_count, 0);
     }
 
     #[test]

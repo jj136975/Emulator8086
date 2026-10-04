@@ -1,6 +1,7 @@
-use std::io::{self, Write};
+use std::cell::Cell;
+use std::io::Write;
+use std::rc::Rc;
 
-use crossterm::{cursor::MoveTo, style::{Color, SetBackgroundColor, SetForegroundColor}, QueueableCommand};
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
 use crate::vm::memory::Memory;
@@ -48,7 +49,9 @@ pub struct VgaDevice {
     color_register: u8,
 
     // --- Status / timing ---
-    cycle_counter: u64,
+    /// Clocks of the 1,193,182 Hz timer input the machine has run for.
+    /// Shared with the runtime, which advances it as it clocks the 8253.
+    timer_clock: Rc<Cell<u64>>,
 
     // --- Miscellaneous Output Register (0x3C2 write, 0x3CC read) ---
     misc_output: u8,
@@ -71,20 +74,37 @@ pub struct VgaDevice {
     dac_read_index: u8,
     dac_write_index: u8,
     dac_component: u8, // 0=R, 1=G, 2=B — cycles after each read/write
+    /// What port 0x3C7 reads: 3 after the read index was set, 0 after the
+    /// write index was set.
+    dac_state: u8,
     pub dac_palette: [[u8; 3]; 256], // 6-bit per component (0-63)
 
     // --- Video mode (derived from register state) ---
     pub video_mode: VideoMode,
 
-    // --- Terminal rendering state ---
+    /// Attribute bit 7 means "blink" (true) or "bright background" (false).
     pub blink_mode: bool,
-    prev_buffer: [u16; 80 * 25],
-    cursor_prev: (u8, u8),
+    /// A renderer that only draws changes must repaint the whole screen.
     needs_full_redraw: bool,
 }
 
 const VIDEO_BASE: usize = 0xB8000;
 const ROWS: usize = 25;
+/// Text cell indexes wrap at this mask when the display start is added:
+/// the 32 KB text buffer at B8000h holds 16,384 cells (eight 80x25 pages).
+const TEXT_CELL_MASK: usize = 0x3FFF;
+
+/// Timer clocks per displayed frame: 70 frames per second.
+const FRAME_CLOCKS: u64 = 17_045;
+/// Vertical retrace is reported for the last 8 % of each frame. While the
+/// timer catches up after a pause it gets 4 clocks per instruction, so the
+/// window still spans a few hundred instructions of a polling loop.
+const VRETRACE_CLOCKS: u64 = 1_364;
+/// One scanline with its horizontal blank. Coarser than the real 31.5 kHz
+/// line, for the same reason: a loop that polls every few instructions
+/// must not be able to step over the blank.
+const LINE_CLOCKS: u64 = 76;
+const HBLANK_CLOCKS: u64 = 19;
 
 /// Standard VGA default 6-bit DAC values for the first 16 CGA colors.
 const CGA_DAC: [[u8; 3]; 16] = [
@@ -127,12 +147,17 @@ impl VgaDevice {
         // AC Mode Control register (index 0x10)
         attr_regs[0x10] = 0x0C; // default text mode value
 
+        // Cursor shape the BIOS programs: scanlines 6-7 of an 8-line cell.
+        let mut crtc_regs = [0u8; 256];
+        crtc_regs[0x0A] = 0x06;
+        crtc_regs[0x0B] = 0x07;
+
         Self {
             crtc_index: 0,
-            crtc_regs: [0; 256],
+            crtc_regs,
             mode_register: 0x29, // 80-col text, display enabled, blink
             color_register: 0,
-            cycle_counter: 0,
+            timer_clock: Rc::new(Cell::new(0)),
             misc_output: 0x67, // default: color mode, odd/even, 25MHz clock
 
             seq_index: 0,
@@ -151,26 +176,44 @@ impl VgaDevice {
             dac_read_index: 0,
             dac_write_index: 0,
             dac_component: 0,
+            dac_state: 0,
             dac_palette,
 
             video_mode: VideoMode::Text80x25,
 
             blink_mode: true,
-            prev_buffer: [0xFFFF; 80 * 25],
-            cursor_prev: (0xFF, 0xFF),
             needs_full_redraw: true,
         }
     }
 
-    /// Advance the cycle counter externally (called from runtime).
-    pub fn tick(&mut self, cycles: u64) {
-        self.cycle_counter += cycles;
+    /// The time base of the retrace bits in Input Status 1. The runtime
+    /// adds every clock it hands to the 8253, so display time advances
+    /// only while the guest runs and catches up after a pause exactly as
+    /// the timer does.
+    pub fn timer_clock(&self) -> Rc<Cell<u64>> {
+        Rc::clone(&self.timer_clock)
     }
 
-    /// Dynamic column count from CRTC register 1 (Horizontal Displayed).
+    /// Input Status 1: bit 3 during vertical retrace, bit 0 whenever the
+    /// display is off (horizontal blank or vertical retrace).
+    fn input_status_1(&self) -> u8 {
+        let in_frame = self.timer_clock.get() % FRAME_CLOCKS;
+        let vertical_retrace = in_frame >= FRAME_CLOCKS - VRETRACE_CLOCKS;
+        let display_off =
+            vertical_retrace || in_frame % LINE_CLOCKS >= LINE_CLOCKS - HBLANK_CLOCKS;
+        0xF0 | (vertical_retrace as u8) << 3 | display_off as u8
+    }
+
+    /// Column count from CRTC register 1. VGA software writes the count
+    /// minus one (4Fh, 27h), 6845 software the count itself; both are
+    /// accepted. Anything else, including the power-on zero, means 80.
     pub fn cols(&self) -> usize {
-        let crtc_r1 = self.crtc_regs[0x01] as usize;
-        if crtc_r1 > 0 && crtc_r1 <= 80 { crtc_r1 } else { 80 }
+        match self.crtc_regs[0x01] as usize {
+            79 => 80,
+            39 => 40,
+            count @ 1..=80 => count,
+            _ => 80,
+        }
     }
 
     /// Get cursor position from CRTC registers 0x0E (high) and 0x0F (low).
@@ -184,7 +227,34 @@ impl VgaDevice {
         addr as usize
     }
 
+    /// Cursor start and end scanline from CRTC registers 0x0A/0x0B, or
+    /// `None` while the cursor is switched off (register 0x0A bit 5).
+    pub fn cursor_shape(&self) -> Option<(u8, u8)> {
+        let start = self.crtc_regs[0x0A];
+        if start & 0x20 != 0 {
+            return None;
+        }
+        Some((start & 0x1F, self.crtc_regs[0x0B] & 0x1F))
+    }
+
+    /// Index of the displayed text cell the cursor is in, counted from the
+    /// top left, or `None` when the cursor is switched off or lies outside
+    /// the displayed page.
+    pub fn visible_cursor_cell(&self) -> Option<usize> {
+        self.cursor_shape()?;
+        let cell = (self.cursor_offset() as usize).wrapping_sub(self.start_address())
+            & TEXT_CELL_MASK;
+        (cell < self.cols() * ROWS).then_some(cell)
+    }
+
+    /// Memory address of the `index`-th displayed text cell: its character
+    /// byte, followed by its attribute byte.
+    pub fn text_cell_address(&self, index: usize) -> usize {
+        VIDEO_BASE + ((self.start_address() + index) & TEXT_CELL_MASK) * 2
+    }
+
     /// Convert a DAC palette index to 8-bit RGB.
+    #[cfg(any(feature = "gui", test))]
     pub fn dac_to_rgb8(&self, index: u8) -> [u8; 3] {
         let [r6, g6, b6] = self.dac_palette[(index & self.dac_mask) as usize];
         [
@@ -196,6 +266,21 @@ impl VgaDevice {
 
     pub fn queue_full_redraw(&mut self) {
         self.needs_full_redraw = true;
+    }
+
+    /// Switches attribute bit 7 between "blink" and "bright background".
+    /// Cells with that bit set change colour, so a change needs a repaint.
+    fn set_blink_mode(&mut self, blink: bool) {
+        if blink != self.blink_mode {
+            self.blink_mode = blink;
+            self.needs_full_redraw = true;
+        }
+    }
+
+    /// Returns whether a full repaint was requested since the last call.
+    #[cfg(any(not(feature = "gui"), test))]
+    pub fn take_full_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.needs_full_redraw)
     }
 
     /// Detect video mode from register state.
@@ -210,72 +295,6 @@ impl VgaDevice {
         if old != self.video_mode {
             self.needs_full_redraw = true;
         }
-    }
-
-    /// Call periodically from main loop to render video RAM to terminal.
-    /// Only redraws cells that changed since last call.
-    /// Only renders text mode; Mode 13h requires the GUI backend.
-    pub fn render(&mut self, memory: &Memory) {
-        if self.video_mode != VideoMode::Text80x25 {
-            return;
-        }
-
-        let mut stdout = io::stdout();
-
-        let start = self.start_address();
-        let cols = self.cols();
-        let cells = cols * ROWS;
-
-        for i in 0..cells {
-            let cell_index = (start + i) & 0x1FFF;
-            let addr = VIDEO_BASE + cell_index * 2;
-            let ch = memory.read_byte(addr);
-            let attr = memory.read_byte(addr + 1);
-            let cell = (attr as u16) << 8 | ch as u16;
-
-            if !self.needs_full_redraw && self.prev_buffer[i] == cell {
-                continue;
-            }
-            self.prev_buffer[i] = cell;
-
-            let row = (i / cols) as u16;
-            let col = (i % cols) as u16;
-
-            let (fg_index, bg_index) = if self.blink_mode {
-                (attr & 0x0F, (attr >> 4) & 0x07)
-            } else {
-                (attr & 0x0F, (attr >> 4) & 0x0F)
-            };
-            let fg = cga_to_color(fg_index);
-            let bg = cga_to_color(bg_index);
-
-            let display_char = if ch >= 0x20 && ch < 0x7F {
-                ch as char
-            } else if ch == 0x00 {
-                ' '
-            } else {
-                cp437_to_unicode(ch)
-            };
-
-            let _ = stdout.queue(MoveTo(col, row));
-            let _ = stdout.queue(SetForegroundColor(fg));
-            let _ = stdout.queue(SetBackgroundColor(bg));
-            let _ = write!(stdout, "{}", display_char);
-        }
-
-        self.needs_full_redraw = false;
-
-        let offset = self.cursor_offset();
-        let cursor_rel = offset.wrapping_sub(start as u16);
-        let col = (cursor_rel % cols as u16).min(cols as u16 - 1);
-        let row = (cursor_rel / cols as u16).min(ROWS as u16 - 1);
-
-        if (col as u8, row as u8) != self.cursor_prev {
-            self.cursor_prev = (col as u8, row as u8);
-            let _ = stdout.queue(MoveTo(col, row));
-        }
-
-        let _ = stdout.flush();
     }
 
     /// Dump VGA text buffer to a file for debugging.
@@ -361,8 +380,7 @@ impl VgaDevice {
         for row in 0..ROWS {
             let _ = write!(f, "Row {:02}: |", row);
             for col in 0..cols {
-                let cell_index = (start + row * cols + col) & 0x1FFF;
-                let ch = memory.read_byte(VIDEO_BASE + cell_index * 2);
+                let ch = memory.read_byte(self.text_cell_address(row * cols + col));
                 if ch >= 0x20 && ch < 0x7F {
                     let _ = write!(f, "{}", ch as char);
                 } else {
@@ -372,8 +390,7 @@ impl VgaDevice {
             let _ = writeln!(f, "|");
             let _ = write!(f, "        ");
             for col in 0..cols {
-                let cell_index = (start + row * cols + col) & 0x1FFF;
-                let addr = VIDEO_BASE + cell_index * 2;
+                let addr = self.text_cell_address(row * cols + col);
                 let ch = memory.read_byte(addr);
                 let attr = memory.read_byte(addr + 1);
                 let _ = write!(f, "{:02X}{:02X} ", ch, attr);
@@ -404,10 +421,7 @@ impl IoDevice for VgaDevice {
 
             // --- DAC ---
             0x3C6 => self.dac_mask,
-            0x3C7 => {
-                // DAC state: bit 0-1: 0=write, 3=read
-                0x03 // always report "read mode" for simplicity
-            }
+            0x3C7 => self.dac_state,
             0x3C8 => self.dac_write_index,
             0x3C9 => {
                 let idx = self.dac_read_index as usize;
@@ -442,13 +456,7 @@ impl IoDevice for VgaDevice {
             // Reading also resets the Attribute Controller flip-flop.
             0x3DA => {
                 self.attr_flip_flop = false;
-                self.cycle_counter += 1;
-
-                let bit0 = (self.cycle_counter % 76) >= 40;
-                let scanline = (self.cycle_counter / 76) % 262;
-                let bit3 = scanline >= 225;
-
-                0xF0 | ((bit3 as u8) << 3) | (bit0 as u8)
+                self.input_status_1()
             }
 
             _ => 0xFF,
@@ -460,11 +468,18 @@ impl IoDevice for VgaDevice {
             // --- Attribute Controller (flip-flop) ---
             0x3C0 => {
                 if !self.attr_flip_flop {
-                    // Index write
-                    self.attr_index = value;
+                    // Index write: five index bits and the palette address
+                    // source bit.
+                    self.attr_index = value & 0x3F;
                 } else {
                     // Data write
-                    self.attr_regs[(self.attr_index & 0x1F) as usize] = value;
+                    let index = (self.attr_index & 0x1F) as usize;
+                    self.attr_regs[index] = value;
+                    if index == 0x10 {
+                        // Mode control bit 3: attribute bit 7 blinks the
+                        // character (1) or brightens the background (0).
+                        self.set_blink_mode(value & 0x08 != 0);
+                    }
                 }
                 self.attr_flip_flop = !self.attr_flip_flop;
             }
@@ -475,7 +490,7 @@ impl IoDevice for VgaDevice {
             }
 
             // --- Sequencer ---
-            0x3C4 => self.seq_index = value,
+            0x3C4 => self.seq_index = value & 0x07,
             0x3C5 => {
                 self.seq_regs[(self.seq_index & 0x07) as usize] = value;
             }
@@ -486,11 +501,13 @@ impl IoDevice for VgaDevice {
                 // Set DAC read index
                 self.dac_read_index = value;
                 self.dac_component = 0;
+                self.dac_state = 0x03;
             }
             0x3C8 => {
                 // Set DAC write index
                 self.dac_write_index = value;
                 self.dac_component = 0;
+                self.dac_state = 0x00;
             }
             0x3C9 => {
                 let idx = self.dac_write_index as usize;
@@ -504,7 +521,7 @@ impl IoDevice for VgaDevice {
             }
 
             // --- Graphics Controller ---
-            0x3CE => self.gc_index = value,
+            0x3CE => self.gc_index = value & 0x0F,
             0x3CF => {
                 self.gc_regs[(self.gc_index & 0x0F) as usize] = value;
                 // Detect mode change when GC mode register (index 5) is written
@@ -514,30 +531,20 @@ impl IoDevice for VgaDevice {
             }
 
             // --- CRTC index (with CGA mirrors) ---
-            0x3D0 | 0x3D2 | 0x3D4 => self.crtc_index = value,
+            0x3D0 | 0x3D2 | 0x3D4 => self.crtc_index = value & 0x3F,
 
             // --- CRTC data (with CGA mirrors) ---
+            // The VGA has CRTC registers 00h-18h, all eight bits wide.
             0x3D1 | 0x3D3 | 0x3D5 => {
-                if self.crtc_index <= 17 {
-                    let masked = match self.crtc_index {
-                        0x04 => value & 0x7F,
-                        0x05 => value & 0x1F,
-                        0x06 => value & 0x7F,
-                        0x07 => value & 0x7F,
-                        0x09 => value & 0x1F,
-                        0x0A => value & 0x7F,
-                        0x0B => value & 0x1F,
-                        0x0C => value & 0x3F,
-                        _ => value,
-                    };
-                    self.crtc_regs[self.crtc_index as usize] = masked;
+                if self.crtc_index <= 0x18 {
+                    self.crtc_regs[self.crtc_index as usize] = value;
                 }
             }
 
             // --- CGA mode control ---
             0x3D8 => {
                 self.mode_register = value;
-                self.blink_mode = value & 0x20 != 0;
+                self.set_blink_mode(value & 0x20 != 0);
             }
 
             // --- CGA color select ---
@@ -548,110 +555,6 @@ impl IoDevice for VgaDevice {
             _ => {}
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Color / character helpers
-// ---------------------------------------------------------------------------
-
-/// Map CGA 4-bit color index to crossterm Color.
-pub fn cga_to_color(index: u8) -> Color {
-    match index & 0x0F {
-        0x00 => Color::Rgb { r: 0, g: 0, b: 0 },
-        0x01 => Color::Rgb { r: 0, g: 0, b: 170 },
-        0x02 => Color::Rgb { r: 0, g: 170, b: 0 },
-        0x03 => Color::Rgb { r: 0, g: 170, b: 170 },
-        0x04 => Color::Rgb { r: 170, g: 0, b: 0 },
-        0x05 => Color::Rgb { r: 170, g: 0, b: 170 },
-        0x06 => Color::Rgb { r: 170, g: 85, b: 0 },
-        0x07 => Color::Rgb { r: 170, g: 170, b: 170 },
-        0x08 => Color::Rgb { r: 85, g: 85, b: 85 },
-        0x09 => Color::Rgb { r: 85, g: 85, b: 255 },
-        0x0A => Color::Rgb { r: 85, g: 255, b: 85 },
-        0x0B => Color::Rgb { r: 85, g: 255, b: 255 },
-        0x0C => Color::Rgb { r: 255, g: 85, b: 85 },
-        0x0D => Color::Rgb { r: 255, g: 85, b: 255 },
-        0x0E => Color::Rgb { r: 255, g: 255, b: 85 },
-        0x0F => Color::Rgb { r: 255, g: 255, b: 255 },
-        _ => Color::Rgb { r: 170, g: 170, b: 170 },
-    }
-}
-
-/// Map CP437 byte to Unicode for common box drawing and special characters.
-pub fn cp437_to_unicode(byte: u8) -> char {
-    const TABLE: [char; 256] = {
-        let mut t = [' '; 256];
-
-        t[0x01] = '\u{263A}'; t[0x02] = '\u{263B}'; t[0x03] = '\u{2665}';
-        t[0x04] = '\u{2666}'; t[0x05] = '\u{2663}'; t[0x06] = '\u{2660}';
-        t[0x07] = '\u{2022}'; t[0x08] = '\u{25D8}'; t[0x09] = '\u{25CB}';
-        t[0x0A] = '\u{25D9}'; t[0x0B] = '\u{2642}'; t[0x0C] = '\u{2640}';
-        t[0x0D] = '\u{266A}'; t[0x0E] = '\u{266B}'; t[0x0F] = '\u{263C}';
-        t[0x10] = '\u{25BA}'; t[0x11] = '\u{25C4}'; t[0x12] = '\u{2195}';
-        t[0x13] = '\u{203C}'; t[0x14] = '\u{00B6}'; t[0x15] = '\u{00A7}';
-        t[0x16] = '\u{25AC}'; t[0x17] = '\u{21A8}'; t[0x18] = '\u{2191}';
-        t[0x19] = '\u{2193}'; t[0x1A] = '\u{2192}'; t[0x1B] = '\u{2190}';
-        t[0x1C] = '\u{221F}'; t[0x1D] = '\u{2194}'; t[0x1E] = '\u{25B2}';
-        t[0x1F] = '\u{25BC}';
-
-        let mut i = 0x20u16;
-        while i <= 0x7E {
-            t[i as usize] = i as u8 as char;
-            i += 1;
-        }
-        t[0x7F] = '\u{2302}';
-
-        t[0x80] = '\u{00C7}'; t[0x81] = '\u{00FC}'; t[0x82] = '\u{00E9}';
-        t[0x83] = '\u{00E2}'; t[0x84] = '\u{00E4}'; t[0x85] = '\u{00E0}';
-        t[0x86] = '\u{00E5}'; t[0x87] = '\u{00E7}'; t[0x88] = '\u{00EA}';
-        t[0x89] = '\u{00EB}'; t[0x8A] = '\u{00E8}'; t[0x8B] = '\u{00EF}';
-        t[0x8C] = '\u{00EE}'; t[0x8D] = '\u{00EC}'; t[0x8E] = '\u{00C4}';
-        t[0x8F] = '\u{00C5}'; t[0x90] = '\u{00C9}'; t[0x91] = '\u{00E6}';
-        t[0x92] = '\u{00C6}'; t[0x93] = '\u{00F4}'; t[0x94] = '\u{00F6}';
-        t[0x95] = '\u{00F2}'; t[0x96] = '\u{00FB}'; t[0x97] = '\u{00F9}';
-        t[0x98] = '\u{00FF}'; t[0x99] = '\u{00D6}'; t[0x9A] = '\u{00DC}';
-        t[0x9B] = '\u{00A2}'; t[0x9C] = '\u{00A3}'; t[0x9D] = '\u{00A5}';
-        t[0x9E] = '\u{20A7}'; t[0x9F] = '\u{0192}';
-        t[0xA0] = '\u{00E1}'; t[0xA1] = '\u{00ED}'; t[0xA2] = '\u{00F3}';
-        t[0xA3] = '\u{00FA}'; t[0xA4] = '\u{00F1}'; t[0xA5] = '\u{00D1}';
-        t[0xA6] = '\u{00AA}'; t[0xA7] = '\u{00BA}'; t[0xA8] = '\u{00BF}';
-        t[0xA9] = '\u{2310}'; t[0xAA] = '\u{00AC}'; t[0xAB] = '\u{00BD}';
-        t[0xAC] = '\u{00BC}'; t[0xAD] = '\u{00A1}'; t[0xAE] = '\u{00AB}';
-        t[0xAF] = '\u{00BB}';
-
-        t[0xB0] = '\u{2591}'; t[0xB1] = '\u{2592}'; t[0xB2] = '\u{2593}';
-        t[0xB3] = '\u{2502}'; t[0xB4] = '\u{2524}'; t[0xB5] = '\u{2561}';
-        t[0xB6] = '\u{2562}'; t[0xB7] = '\u{2556}'; t[0xB8] = '\u{2555}';
-        t[0xB9] = '\u{2563}'; t[0xBA] = '\u{2551}'; t[0xBB] = '\u{2557}';
-        t[0xBC] = '\u{255D}'; t[0xBD] = '\u{255C}'; t[0xBE] = '\u{255B}';
-        t[0xBF] = '\u{2510}'; t[0xC0] = '\u{2514}'; t[0xC1] = '\u{2534}';
-        t[0xC2] = '\u{252C}'; t[0xC3] = '\u{251C}'; t[0xC4] = '\u{2500}';
-        t[0xC5] = '\u{253C}'; t[0xC6] = '\u{255E}'; t[0xC7] = '\u{255F}';
-        t[0xC8] = '\u{255A}'; t[0xC9] = '\u{2554}'; t[0xCA] = '\u{2569}';
-        t[0xCB] = '\u{2566}'; t[0xCC] = '\u{2560}'; t[0xCD] = '\u{2550}';
-        t[0xCE] = '\u{256C}'; t[0xCF] = '\u{2567}'; t[0xD0] = '\u{2568}';
-        t[0xD1] = '\u{2564}'; t[0xD2] = '\u{2565}'; t[0xD3] = '\u{2559}';
-        t[0xD4] = '\u{2558}'; t[0xD5] = '\u{2552}'; t[0xD6] = '\u{2553}';
-        t[0xD7] = '\u{256B}'; t[0xD8] = '\u{256A}'; t[0xD9] = '\u{2518}';
-        t[0xDA] = '\u{250C}'; t[0xDB] = '\u{2588}'; t[0xDC] = '\u{2584}';
-        t[0xDD] = '\u{258C}'; t[0xDE] = '\u{2590}'; t[0xDF] = '\u{2580}';
-
-        t[0xE0] = '\u{03B1}'; t[0xE1] = '\u{00DF}'; t[0xE2] = '\u{0393}';
-        t[0xE3] = '\u{03C0}'; t[0xE4] = '\u{03A3}'; t[0xE5] = '\u{03C3}';
-        t[0xE6] = '\u{00B5}'; t[0xE7] = '\u{03C4}'; t[0xE8] = '\u{03A6}';
-        t[0xE9] = '\u{0398}'; t[0xEA] = '\u{03A9}'; t[0xEB] = '\u{03B4}';
-        t[0xEC] = '\u{221E}'; t[0xED] = '\u{03C6}'; t[0xEE] = '\u{03B5}';
-        t[0xEF] = '\u{2229}'; t[0xF0] = '\u{2261}'; t[0xF1] = '\u{00B1}';
-        t[0xF2] = '\u{2265}'; t[0xF3] = '\u{2264}'; t[0xF4] = '\u{2320}';
-        t[0xF5] = '\u{2321}'; t[0xF6] = '\u{00F7}'; t[0xF7] = '\u{2248}';
-        t[0xF8] = '\u{00B0}'; t[0xF9] = '\u{2219}'; t[0xFA] = '\u{00B7}';
-        t[0xFB] = '\u{221A}'; t[0xFC] = '\u{207F}'; t[0xFD] = '\u{00B2}';
-        t[0xFE] = '\u{25A0}'; t[0xFF] = '\u{00A0}';
-
-        t
-    };
-
-    TABLE[byte as usize]
 }
 
 // ---------------------------------------------------------------------------
@@ -689,6 +592,188 @@ mod inspection_tests {
         vga.port_out_byte(0x3D4, 0x0E, &mut rt.cpu);
         let got = vga.port_in_byte(0x3D5, &mut rt.cpu);
         assert_eq!(got, 0xAB);
+    }
+
+    /// Regression: the retrace bits were driven by a count of status reads,
+    /// so their timing depended on how often the guest looked. They follow
+    /// the timer clock: 70 frames per second, vertical retrace at the end
+    /// of each frame.
+    #[test]
+    fn input_status_1_follows_the_timer_clock_not_the_reads() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        let clock = vga.timer_clock();
+        let mut status = |at: u64| {
+            clock.set(at);
+            vga.port_in_byte(0x3DA, &mut rt.cpu)
+        };
+
+        // Reading does not move time.
+        for _ in 0..100_000 {
+            assert_eq!(status(0) & 0x08, 0);
+        }
+
+        let retrace_start = FRAME_CLOCKS - VRETRACE_CLOCKS;
+        assert_eq!(status(retrace_start - 1) & 0x08, 0);
+        assert_eq!(status(retrace_start) & 0x08, 0x08);
+        assert_eq!(status(FRAME_CLOCKS - 1) & 0x08, 0x08);
+        assert_eq!(status(FRAME_CLOCKS) & 0x08, 0, "next frame");
+        assert_eq!(status(70 * FRAME_CLOCKS + retrace_start) & 0x08, 0x08);
+    }
+
+    /// Regression: bit 0 kept toggling during vertical retrace. It reports
+    /// "display off", which covers the horizontal blank and the retrace.
+    #[test]
+    fn display_off_bit_covers_horizontal_blank_and_vertical_retrace() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        let clock = vga.timer_clock();
+        let mut blank_clocks = 0;
+        for at in 0..FRAME_CLOCKS {
+            clock.set(at);
+            let status = vga.port_in_byte(0x3DA, &mut rt.cpu);
+            if status & 0x08 != 0 {
+                assert_eq!(status & 0x01, 0x01, "display off during retrace, clock {at}");
+            } else if status & 0x01 != 0 {
+                blank_clocks += 1;
+            }
+        }
+        // Outside the retrace, every line ends with a blank.
+        let lines = (FRAME_CLOCKS - VRETRACE_CLOCKS) / LINE_CLOCKS;
+        assert_eq!(blank_clocks, lines * HBLANK_CLOCKS);
+
+        clock.set(0);
+        assert_eq!(vga.port_in_byte(0x3DA, &mut rt.cpu) & 0x01, 0, "start of a line");
+        clock.set(LINE_CLOCKS - 1);
+        assert_eq!(vga.port_in_byte(0x3DA, &mut rt.cpu) & 0x01, 0x01, "end of a line");
+    }
+
+    fn write_crtc(vga: &mut VgaDevice, rt: &mut Runtime, index: u8, value: u8) {
+        vga.port_out_byte(0x3D4, index, &mut rt.cpu);
+        vga.port_out_byte(0x3D5, value, &mut rt.cpu);
+    }
+
+    fn read_crtc(vga: &mut VgaDevice, rt: &mut Runtime, index: u8) -> u8 {
+        vga.port_out_byte(0x3D4, index, &mut rt.cpu);
+        vga.port_in_byte(0x3D5, &mut rt.cpu)
+    }
+
+    /// Regression: displayed cells wrapped at 16 KB, the CGA limit, so
+    /// display pages 4-7 of the 32 KB text buffer showed pages 0-3.
+    #[test]
+    fn display_pages_4_to_7_are_addressable() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        // Page 4 starts 4 * 2048 cells into the buffer.
+        write_crtc(&mut vga, &mut rt, 0x0C, 0x20);
+        write_crtc(&mut vga, &mut rt, 0x0D, 0x00);
+        assert_eq!(vga.text_cell_address(0), 0xBC000);
+        assert_eq!(vga.text_cell_address(1999), 0xBC000 + 1999 * 2);
+
+        // Cursor at row 1, column 2 of that page.
+        write_crtc(&mut vga, &mut rt, 0x0E, 0x20);
+        write_crtc(&mut vga, &mut rt, 0x0F, 82);
+        assert_eq!(vga.visible_cursor_cell(), Some(82));
+
+        // Page 7 ends at the end of the buffer; the next cell wraps.
+        write_crtc(&mut vga, &mut rt, 0x0C, 0x38);
+        assert_eq!(vga.text_cell_address(2047), 0xBFFFE);
+        assert_eq!(vga.text_cell_address(2048), 0xB8000);
+    }
+
+    /// Regression: CRTC register 01h was taken as a column count. The VGA
+    /// value is the count minus one, so the standard 4Fh gave 79 columns.
+    #[test]
+    fn column_count_accepts_vga_and_6845_values() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        assert_eq!(vga.cols(), 80, "power-on");
+        for (value, cols) in [(0x4F, 80), (0x27, 40), (80, 80), (40, 40), (0xFF, 80)] {
+            write_crtc(&mut vga, &mut rt, 0x01, value);
+            assert_eq!(vga.cols(), cols, "CRTC 01h = {value:#04X}");
+        }
+    }
+
+    /// Regression: CRTC registers 12h-18h ignored writes, and several
+    /// others were cut to their 6845 widths.
+    #[test]
+    fn crtc_registers_up_to_18h_read_back_what_was_written() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        for index in 0x00..=0x18 {
+            write_crtc(&mut vga, &mut rt, index, 0xA5 ^ index);
+        }
+        for index in 0x00..=0x18 {
+            assert_eq!(read_crtc(&mut vga, &mut rt, index), 0xA5 ^ index, "index {index:#04X}");
+        }
+        // There is no register 19h.
+        write_crtc(&mut vga, &mut rt, 0x19, 0x77);
+        assert_eq!(read_crtc(&mut vga, &mut rt, 0x19), 0x00);
+    }
+
+    /// Regression: index registers kept all eight bits, and a graphics
+    /// controller write through an index with high bits set changed the
+    /// mode register without the video mode following.
+    #[test]
+    fn index_registers_keep_only_their_implemented_bits() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        for port in [0x3C4, 0x3CE, 0x3D4] {
+            vga.port_out_byte(port, 0xFF, &mut rt.cpu);
+        }
+        assert_eq!(vga.port_in_byte(0x3C4, &mut rt.cpu), 0x07, "sequencer");
+        assert_eq!(vga.port_in_byte(0x3CE, &mut rt.cpu), 0x0F, "graphics controller");
+        assert_eq!(vga.port_in_byte(0x3D4, &mut rt.cpu), 0x3F, "CRTC");
+
+        vga.port_in_byte(0x3DA, &mut rt.cpu); // attribute flip-flop to "index"
+        vga.port_out_byte(0x3C0, 0xFF, &mut rt.cpu);
+        assert_eq!(vga.port_in_byte(0x3C0, &mut rt.cpu), 0x3F, "attribute controller");
+
+        vga.port_out_byte(0x3CE, 0x15, &mut rt.cpu); // register 5
+        vga.port_out_byte(0x3CF, 0x40, &mut rt.cpu);
+        assert_eq!(vga.video_mode, VideoMode::Mode13h);
+    }
+
+    /// Regression: only the CGA mode port 3D8h switched between blinking
+    /// and bright backgrounds. On the VGA it is bit 3 of attribute
+    /// controller register 10h.
+    #[test]
+    fn attribute_mode_bit_3_selects_blink_or_bright_background() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        assert!(vga.blink_mode, "power-on");
+        assert!(vga.take_full_redraw());
+
+        let mut write_mode = |vga: &mut VgaDevice, value: u8| {
+            vga.port_in_byte(0x3DA, &mut rt.cpu);
+            vga.port_out_byte(0x3C0, 0x30, &mut rt.cpu);
+            vga.port_out_byte(0x3C0, value, &mut rt.cpu);
+        };
+
+        write_mode(&mut vga, 0x04);
+        assert!(!vga.blink_mode);
+        assert!(vga.take_full_redraw(), "cells with bit 7 set change colour");
+
+        write_mode(&mut vga, 0x04);
+        assert!(!vga.take_full_redraw(), "no change, no repaint");
+
+        write_mode(&mut vga, 0x0C);
+        assert!(vga.blink_mode);
+        assert!(vga.take_full_redraw());
+    }
+
+    /// Regression: the DAC state port always read 03h. It tells whether
+    /// the read index (03h) or the write index (00h) was set last.
+    #[test]
+    fn dac_state_reports_the_last_index_port_written() {
+        let mut vga = VgaDevice::new();
+        let mut rt = Runtime::new_test();
+        vga.port_out_byte(0x3C8, 0x10, &mut rt.cpu);
+        assert_eq!(vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03, 0x00, "write mode");
+        vga.port_out_byte(0x3C7, 0x10, &mut rt.cpu);
+        assert_eq!(vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03, 0x03, "read mode");
+        vga.port_out_byte(0x3C8, 0x10, &mut rt.cpu);
+        assert_eq!(vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03, 0x00, "write mode again");
     }
 
     /// `dac_to_rgb8` widens the 6-bit DAC components by bit replication
