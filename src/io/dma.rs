@@ -121,7 +121,9 @@ impl IoDevice for DmaController {
 /// DMA page registers at ports 0x81-0x87: a device of their own, because
 /// the bus gives each device one contiguous range of ports.
 ///
-/// These set the upper address bits (A16-A23) for each DMA channel.
+/// They supply the address bits above A15 for each DMA channel. Each is kept
+/// as a whole byte that reads back, as on the AT; the XT's hold four bits
+/// (A16-A19) and are write-only.
 /// Port mapping:
 ///   0x81 -> Channel 2
 ///   0x82 -> Channel 3
