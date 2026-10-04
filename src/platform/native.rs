@@ -6,12 +6,14 @@
 //! The invariant: every name here keeps the meaning `platform` gives it for
 //! all hosts. A caller that works with this side works with any other.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::Window;
 
@@ -94,6 +96,63 @@ pub fn create_window(event_loop: &ActiveEventLoop, title: &str, size: PhysicalSi
 /// Changes the title the host shows for `window`.
 pub fn set_title(window: &Window, title: &str) {
     window.set_title(title);
+}
+
+/// Runs `task` to its end. Here that is before this call returns: the
+/// thread may block on what the task waits for. A host whose thread may not
+/// runs the task later, from its event loop, so a caller takes what the
+/// task made from where the task put it, and not before it is there.
+pub fn spawn(task: impl Future<Output = ()> + 'static) {
+    pollster::block_on(task);
+}
+
+/// The window's events as egui's input, and what a pass of egui asks of the
+/// window in return: here, egui-winit's.
+pub struct OverlayInput(egui_winit::State);
+
+impl OverlayInput {
+    /// The input of the passes of `ctx`, gathered from `window`.
+    pub fn new(ctx: egui::Context, window: &Window) -> Self {
+        Self(egui_winit::State::new(
+            ctx,
+            egui::ViewportId::ROOT,
+            window,
+            Some(window.scale_factor() as f32),
+            window.theme(),
+            None,
+        ))
+    }
+
+    /// The longest side a texture of the overlay may have: the limit of
+    /// the device it is drawn with, known once there is one.
+    pub fn set_max_texture_side(&mut self, side: usize) {
+        self.0.set_max_texture_side(side);
+    }
+
+    /// Makes `event` part of the next pass's input. Returns whether egui
+    /// keeps the event for itself.
+    pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
+        self.0.on_window_event(window, event).consumed
+    }
+
+    /// Drops what was gathered: no pass will take it.
+    pub fn discard(&mut self) {
+        let input = self.0.egui_input_mut();
+        input.events.clear();
+        input.hovered_files.clear();
+        input.dropped_files.clear();
+    }
+
+    /// The input of a pass that is run now: all that was gathered since
+    /// the last call.
+    pub fn take(&mut self, window: &Window) -> egui::RawInput {
+        self.0.take_egui_input(window)
+    }
+
+    /// Heeds what a pass asks of the window: the cursor, the IME.
+    pub fn handle_output(&mut self, window: &Window, output: egui::PlatformOutput) {
+        self.0.handle_platform_output(window, output);
+    }
 }
 
 /// Lets `duration` of host time go by. Returns whether it did: a host

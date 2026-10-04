@@ -133,3 +133,14 @@ fn wait_lets_the_time_go_by() {
     assert!(wait(Duration::from_millis(20)));
     assert!(started.elapsed() >= Duration::from_millis(20));
 }
+
+/// On the desktop a spawned task has run to its end when `spawn` returns:
+/// what it made is where it put it.
+#[test]
+fn a_spawned_task_is_over_when_spawn_returns() {
+    let (done, made) = std::sync::mpsc::channel();
+    spawn(async move {
+        let _ = done.send("made");
+    });
+    assert_eq!(made.try_recv(), Ok("made"));
+}

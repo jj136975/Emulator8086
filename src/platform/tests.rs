@@ -1,7 +1,7 @@
 //! The rule of `platform` (`mod.rs`), checked against the app's own
 //! sources: the suite fails when a file outside this directory asks which
-//! host it is built for, reaches for a browser's own API, sleeps, or names
-//! a clock of `std::time`.
+//! host it is built for, reaches for a browser's own API, sleeps, blocks on
+//! a future, or names a clock of `std::time`.
 //!
 //! The invariant: a failure is a decision to take, not a list to extend.
 //! What depends on the host gets a name in `platform` that every host
@@ -28,8 +28,8 @@ const HOST_NAMES: [&str; 6] = [
 ];
 
 /// What only some hosts can do: a browser's one thread cannot be put to
-/// sleep.
-const HOST_CALLS: [&str; 1] = ["thread::sleep"];
+/// sleep, nor stand still until a future is ready.
+const HOST_CALLS: [&str; 2] = ["thread::sleep", "block_on"];
 
 /// The clocks of `std::time`, which panic on a host std has no clock for.
 /// `Duration` is not one of them: it reads nothing.
@@ -88,8 +88,9 @@ fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
 }
 
 /// No file of the app outside `platform` asks which host it is built for,
-/// names a browser's API, sleeps or names a clock of `std::time`: what
-/// depends on the host is called by the name `platform` gives it.
+/// names a browser's API, sleeps, blocks on a future or names a clock of
+/// `std::time`: what depends on the host is called by the name `platform`
+/// gives it.
 #[test]
 fn only_platform_knows_the_host() {
     let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join(SOURCES);
@@ -128,10 +129,12 @@ fn the_sweep_finds_what_platform_itself_does() {
         .join(HOME)
         .join("native.rs");
     let found = offences(&std::fs::read_to_string(native).unwrap(), false);
-    assert!(
-        found.iter().any(|(_, offence)| offence == "thread::sleep"),
-        "{found:?}"
-    );
+    for expected in HOST_CALLS {
+        assert!(
+            found.iter().any(|(_, offence)| offence == expected),
+            "{expected} in {found:?}"
+        );
+    }
 }
 
 /// Each way of doing what only `platform` may is caught, wherever rustfmt
@@ -149,6 +152,7 @@ fn what_depends_on_the_host_is_caught() {
         "let now = js_sys::Date::now();",
         "std::thread::sleep(duration);",
         "thread::sleep(IDLE_POLL);",
+        "let adapter = pollster::block_on(instance.request_adapter(&options));",
         "use std::time::Instant;",
         "use std::time::{Duration, Instant};",
         "use std::time::{\n    Duration,\n    SystemTime,\n    UNIX_EPOCH,\n};",
@@ -168,8 +172,8 @@ fn what_depends_on_the_host_is_caught() {
 }
 
 /// A duration reads no clock, a clock that comes from `platform` is the
-/// host's own, and a comment does nothing. A test may sleep; it may not ask
-/// for the host.
+/// host's own, and a comment does nothing. A test may sleep and block; it
+/// may not ask for the host.
 #[test]
 fn what_every_host_can_do_is_not_caught() {
     for innocent in [
@@ -181,10 +185,18 @@ fn what_every_host_can_do_is_not_caught() {
         "// std::thread::sleep would block the page: #[cfg(target_arch)] is platform's",
         "/// Never `std::time::Instant` here.",
         "platform::wait(duration);",
+        "platform::spawn(async move { ready.send(start_up.await) });",
     ] {
         assert!(offences(innocent, false).is_empty(), "caught: {innocent}");
     }
     assert!(offences("std::thread::sleep(FRAME);", true).is_empty());
+    assert!(
+        offences(
+            "pollster::block_on(adapter.request_device(&descriptor))",
+            true
+        )
+        .is_empty()
+    );
     assert!(!offences("#[cfg(target_arch = \"wasm32\")]", true).is_empty());
     assert!(!offences("use std::time::Instant;", true).is_empty());
 }

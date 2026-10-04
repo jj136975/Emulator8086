@@ -9,6 +9,11 @@
 //! - The guest runs only inside `RedrawRequested`, so a redraw must always
 //!   be pending. The loop asks for one after every frame and whenever it is
 //!   about to wait; a path that stops asking stops the machine.
+//! - The window comes first and the renderer when its start-up is over,
+//!   which on some hosts is after the event loop has turned
+//!   (`platform::spawn`). The renderer is taken from where its start-up
+//!   puts it, never assumed to be there: until it is, a redraw runs no
+//!   frame, so the machine starts with its picture.
 //! - The overlay's key is the window's: neither egui nor the guest sees it.
 //!   Every other event goes to egui first, and a key goes on to the guest
 //!   unless egui kept it or the overlay has the keyboard (`Session::key`).
@@ -25,7 +30,7 @@ mod renderer;
 mod session;
 
 use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -34,7 +39,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::platform;
+use crate::platform::{self, OverlayInput};
 use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
 use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
@@ -48,16 +53,41 @@ const OVERLAY_KEY: PhysicalKey = PhysicalKey::Code(KeyCode::F12);
 const TITLE: &str = "Emulator 8086";
 const TITLE_PAUSED: &str = "Emulator 8086 (paused)";
 
-/// What there is from the moment the window is: the window, what draws
-/// into it, and egui's side of it.
+/// What there is from the moment the window is: the window, egui's side of
+/// it, and what draws into it once that has started up.
 struct Front {
     window: Arc<Window>,
-    renderer: Renderer,
+    /// What draws into the window. `None` until its start-up is over.
+    renderer: Option<Renderer>,
+    /// Where the renderer's start-up puts it.
+    starting: Receiver<Renderer>,
     /// The window's events as egui's input, and what egui asks of the
     /// window in return: the cursor, the IME.
-    egui: egui_winit::State,
+    egui: OverlayInput,
     /// Whether the title says that the machine is paused.
     titled_paused: bool,
+}
+
+impl Front {
+    /// Takes the renderer if its start-up is over, and tells it and egui
+    /// what neither could know before: the size the window has by now, and
+    /// how large a texture the device takes.
+    fn adopt_renderer(&mut self) {
+        if self.renderer.is_some() {
+            return;
+        }
+        let Ok(mut renderer) = self.starting.try_recv() else {
+            return;
+        };
+        // A resize that came while the renderer was on its way found no
+        // renderer to tell.
+        let size = self.window.inner_size();
+        if renderer.size() != (size.width, size.height) {
+            renderer.resize(size.width, size.height);
+        }
+        self.egui.set_max_texture_side(renderer.max_texture_side());
+        self.renderer = Some(renderer);
+    }
 }
 
 struct EmulatorApp {
@@ -78,7 +108,7 @@ impl EmulatorApp {
         {
             front
                 .egui
-                .handle_platform_output(&front.window, egui::PlatformOutput::default());
+                .handle_output(&front.window, egui::PlatformOutput::default());
         }
     }
 
@@ -88,37 +118,39 @@ impl EmulatorApp {
         let Some(front) = &mut self.front else {
             return false;
         };
-        let response = front.egui.on_window_event(&front.window, event);
+        let kept = front.egui.on_window_event(&front.window, event);
         if !self.session.overlay.draws() {
             // No pass will take the input this event became: left where
             // it is, it would pile up and be replayed when the overlay is
             // shown.
-            let input = front.egui.egui_input_mut();
-            input.events.clear();
-            input.hovered_files.clear();
-            input.dropped_files.clear();
+            front.egui.discard();
         }
-        self.session.overlay.visible() && response.consumed
+        self.session.overlay.visible() && kept
     }
 
     /// One frame: the session runs the guest and the overlay, the renderer
-    /// draws both, and the next redraw is asked for.
+    /// draws both, and the next redraw is asked for. Without a renderer yet
+    /// there is no frame, only the asking.
     fn redraw(&mut self) {
         let Some(front) = &mut self.front else {
             return;
         };
-        let passed = self
-            .session
-            .frame(|| front.egui.take_egui_input(&front.window));
+        front.adopt_renderer();
+        let Some(renderer) = &mut front.renderer else {
+            front.window.request_redraw();
+            return;
+        };
+
+        let passed = self.session.frame(|| front.egui.take(&front.window));
         if passed {
             let wishes = self.session.overlay.take_platform_output();
-            front.egui.handle_platform_output(&front.window, wishes);
+            front.egui.handle_output(&front.window, wishes);
         }
 
         if let Some(vga) = &self.session.runtime.vga {
             let overlay = passed.then_some(&mut self.session.overlay);
             let memory = &self.session.runtime.cpu.memory;
-            front.renderer.render(&vga.borrow(), memory, overlay);
+            renderer.render(&vga.borrow(), memory, overlay);
         }
 
         let paused = self.session.paused();
@@ -142,22 +174,27 @@ impl ApplicationHandler for EmulatorApp {
             TITLE,
             PhysicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
         ));
+        let egui = OverlayInput::new(self.session.overlay.context().clone(), &window);
 
-        let renderer = Renderer::new(window.clone(), event_loop.owned_display_handle());
-        let egui = egui_winit::State::new(
-            self.session.overlay.context().clone(),
-            egui::ViewportId::ROOT,
-            window.as_ref(),
-            Some(window.scale_factor() as f32),
-            window.theme(),
-            Some(renderer.max_texture_side()),
-        );
-        self.front = Some(Front {
+        // The renderer's start-up ends when the host lets it, and leaves
+        // the renderer in this channel: `adopt_renderer` looks there.
+        let (ready, starting) = mpsc::channel();
+        let start_up = Renderer::new(window.clone(), event_loop.owned_display_handle());
+        platform::spawn(async move {
+            // The window may be gone by then, and nobody waiting.
+            let _ = ready.send(start_up.await);
+        });
+
+        let mut front = Front {
             window,
-            renderer,
+            renderer: None,
+            starting,
             egui,
             titled_paused: false,
-        });
+        };
+        // On a host that may block, the start-up is over already.
+        front.adopt_renderer();
+        self.front = Some(front);
     }
 
     fn window_event(
@@ -189,8 +226,10 @@ impl ApplicationHandler for EmulatorApp {
             }
 
             WindowEvent::Resized(size) => {
-                if let Some(front) = &mut self.front {
-                    front.renderer.resize(size.width, size.height);
+                if let Some(front) = &mut self.front
+                    && let Some(renderer) = &mut front.renderer
+                {
+                    renderer.resize(size.width, size.height);
                 }
             }
 

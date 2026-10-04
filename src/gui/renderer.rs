@@ -629,11 +629,14 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// `display` is the event loop's display handle, the one `window` was
-    /// created on.
-    pub fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
-        let size = window.inner_size();
-
+    /// Starts a renderer for `window`. `display` is the event loop's
+    /// display handle, the one `window` was created on.
+    ///
+    /// The adapter and the device are asked for and awaited: a host that
+    /// may block has them at once, another only after it has gone back to
+    /// its event loop (`platform::spawn`). Until then the window is there
+    /// without a renderer.
+    pub async fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
         // Every backend the build has. The GL backend presents through the
         // display the instance was given, so it gets the event loop's.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
@@ -642,17 +645,24 @@ impl Renderer {
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .expect("Failed to find GPU adapter");
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+                apply_limit_buckets: false,
+            })
+            .await
+            .expect("Failed to find GPU adapter");
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&device_descriptor()))
+        let (device, queue) = adapter
+            .request_device(&device_descriptor())
+            .await
             .expect("Failed to create GPU device");
 
+        // Measured after the waits: the window may have got its size, or
+        // another one, while the device was on its way.
+        let size = window.inner_size();
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = window_format(&surface_caps.formats);
 
@@ -694,6 +704,11 @@ impl Renderer {
     /// egui's font atlas.
     pub fn max_texture_side(&self) -> usize {
         self.device.limits().max_texture_dimension_2d as usize
+    }
+
+    /// Width and height the surface is configured for, in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
