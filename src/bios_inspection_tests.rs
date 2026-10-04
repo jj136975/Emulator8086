@@ -1,8 +1,10 @@
-//! Inspection tests for the BIOS ROM binary (assets/rom/bios.bin).
+//! Static checks of the BIOS ROM image (`assets/rom/bios.bin`): these tests
+//! inspect the bytes `include_bytes!` compiles in, the image as build.rs
+//! left it, without running it. The tests that run the BIOS are in
+//! `bios_tests.rs`.
 //!
-//! These are static/structural tests — they inspect the compiled ROM bytes
-//! without running the emulator. They complement the runtime tests in the
-//! io/vm modules.
+//! The invariant: nothing here executes the ROM. A property that only shows
+//! when the BIOS runs belongs in `bios_tests.rs`, on a powered-on machine.
 
 const BIOS_BIN: &[u8] = include_bytes!("../assets/rom/bios.bin");
 
@@ -16,9 +18,9 @@ fn rom_is_exactly_64kb() {
     );
 }
 
-/// Reset vector at offset 0xFFF0 in the ROM (= physical 0xFFFF0) should be
-/// a valid x86 instruction — almost always a FAR JMP (opcode 0xEA) to the
-/// entry point. Anything else means the CPU would execute data on reset.
+/// The reset vector at ROM offset 0xFFF0 (physical 0xFFFF0) is a far JMP
+/// (opcode 0xEA) to the entry point: the CPU starts executing there, and
+/// anything else would run data on reset.
 #[test]
 fn reset_vector_is_far_jump() {
     let opcode = BIOS_BIN[0xFFF0];

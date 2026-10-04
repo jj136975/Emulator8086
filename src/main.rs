@@ -1,3 +1,14 @@
+//! The command line and start-up: `Cli` (its doc comments are the `--help`
+//! text), and `run`, which builds the machine the options describe, loads
+//! the ROM and hands the machine to the frontend: the terminal, or the
+//! window with the `gui` feature. The crate's modules are declared here,
+//! the crate-level test modules and the build script's tests among them.
+//!
+//! The invariant: whatever the user can fix (a bad option value, a disk
+//! image or ROM that cannot be used) is an `Err` from `run` carrying a
+//! message for the user, which `main` prints before exiting with status 1,
+//! never a panic.
+
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -31,7 +42,7 @@ mod build_script;
 struct Cli {
     /// Path to the BIOS ROM image (e.g. assets/rom/bios.bin)
     rom: PathBuf,
-    /// Floppy disk: [DRIVE:]SOURCE with DRIVE a-d (default a) and SOURCE an image file,
+    /// Floppy disk: SOURCE or DRIVE:SOURCE, with DRIVE a-d (default a) and SOURCE an image file,
     /// `memory` or `memory:KB` (e.g. a:boot.img, b:memory, a:C:\path\to\image.img).
     /// Append :ro to write-protect the disk.
     #[arg(long, action = clap::ArgAction::Append)]

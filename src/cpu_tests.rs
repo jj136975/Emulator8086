@@ -2,16 +2,15 @@
 //!
 //! Test data lives in `8086/v1/*.json.gz` — 2,000 tests per file (one file
 //! per opcode, or per ModR/M `reg` value for group opcodes) captured from a
-//! physical Intel P80C86A-2 CPU.
+//! physical Intel P80C86A-2 CPU. The tests are ignored by default:
+//!     cargo test cpu_tests -- --ignored                   (all of them)
+//!     cargo test cpu_tests::test_opcode_00 -- --ignored   (one opcode)
+//!     cargo test cpu_tests::test_opcode_0 -- --ignored    (00–0e)
 //!
-//! Run all CPU tests:
-//!     cargo test cpu_tests -- --ignored
-//!
-//! Run a single opcode:
-//!     cargo test cpu_tests::test_opcode_00 -- --ignored
-//!
-//! Run a range:
-//!     cargo test cpu_tests::test_opcode_0 -- --ignored   (matches 00–0e)
+//! The invariant: the hardware is the reference. A test compares every
+//! register and every RAM byte the capture records, leaving out only the
+//! flag bits the suite's metadata marks undefined, and an opcode whose
+//! vectors cannot be found fails instead of passing on nothing.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -172,7 +171,6 @@ fn find_test_files(opcode_hex: &str) -> Vec<(PathBuf, String)> {
 fn setup_vm(initial: &InitialState) -> Runtime {
     let mut vm = Runtime::new_test();
 
-    // General purpose registers
     vm.cpu.registers.ax.set(initial.regs.ax);
     vm.cpu.registers.bx.set(initial.regs.bx);
     vm.cpu.registers.cx.set(initial.regs.cx);
@@ -182,17 +180,15 @@ fn setup_vm(initial: &InitialState) -> Runtime {
     vm.cpu.registers.si.set(initial.regs.si);
     vm.cpu.registers.di.set(initial.regs.di);
 
-    // Segment registers
     vm.cpu.registers.cs.reg_mut().set(initial.regs.cs);
     vm.cpu.registers.ds.reg_mut().set(initial.regs.ds);
     vm.cpu.registers.es.reg_mut().set(initial.regs.es);
     vm.cpu.registers.ss.reg_mut().set(initial.regs.ss);
 
-    // IP and flags
     vm.cpu.registers.pc.set(initial.regs.ip);
     vm.cpu.flags = initial.regs.flags;
 
-    // RAM (physical addresses)
+    // The capture lists RAM bytes by physical address.
     for &(addr, value) in &initial.ram {
         vm.cpu.memory.write_byte(addr as usize, value);
     }
@@ -245,7 +241,8 @@ fn actual_reg(vm: &Runtime, name: &str) -> u16 {
 fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
     let mut vm = setup_vm(&test.initial);
 
-    // Execute: one process() call per prefix byte, plus one for the instruction
+    // `process` consumes each prefix byte in a call of its own, then the
+    // instruction in one more.
     let num_prefixes = test
         .bytes
         .iter()
@@ -257,7 +254,7 @@ fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
 
     let mut mismatches = Vec::new();
 
-    // Check registers (excluding flags — handled separately)
+    // FLAGS is compared below, under the opcode's mask.
     const REG_NAMES: [&str; 13] = [
         "ax", "bx", "cx", "dx", "sp", "bp", "si", "di", "cs", "ds", "es", "ss", "ip",
     ];
@@ -278,7 +275,6 @@ fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
         }
     }
 
-    // Check flags with mask
     let expected_flags = test
         .final_state
         .regs
@@ -296,9 +292,9 @@ fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
         ));
     }
 
-    // Check RAM — when an exception dispatches (SP decreased by 6, meaning 3 words
-    // were pushed: FLAGS, CS, IP), mask the stacked FLAGS bytes with flags_mask so
-    // that "undefined" flag bits don't cause spurious failures.
+    // When an exception dispatches (SP down by 6: FLAGS, CS and IP pushed),
+    // the stacked FLAGS bytes are compared under flags_mask too, so that
+    // undefined flag bits cause no spurious failures.
     let init_sp = test.initial.regs.sp;
     let final_sp = actual_reg(&vm, "sp");
     let stacked_flags_addrs: Option<(u32, u32)> =

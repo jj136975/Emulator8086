@@ -3,6 +3,12 @@
 //! Each test powers the machine on, lets the BIOS get as far as it can, and
 //! then either inspects the result or runs a small guest stub that calls a
 //! BIOS service.
+//!
+//! The invariant: `run_stub` waits for its stub to park in the `CLI; HLT` it
+//! appends (the test boot sector parks the same way), and the BIOS never
+//! parks: it halts only with interrupts enabled, waiting for a key.
+//! `Machine::parked` tells the two apart by that alone, and `run_until`
+//! gives up after `MAX_FRAMES` batches instead of hanging the suite.
 
 use std::sync::mpsc::Sender;
 
@@ -196,8 +202,8 @@ fn boots_floppy_before_hard_disk_by_default() {
     assert_eq!(machine.booted_drive(), Some(0x00));
 }
 
-/// Regression: the boot order given on the command line never reached the
-/// BIOS, which always tried floppy A: first.
+/// The boot order given on the command line reaches the BIOS, which tries
+/// the drives in that order rather than floppy A: first.
 #[test]
 fn boot_order_from_the_emulator_is_honoured() {
     let mut controller = disks(vec![
@@ -224,9 +230,8 @@ fn boot_skips_missing_drives() {
     assert_eq!(machine.booted_drive(), Some(0x80));
 }
 
-/// Regression: the retry counter shared a register with the sector number,
-/// so the failure path was unreachable and the BIOS scanned ROM bytes as
-/// drive numbers forever.
+/// When no drive boots, the BIOS reaches its failure path: it says so and
+/// waits, with interrupts enabled, for a key to try again.
 #[test]
 fn no_bootable_disk_reports_and_waits_for_a_key() {
     let machine = Machine::boot(disks(vec![(0x00, blank_floppy())]));
@@ -280,9 +285,8 @@ fn reset_reboots_the_guest() {
 // Keyboard
 // ---------------------------------------------------------------------------
 
-/// Regression: a scancode that arrived before the BIOS programmed the
-/// interrupt controller lost its IRQ1 and was never acknowledged, which
-/// blocked every later key for the whole session.
+/// A key pressed before the BIOS has programmed the interrupt controller
+/// does not block the keyboard: the keys after it still reach the guest.
 #[test]
 fn key_pressed_before_boot_does_not_block_the_keyboard() {
     let mut machine = Machine::power_on(disks(vec![]));
@@ -324,10 +328,9 @@ fn machine_uses_the_keyboard_supplied_by_the_frontend() {
     );
 }
 
-/// Regression: the terminal keyboard pressed Shift according to the host's
-/// modifier flag rather than the character, so a character the host reports
-/// without that flag (most terminals flag Shift for capital letters only)
-/// arrived as the other character on its key: ':' became ';'.
+/// The terminal keyboard presses Shift according to the character, not the
+/// host's modifier flag: most terminals flag Shift for capital letters only,
+/// and a ':' reported without the flag still arrives as ':', not ';'.
 #[test]
 fn characters_typed_in_the_terminal_reach_the_guest_unchanged() {
     use crate::io::keyboard::KeyTranslator;
@@ -351,8 +354,8 @@ fn characters_typed_in_the_terminal_reach_the_guest_unchanged() {
 // INT 13h — disk
 // ---------------------------------------------------------------------------
 
-/// Regression: the handler returned through `retf 2` without re-enabling
-/// interrupts, so every disk call left the caller with IF=0.
+/// INT 13h returns through `retf 2`, so the caller gets the handler's own
+/// flags: interrupts enabled, and the carry flag of the disk trap.
 #[test]
 fn int13_returns_with_interrupts_enabled() {
     let mut machine = Machine::boot(disks(vec![]));
@@ -376,7 +379,7 @@ fn int13_returns_with_interrupts_enabled() {
 // INT 10h — video
 // ---------------------------------------------------------------------------
 
-/// Regression: AH=00h used BX as scratch without saving it.
+/// AH=00h preserves BX, CX, DX, SI, DI and BP.
 #[test]
 fn int10_set_mode_preserves_registers() {
     let mut machine = Machine::boot(disks(vec![]));
@@ -403,9 +406,8 @@ fn int10_set_mode_preserves_registers() {
 // Timer — 8253 channel 0 -> IRQ0 -> INT 08h
 // ---------------------------------------------------------------------------
 
-/// Regression: the GUI ran one batch of instructions per displayed frame, so
-/// a guest idling in HLT was looked at once per frame. Within a time slice
-/// it is polled every millisecond and its timer keeps ticking.
+/// Within a time slice a guest idling in HLT is looked at every millisecond,
+/// not once per displayed frame, so its timer keeps ticking.
 #[test]
 fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
     // The BIOS has programmed 18.2 Hz and waits for a key in HLT.
@@ -419,10 +421,9 @@ fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
     );
 }
 
-/// Regression: the vertical retrace bit of port 3DAh advanced with every
-/// read of the port, so a program that paces itself by waiting for retrace
-/// ran at a speed set by the host. It follows timer time: 70 frames in a
-/// second, however that second is delivered.
+/// The vertical retrace bit of port 3DAh follows timer time, not the reads
+/// of the port: 70 frames in a second, however that second is delivered, so
+/// a program that paces itself by retrace runs at the same speed on any host.
 #[test]
 fn vertical_retrace_comes_70_times_per_second_of_timer_time() {
     let mut machine = Machine::boot(disks(vec![]));
@@ -466,9 +467,9 @@ fn machine_with_timer(control: u8, divisor: u16, idle: &[u8]) -> Machine {
     machine
 }
 
-/// Regression: mode 2 holds its output low for a single clock, so both edges
-/// always fell into the same batch of timer time and the interrupt request
-/// was withdrawn before a halted guest could see it.
+/// Mode 2 holds its output low for a single clock, so both edges fall into
+/// the same batch of timer time; the rising edge's interrupt request stays
+/// latched until the halted guest takes it.
 #[test]
 fn rate_generator_ticks_reach_a_halted_guest() {
     let mut machine = machine_with_timer(0x34, 0, &IDLE_HALTED);
@@ -476,8 +477,8 @@ fn rate_generator_ticks_reach_a_halted_guest() {
     assert_eq!(machine.timer_ticks(), 18); // 1,193,182 clocks / 65,536
 }
 
-/// Regression: a timer faster than the rate at which a halted guest is
-/// polled lost every tick.
+/// A timer faster than the rate at which a halted guest is polled delivers
+/// every tick.
 #[test]
 fn fast_timer_ticks_reach_a_halted_guest() {
     let mut machine = machine_with_timer(0x36, 1000, &IDLE_HALTED);
@@ -485,8 +486,8 @@ fn fast_timer_ticks_reach_a_halted_guest() {
     assert_eq!(machine.timer_ticks(), 1193); // 1,193,182 clocks / 1,000
 }
 
-/// Regression: the time that goes by between two frames arrived as one
-/// batch, which yielded at most one tick and usually none.
+/// The timer time owed after a gap between two frames is paid out a few
+/// clocks per instruction, so every tick in the gap reaches the guest.
 #[test]
 fn timer_ticks_owed_after_a_frame_gap_are_all_delivered() {
     let mut machine = machine_with_timer(0x36, 1000, &IDLE_BUSY);
@@ -494,8 +495,8 @@ fn timer_ticks_owed_after_a_frame_gap_are_all_delivered() {
     assert_eq!(machine.timer_ticks(), 16);
 }
 
-/// Regression: a mode 0 one-shot re-armed by writing only a new count kept
-/// its output high, so the second and later interrupts never came.
+/// Writing a new count to a mode 0 one-shot sets its output low again, so
+/// the next terminal count interrupts again.
 #[test]
 fn one_shot_timer_rearmed_with_a_new_count_interrupts_again() {
     let rearm_and_wait = [
@@ -574,9 +575,9 @@ impl Machine {
 // INT 10h AH=00h — set video mode
 // ===========================================================================
 
-/// Regression: a mode set left the CRTC display start and cursor location,
-/// the cursors of pages 1-7 and the cursor shape as the previous program had
-/// them, so the screen stayed switched to another page.
+/// A mode set resets the CRTC display start and cursor location, the
+/// cursors of all eight pages and the cursor shape, whatever the previous
+/// program left in them.
 #[test]
 fn set_mode_resets_pages_and_cursors() {
     let mut machine = Machine::booted();
@@ -617,9 +618,8 @@ fn set_mode_resets_pages_and_cursors() {
     );
 }
 
-/// Regression: a program that flips pages by writing the CRTC start address
-/// itself and leaves through a mode set left the display showing the wrong
-/// part of video memory, with everything printed afterwards off screen.
+/// A mode set also undoes a display start that a program wrote to the CRTC
+/// itself, as programs that flip pages without the BIOS do.
 #[test]
 fn set_mode_undoes_a_display_start_written_to_the_crtc() {
     let mut machine = Machine::booted();
@@ -636,7 +636,7 @@ fn set_mode_undoes_a_display_start_written_to_the_crtc() {
     assert_eq!(machine.display_start(), 0);
 }
 
-/// Regression: only the 2000 cells of page 0 were blanked.
+/// Mode 3 blanks all eight text pages, not only the 2000 cells of page 0.
 #[test]
 fn set_mode_3_blanks_every_text_page() {
     let mut machine = Machine::booted();
@@ -662,9 +662,9 @@ fn set_mode_3_blanks_every_text_page() {
     }
 }
 
-/// Regression: going back to text mode only cleared the 256-colour bit; the
-/// rest of the mode 13h register set stayed programmed, and the BDA copies of
-/// the CGA mode and colour registers were never written.
+/// Going back to mode 3 reprograms the whole register set that mode 13h
+/// changed, not just the 256-colour bit, and writes the BDA copies of the
+/// CGA mode and colour registers.
 #[test]
 fn set_mode_3_reprograms_the_adapter_after_mode_13h() {
     let mut machine = Machine::booted();
@@ -761,9 +761,9 @@ fn text_colours_after_power_on() {
     }
 }
 
-/// Regression: a mode set never touched the DAC, so the palette a 256-colour
-/// program had loaded stayed in effect in text mode (after leaving DOOM the
-/// DOS prompt was drawn almost black on black).
+/// A mode set reloads the DAC and the pixel mask, so the palette a
+/// 256-colour program loaded does not carry over into text mode (after
+/// DOOM, the DOS prompt would otherwise be almost black on black).
 #[test]
 fn set_mode_3_restores_the_text_colours() {
     let mut machine = Machine::booted();
@@ -795,8 +795,8 @@ fn set_mode_3_restores_the_text_colours() {
     assert_eq!(machine.rt.port_in_byte(0x3C6), 0xFF, "DAC pixel mask");
 }
 
-/// Regression: mode 13h came up with whatever the DAC held, which after
-/// power-on is black for every colour above 31.
+/// Mode 13h loads the default 256-colour palette rather than keeping what
+/// the DAC holds, which after power-on is black for every colour above 31.
 #[test]
 fn set_mode_13h_loads_the_default_256_colour_palette() {
     let mut machine = Machine::booted();
@@ -829,8 +829,8 @@ fn set_mode_13h_loads_the_default_256_colour_palette() {
     }
 }
 
-/// Regression: the attribute controller was never programmed, so a palette
-/// or mode register changed by one program carried over into the next mode.
+/// A mode set programs the attribute controller, so a palette or mode
+/// register one program changed does not carry over into the next mode.
 #[test]
 fn set_mode_programs_the_attribute_controller() {
     let mut machine = Machine::booted();
@@ -923,8 +923,8 @@ impl Machine {
     }
 }
 
-/// Regression: Insert toggled the insert flag but was never queued, so no
-/// program reading the keyboard through the BIOS could see the key.
+/// Insert toggles the insert state and is queued as well, so a program
+/// reading the keyboard through the BIOS sees the key.
 #[test]
 fn insert_key_is_queued() {
     let mut machine = Machine::booted();
@@ -936,8 +936,8 @@ fn insert_key_is_queued() {
     assert_eq!(machine.bda_byte(0x17) & 0x80, 0x00, "insert state is off");
 }
 
-/// Regression: the shifted table holds 0 for Tab and the lookup treated 0 as
-/// "no key", so Shift+Tab (back-tab, 0F00h) was dropped.
+/// Shift+Tab is queued as back-tab (0F00h), although the shifted table
+/// holds 0 for Tab, the value that otherwise means "no key".
 #[test]
 fn shift_tab_is_queued_as_back_tab() {
     let mut machine = Machine::booted();
@@ -954,9 +954,8 @@ fn shift_tab_is_queued_as_back_tab() {
     );
 }
 
-/// Regression: the cursor keys ignored Ctrl and were queued with their plain
-/// codes, so Ctrl+Left could not be told from Left (word movement in DOSKEY
-/// and other line editors did not work).
+/// The cursor keys with Ctrl have scan codes of their own, so Ctrl+Left can
+/// be told from Left (DOSKEY and other line editors move by words with it).
 #[test]
 fn ctrl_with_cursor_keys_has_its_own_scan_codes() {
     let mut machine = Machine::booted();
@@ -979,10 +978,10 @@ fn ctrl_with_cursor_keys_has_its_own_scan_codes() {
     assert_eq!(machine.typed(&[0x4B, 0xCB]), [0x4B00], "Left without Ctrl");
 }
 
-/// Regression: Ctrl with a non-letter key queued the plain character, Alt
-/// with the digit row queued the digit's own scan code instead of 78h-83h,
-/// Alt+Space and Alt+Tab were indistinguishable from other keys, and the
-/// keypad - and + keys had no character.
+/// Keys with Ctrl or Alt, and the keypad keys, are queued with the codes of
+/// the IBM tables: Ctrl with a key that is not a letter has a code of its
+/// own or none, Alt with the digit row gives scan codes 78h-83h, Alt+Space
+/// a space, Alt+Tab A500h, and the keypad - and + keys their characters.
 #[test]
 fn ctrl_alt_and_keypad_keys_follow_the_ibm_tables() {
     const NONE: u8 = 0;
@@ -1050,9 +1049,9 @@ fn ctrl_alt_and_keypad_keys_follow_the_ibm_tables() {
     assert_eq!(machine.typed(&[0x02, 0x82]), [0x0231], "Caps Lock, 1");
 }
 
-/// Regression: Ctrl+Scroll Lock only toggled Scroll Lock. It is the Break
-/// key: the buffer is flushed, bit 7 of 40:71 is set, INT 1Bh is called and
-/// a 0000h keystroke is queued.
+/// Ctrl+Scroll Lock is the Break key, not a Scroll Lock toggle: the buffer
+/// is flushed, bit 7 of 40:71 is set, INT 1Bh is called and a 0000h
+/// keystroke is queued.
 #[test]
 fn ctrl_break_calls_int_1bh() {
     let mut machine = Machine::booted();
@@ -1093,7 +1092,7 @@ fn ctrl_break_calls_int_1bh() {
     );
 }
 
-/// Regression: Ctrl+Alt+Del was queued as an ordinary Del keystroke.
+/// Ctrl+Alt+Del restarts the machine instead of queuing a Del keystroke.
 #[test]
 fn ctrl_alt_del_restarts_the_machine() {
     // A boot sector that counts how often it was started and then idles with
@@ -1127,9 +1126,9 @@ fn ctrl_alt_del_restarts_the_machine() {
 // INT 10h AH=00h — which modes exist
 // ===========================================================================
 
-/// Regression: every mode number was accepted as "80x25 text" and reported
-/// back by AH=0Fh, so a program probing for a graphics or 40-column mode
-/// believed it had it.
+/// A mode the BIOS does not support is refused: AH=0Fh still reports mode 3
+/// and the screen is untouched, so a program probing for a graphics or
+/// 40-column mode learns that it does not have it.
 #[test]
 fn unsupported_video_modes_are_rejected() {
     for mode in [0x00u8, 0x01, 0x04, 0x06, 0x07, 0x0D, 0x12, 0x7F] {
@@ -1174,9 +1173,8 @@ fn video_mode_2_is_80x25_text() {
     );
 }
 
-/// Regression: bit 7 of the mode number ("keep the video memory") was stored
-/// as part of the mode, the memory was cleared anyway, and 93h selected text
-/// mode instead of mode 13h.
+/// Bit 7 of the mode number keeps the video memory and is not part of the
+/// mode: 83h sets mode 3 and 93h mode 13h, and neither clears the memory.
 #[test]
 fn set_mode_with_bit_7_keeps_video_memory() {
     let mut machine = Machine::booted();
@@ -1210,8 +1208,8 @@ fn set_mode_with_bit_7_keeps_video_memory() {
 // INT 10h — other functions
 // ===========================================================================
 
-/// Regression: AH=0Fh loaded the BDA segment through BX and returned with
-/// BL = 40h; only BH (the active page) is a result.
+/// AH=0Fh returns the active page in BH and leaves BL, CX and DX as they
+/// were.
 #[test]
 fn int10_get_mode_preserves_bl() {
     let mut machine = Machine::booted();
@@ -1233,8 +1231,8 @@ fn int10_get_mode_preserves_bl() {
     assert_eq!(registers.dx.word(), 0x9ABC, "DX");
 }
 
-/// Regression: the hardware cursor was programmed with row * 80 + column
-/// even when the displayed page does not start at the first cell.
+/// The hardware cursor location counts from the start of video memory, so
+/// it includes the start of the displayed page, not just row * 80 + column.
 #[test]
 fn cursor_location_includes_the_page_start() {
     let mut machine = Machine::booted();
@@ -1250,8 +1248,8 @@ fn cursor_location_includes_the_page_start() {
     assert_eq!(machine.cursor_location(), 2048 + 2 * 80 + 3);
 }
 
-/// Regression: selecting a page neither moved the hardware cursor to that
-/// page's cursor nor recorded the page's offset at 40:4E.
+/// Selecting a page moves the hardware cursor to that page's cursor and
+/// records the page's offset at 40:4E.
 #[test]
 fn selecting_a_page_shows_its_cursor() {
     let mut machine = Machine::booted();
@@ -1285,8 +1283,8 @@ fn selecting_a_page_shows_its_cursor() {
     );
 }
 
-/// Regression: page numbers were not checked. AH=02h indexed past the eight
-/// cursor slots into the rest of the BDA and beyond; AH=05h stored any page.
+/// Page numbers above 7 are ignored: AH=02h writes nothing past the eight
+/// cursor slots, and AH=05h does not select the page.
 #[test]
 fn out_of_range_pages_are_ignored() {
     let mut machine = Machine::booted();
@@ -1323,8 +1321,8 @@ fn out_of_range_pages_are_ignored() {
     assert_eq!(machine.display_start(), 0);
 }
 
-/// Regression: teletype output always went to page 0, at page 0's cursor,
-/// so nothing printed was visible while another page was displayed.
+/// Teletype output goes to the active page, at that page's cursor, so it is
+/// visible whichever page is displayed.
 #[test]
 fn teletype_writes_to_the_active_page() {
     let mut machine = Machine::booted();
@@ -1358,7 +1356,7 @@ fn teletype_writes_to_the_active_page() {
     assert_eq!(machine.cursor_location(), 2048 + 3 * 80 + 6);
 }
 
-/// Regression: a teletype scroll moved page 0 whatever page was active.
+/// A teletype scroll moves the active page and no other.
 #[test]
 fn teletype_scrolls_the_active_page() {
     let mut machine = Machine::booted();
@@ -1383,9 +1381,9 @@ fn teletype_scrolls_the_active_page() {
     );
 }
 
-/// Regression: the line scrolled in by teletype output was always grey on
-/// black instead of taking the attribute at the cursor, which left stripes
-/// on a screen cleared to another colour.
+/// The line a teletype scroll brings in takes the attribute at the cursor,
+/// not grey on black, so a screen cleared to another colour stays that
+/// colour.
 #[test]
 fn teletype_scroll_keeps_the_screen_attribute() {
     let mut machine = Machine::booted();
@@ -1419,9 +1417,9 @@ fn teletype_scroll_keeps_the_screen_attribute() {
 // INT 10h AH=13h — write string
 // ===========================================================================
 
-/// Regression: without AL bit 0 the cursor was left at the start of the
-/// string instead of where it was before the call, AH came back as 02h, and
-/// an empty string still moved the cursor.
+/// AH=13h moves the cursor only with AL bit 0: without it the cursor stays
+/// where it was before the call. AX is preserved, and an empty string moves
+/// nothing.
 #[test]
 fn write_string_moves_the_cursor_only_when_asked() {
     let mut machine = Machine::booted();
@@ -1492,8 +1490,7 @@ fn write_string_moves_the_cursor_only_when_asked() {
     );
 }
 
-/// Regression: the string was read with LODSB without clearing the
-/// direction flag first.
+/// AH=13h reads the string forward whatever the direction flag.
 #[test]
 fn write_string_reads_forward_whatever_the_direction_flag() {
     let mut machine = Machine::booted();
@@ -1518,7 +1515,7 @@ fn write_string_reads_forward_whatever_the_direction_flag() {
     assert_eq!(machine.text_cell(0, 2, 5), 0x0743);
 }
 
-/// Regression: BH was ignored and the string always went to page 0.
+/// AH=13h writes to the page in BH and moves only that page's cursor.
 #[test]
 fn write_string_writes_to_the_requested_page() {
     let mut machine = Machine::booted();
@@ -1601,9 +1598,9 @@ impl Machine {
     }
 }
 
-/// Regression: a window whose top is below its bottom (or whose left is
-/// right of its right edge) made the 8-bit height wrap; the row loop then
-/// ran 65536 times and blanked the whole video segment.
+/// A scroll window whose top is below its bottom, or whose left edge is
+/// right of its right edge, is empty: scrolling it changes no page and
+/// leaves CX and DX as they were.
 #[test]
 fn scroll_with_an_inverted_window_does_nothing() {
     let mut machine = Machine::booted();
@@ -1629,9 +1626,8 @@ fn scroll_with_an_inverted_window_does_nothing() {
     assert_eq!(registers.dx.word(), 0x1809, "DX");
 }
 
-/// Regression: a window reaching past the screen was used as given: its
-/// 8-bit height and width wrapped (DX = FFFFh cleared nothing at all) or the
-/// fill ran past the page.
+/// A scroll window reaching past the screen is clipped to it: DX = FFFFh
+/// clears the whole page and nothing beyond it.
 #[test]
 fn scroll_window_is_clipped_to_the_screen() {
     let mut machine = Machine::booted();
@@ -1658,8 +1654,8 @@ fn scroll_window_is_clipped_to_the_screen() {
     assert_eq!(machine.rt.cpu.registers.dx.word(), 0xFFFF, "DX");
 }
 
-/// Regression: AH=09h/0Ah with a count of zero looped 65536 times and filled
-/// the whole video segment with the character.
+/// AH=09h and AH=0Ah with a count of zero write nothing, rather than 65536
+/// characters.
 #[test]
 fn write_char_with_a_zero_count_writes_nothing() {
     let mut machine = Machine::booted();
@@ -1685,9 +1681,8 @@ fn write_char_with_a_zero_count_writes_nothing() {
 // INT 10h — DAC registers, blink select, pixels
 // ===========================================================================
 
-/// Regression: INT 10h AH=10h was not implemented, so programs that set
-/// their palette through the BIOS instead of the DAC ports kept whatever
-/// colours were loaded.
+/// INT 10h AH=10h sets and reads the DAC registers, for programs that load
+/// their palette through the BIOS rather than the DAC ports.
 #[test]
 fn dac_registers_can_be_set_and_read_through_the_bios() {
     let mut machine = Machine::booted();
@@ -1751,8 +1746,8 @@ fn dac_registers_can_be_set_and_read_through_the_bios() {
     assert_eq!(read_back, [20, 21, 22, 30, 31, 32], "AX=1017h");
 }
 
-/// Regression: AX=1003h was not implemented, so text programs could not
-/// switch between blinking and sixteen background colours.
+/// AX=1003h switches text between blinking and sixteen background colours,
+/// and a mode set goes back to blinking.
 #[test]
 fn blink_and_bright_backgrounds_can_be_selected() {
     let mut machine = Machine::booted();
@@ -1802,7 +1797,8 @@ fn blink_and_bright_backgrounds_can_be_selected() {
     assert_eq!(machine.bda_byte(0x65), 0x29);
 }
 
-/// Regression: AH=0Ch/0Dh were not implemented.
+/// AH=0Ch and AH=0Dh write and read pixels in mode 13h; a pixel off the
+/// screen is ignored.
 #[test]
 fn pixels_can_be_written_and_read_in_mode_13h() {
     let mut machine = Machine::booted();
@@ -1861,9 +1857,9 @@ fn pixels_can_be_written_and_read_in_mode_13h() {
 // POST — video
 // ===========================================================================
 
-/// Regression: POST filled in a few video fields of the BDA by hand and
-/// never programmed the adapter: the CRTC cursor shape did not match the
-/// BDA, and the rows, character height and register copies were left at 0.
+/// POST sets the video mode the way a mode set does: the adapter is
+/// programmed, the CRTC cursor shape matches the BDA, and the BDA holds the
+/// rows, the character height and the register copies.
 #[test]
 fn post_sets_the_video_mode() {
     let mut machine = Machine::booted();
@@ -1897,9 +1893,9 @@ fn post_sets_the_video_mode() {
     assert_eq!(machine.attribute_register(0x06), 0x14, "text palette");
 }
 
-/// Regression: a restart through the reset vector from mode 13h, or with
-/// the display switched to another page, left the adapter in that state
-/// while the BDA said "mode 3, page 0".
+/// A restart through the reset vector puts the adapter back in mode 3 with
+/// page 0 displayed, whatever state it was left in, so it agrees with the
+/// BDA.
 #[test]
 fn restart_returns_the_adapter_to_text_mode() {
     let mut machine = Machine::booted();
@@ -1933,9 +1929,8 @@ fn restart_returns_the_adapter_to_text_mode() {
 
 /// The number of diskette drives in the equipment word (INT 11h bits 7-6,
 /// with bit 0 saying there are any) is what INT 13h AH=15h reports for
-/// units 0-3.
-/// Regression: it was a constant "one drive", so DOS treated B: as a second
-/// name for A: and a second diskette image could not be reached.
+/// units 0-3. DOS treats B: as a second name for A: when the word says one
+/// drive, which would leave a second diskette image out of reach.
 #[test]
 fn equipment_word_counts_the_diskette_drives() {
     for (units, expected) in [(2u8, 0x0041u16), (3, 0x0081), (4, 0x00C1)] {
@@ -1976,8 +1971,8 @@ fn floppy_with_first_sector(sector: &[u8]) -> DiskImage {
     image
 }
 
-/// Regression: diskettes older than the 55AAh convention (and the boot
-/// sectors of some games) do not end in the signature and were refused.
+/// A diskette boots without the 55AAh signature: diskettes older than the
+/// convention, and the boot sectors of some games, do not end in it.
 #[test]
 fn diskette_boots_without_the_55aa_signature() {
     let floppy = floppy_with_first_sector(&boot_sector_ending([0x00, 0x00]));
@@ -2022,10 +2017,9 @@ fn hard_disk_without_the_55aa_signature_is_not_booted() {
 // INT 16h — keyboard services
 // ===========================================================================
 
-/// Regression: INT 16h never enabled interrupts for its caller. A program
-/// polling AH=01h with interrupts off never let IRQ1 in and never saw the
-/// key; the IBM BIOS enables interrupts on entry and AH=01h returns with
-/// them on.
+/// INT 16h enables interrupts on entry, as the IBM BIOS does, and AH=01h
+/// returns with them on: a program polling AH=01h with interrupts off still
+/// lets IRQ1 in and sees the key.
 #[test]
 fn int16_status_lets_the_keyboard_in_when_called_with_interrupts_off() {
     let mut machine = Machine::booted();
@@ -2060,9 +2054,9 @@ fn int16_status_lets_the_keyboard_in_when_called_with_interrupts_off() {
     );
 }
 
-/// Regression: AH=12h returned the byte at 40:18 as AH. The extended flags
-/// have another layout: bit 0/1 are left Ctrl/Alt (never set at 40:18 by
-/// this BIOS), and bit 7 is SysReq, not "Insert held".
+/// AH=12h returns in AH the extended shift flags, whose layout is not that
+/// of the byte at 40:18: bits 0 and 1 are left Ctrl and left Alt (which this
+/// BIOS never sets at 40:18), and bit 7 is SysReq, not "Insert held".
 #[test]
 fn int16_extended_shift_flags() {
     let mut machine = Machine::booted();
@@ -2091,10 +2085,10 @@ fn int16_extended_shift_flags() {
 // INT 15h — system services
 // ===========================================================================
 
-/// Regression: a function the BIOS does not implement came back with CF set
-/// but AH unchanged, where the IBM BIOS returns AH=86h. The keyboard
-/// intercept (AH=4Fh) is the one call that must hand AX back untouched, with
-/// CF set, so that INT 09h goes on to process the scancode.
+/// A function the BIOS does not implement returns CF set and AH=86h, as the
+/// IBM BIOS does. The keyboard intercept (AH=4Fh) is the one call that must
+/// hand AX back untouched, with CF set, so that INT 09h goes on to process
+/// the scancode.
 #[test]
 fn int15_unsupported_functions_return_ah_86h() {
     let mut machine = Machine::booted();
@@ -2142,12 +2136,11 @@ fn int15_unsupported_functions_return_ah_86h() {
 // INT 08h — timer tick
 // ===========================================================================
 
-/// Regression: INT 08h sent the end-of-interrupt before it called the user
-/// hook INT 1Ch. A hook that enabled interrupts and ran for longer than a
-/// tick period was entered again by the next tick, on top of itself, for as
-/// long as ticks kept coming. The IBM BIOS calls the hook first: IRQ0 is
-/// still in service, so the interrupt controller holds the next tick back
-/// until the hook has returned.
+/// INT 08h calls the user hook INT 1Ch before it sends the end-of-interrupt,
+/// as the IBM BIOS does: IRQ0 is still in service, so the interrupt
+/// controller holds the next tick back until the hook has returned, and a
+/// hook that enables interrupts and runs longer than a tick period is not
+/// entered again on top of itself.
 #[test]
 fn timer_hook_is_not_re_entered_by_the_next_tick() {
     // What the hook records, in the stub's segment.
@@ -2184,7 +2177,7 @@ fn timer_hook_is_not_re_entered_by_the_next_tick() {
         0x2E, 0xA2, 0x02, 0x02, // MOV [CS:0202h],AL
         0xB0, 0x0A, // MOV AL,0Ah
         0xE6, 0x20, // OUT 20h,AL   (back to the request register)
-        0x2E, 0xFE, 0x06, 0x00, 0x02, // INC BYTE [CS:0200h]   (hooks running now)
+        0x2E, 0xFE, 0x06, 0x00, 0x02, // INC BYTE [CS:0200h]   (hooks running)
         0x2E, 0xA0, 0x00, 0x02, // MOV AL,[CS:0200h]
         0x2E, 0x3A, 0x06, 0x01, 0x02, // CMP AL,[CS:0201h]
         0x76, 0x04, // JBE spin

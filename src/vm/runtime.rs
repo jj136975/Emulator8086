@@ -1,3 +1,18 @@
+//! The machine: the CPU, the devices on the port bus, and the run loop that
+//! drives them. Each pass of `step_frame` makes one `process` call (a prefix
+//! byte takes a call of its own), hands the 8253 the timer clocks host time
+//! has earned, polls the keyboard (F12 opens the monitor of `cli.rs`) and
+//! takes a pending interrupt. Also here: the flag and segment encodings and
+//! the prefix latches the instruction code shares, interrupt entry, reset
+//! and the ROM loader.
+//!
+//! The invariant: an interrupt is taken only between two whole instructions,
+//! never after a prefix byte (`prefixes.pending`) or an instruction that sets
+//! `interrupt_inhibit` (STI, a load of SS), and an IRQ goes before the
+//! single-step trap, which is sampled before the instruction runs. While the
+//! CPU runs, the 8253 gets only a few of the clocks it is owed (`pit_debt`)
+//! per instruction, so the guest has time to service every timer interrupt.
+
 use crate::io::bus::IoBus;
 use crate::io::console::DebugConsole;
 use crate::io::disk::{BOOT_ORDER_PORT, DISK_TRAP_PORT, DiskController, DiskSpec};
@@ -75,7 +90,7 @@ pub struct Prefixes {
     pub pending: bool,
 }
 
-/// Instructions executed per `step_frame` call.
+/// Instructions executed per `step_frame` call, at most.
 const RENDER_INTERVAL: u64 = 50_000;
 
 /// Size of the ROM region, F000:0000-FFFF.
@@ -108,14 +123,12 @@ pub struct Runtime {
     pub trace: bool,
     pub interrupt_inhibit: bool,
 
-    // Devices
     io_bus: IoBus,
     pub disks: Rc<RefCell<DiskController>>,
     keyboard: Option<Rc<RefCell<KeyboardController>>>,
     pub vga: Option<Rc<RefCell<VgaDevice>>>,
     pit: Rc<RefCell<Pit>>,
 
-    // Timing
     /// Host time of the last clock sample.
     last_clock_sample: Instant,
     /// Timer clocks owed to the 8253 for host time that has already passed.
@@ -309,7 +322,6 @@ impl Runtime {
                 self.instruction_count += 1;
             }
 
-            // Timer
             if sample_clock
                 || self.cpu.halted
                 || self.instruction_count.is_multiple_of(CLOCK_SAMPLE_INTERVAL)
@@ -321,7 +333,6 @@ impl Runtime {
                 self.run_pit();
             }
 
-            // Keyboard polling
             let mut reset_requested = false;
             if (self.instruction_count.is_multiple_of(1000) || self.cpu.halted)
                 && let Some(kb) = &self.keyboard
@@ -352,9 +363,9 @@ impl Runtime {
                 continue;
             }
 
-            // Interrupt handling. Interrupts are not recognised between a
-            // prefix byte and the instruction it belongs to, nor at the
-            // boundary right after STI or a load of SS.
+            // Interrupts are not recognised between a prefix byte and the
+            // instruction it belongs to, nor at the boundary right after STI
+            // or a load of SS.
             if self.interrupt_inhibit || self.prefixes.pending {
                 self.interrupt_inhibit = false;
                 continue;
@@ -529,17 +540,18 @@ impl Runtime {
     pub(crate) fn handle_interrupt(&mut self, vector: u8) {
         let addr = (vector as usize) * 4;
 
-        // Push flags with 8086 fixed bits applied
+        // The 8086 stores FLAGS bits 12-15 and 1 as ones, bits 3 and 5 as
+        // zeros.
         let flags = (self.cpu.flags & 0x0FD5) | 0xF002;
         self.push_word(flags);
         self.push_word(self.cpu.registers.cs.reg().word());
         self.push_word(self.cpu.registers.pc.word());
 
-        // Clear IF and TF
         self.cpu.unset_flag(Interrupt);
         self.cpu.unset_flag(Trap);
 
-        // Load new CS:IP from IVT
+        // The vector's entry in the table at 0000:0000 is the handler's IP,
+        // then its CS.
         self.cpu.registers.pc.set(self.cpu.memory.read_word(addr));
         self.cpu
             .registers
@@ -629,129 +641,5 @@ impl Debug for Runtime {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Regression: the fraction of a timer clock left over after each host
-    /// clock sample was discarded, which made the timer run several percent
-    /// slow while the guest was busy.
-    #[test]
-    fn timer_time_is_not_lost_to_rounding() {
-        let mut rt = Runtime::new_test();
-        rt.use_manual_clock();
-        for _ in 0..1_000_000 {
-            rt.credit_pit_time(100); // less than one timer clock
-        }
-        assert_eq!(rt.pit_debt, 119_318); // 0.1 s of a 1,193,182 Hz clock
-    }
-
-    /// A frontend that ran one batch per displayed frame held the guest to
-    /// 50,000 instructions per frame; a time slice runs as many batches as
-    /// fit.
-    #[test]
-    fn run_slice_runs_batches_back_to_back() {
-        let mut rt = Runtime::new_test();
-        rt.use_manual_clock();
-        rt.cpu.memory.write_byte(0x10000, 0xEB); // JMP $
-        rt.cpu.memory.write_byte(0x10001, 0xFE);
-        rt.cpu.registers.cs.reg_mut().set(0x1000);
-        rt.cpu.registers.pc.set(0);
-
-        assert!(rt.run_slice(Duration::from_millis(100)));
-        assert!(
-            rt.instruction_count >= 2 * RENDER_INTERVAL,
-            "only {} instructions ran",
-            rt.instruction_count
-        );
-    }
-
-    /// A halted CPU does not end the slice early: the machine keeps being
-    /// polled until the slice is over.
-    #[test]
-    fn run_slice_lasts_the_whole_slice_when_halted() {
-        let mut rt = Runtime::new_test();
-        rt.use_manual_clock();
-        rt.cpu.halted = true; // interrupts disabled: nothing can wake it
-
-        let slice = Duration::from_millis(30);
-        let started = Instant::now();
-        assert!(rt.run_slice(slice));
-        assert!(started.elapsed() >= slice);
-        assert_eq!(rt.instruction_count, 0);
-    }
-
-    #[test]
-    fn reset_restarts_the_cpu_at_the_reset_vector() {
-        let mut rt = Runtime::new_test();
-        rt.cpu.registers.cs.reg_mut().set(0x1234);
-        rt.cpu.registers.pc.set(0x5678);
-        rt.cpu.registers.ds.reg_mut().set(0x1111);
-        rt.cpu.registers.es.reg_mut().set(0x2222);
-        rt.cpu.registers.ss.reg_mut().set(0x3333);
-        rt.cpu.flags = 0x0FD5;
-        rt.cpu.halted = true;
-        rt.interrupt_inhibit = true;
-        rt.prefixes.rep = Some(true);
-        rt.prefixes.pending = true;
-
-        rt.reset();
-
-        assert_eq!(rt.cpu.registers.cs.reg().word(), 0xFFFF);
-        assert_eq!(rt.cpu.registers.pc.word(), 0x0000);
-        assert_eq!(rt.cpu.registers.ds.reg().word(), 0x0000);
-        assert_eq!(rt.cpu.registers.es.reg().word(), 0x0000);
-        assert_eq!(rt.cpu.registers.ss.reg().word(), 0x0000);
-        assert_eq!(rt.cpu.flags, 0xF002);
-        assert!(!rt.cpu.halted);
-        assert!(!rt.interrupt_inhibit);
-        assert!(rt.prefixes.rep.is_none() && !rt.prefixes.pending);
-    }
-
-    /// A ROM shorter than 64 KB ends at the top of the first megabyte, so
-    /// that the reset vector at F000:FFF0 lies inside it.
-    #[test]
-    fn short_rom_image_is_loaded_top_aligned() {
-        let mut rt = Runtime::new_test();
-        let mut rom = vec![0x90u8; 0x2000]; // 8 KB
-        rom[0x1FF0] = 0xEA; // far jump at the reset vector
-        rt.load_rom_image(&rom);
-
-        assert_eq!(rt.cpu.memory.read_byte(0xFFFF0), 0xEA);
-        assert_eq!(rt.cpu.memory.read_byte(0xFE000), 0x90);
-        assert_eq!(
-            rt.cpu.memory.read_byte(0xFDFFF),
-            0x00,
-            "nothing below the image"
-        );
-    }
-
-    #[test]
-    fn unusable_rom_file_is_an_error_that_names_the_file() {
-        let mut rt = Runtime::new_test();
-
-        let error = rt.load_rom(PathBuf::from("no-such-rom.bin")).unwrap_err();
-        assert!(error.contains("no-such-rom.bin"), "{}", error);
-
-        let path = std::env::temp_dir().join(format!("emu8086-rom-{}.bin", std::process::id()));
-        for size in [0usize, ROM_MAX_SIZE + 1] {
-            std::fs::write(&path, vec![0xFFu8; size]).unwrap();
-            let error = rt.load_rom(path.clone()).unwrap_err();
-            assert!(error.contains("emu8086-rom-"), "{}", error);
-        }
-
-        std::fs::write(&path, vec![0xEAu8; ROM_MAX_SIZE]).unwrap();
-        assert_eq!(rt.load_rom(path.clone()), Ok(()));
-        assert_eq!(rt.cpu.memory.read_byte(0xF0000), 0xEA);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn timer_debt_is_capped_after_a_long_stall() {
-        let mut rt = Runtime::new_test();
-        rt.use_manual_clock();
-        for _ in 0..3 {
-            rt.credit_pit_time(NANOS_PER_SEC);
-        }
-        assert_eq!(rt.pit_debt, PIT_MAX_DEBT);
-    }
-}
+#[path = "runtime_tests.rs"]
+mod tests;
