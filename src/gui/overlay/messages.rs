@@ -1,7 +1,8 @@
 //! Where a tool says what it did or why it failed: short messages the shell
 //! shows for a few seconds in a corner of the picture, the newest at the
-//! bottom. Whoever carries out an action reports here (`done`, `failed`), as
-//! the app does for the commands of the Machine menu.
+//! bottom. Whoever carries out an action reports here (`done`, `failed`):
+//! the app for the commands of the Machine menu, a panel for what it does
+//! itself (`Cx::messages`).
 //!
 //! The invariant: a message's time starts when it is first shown, not when
 //! it is reported. Time is egui's input time, which only a pass tells, so a

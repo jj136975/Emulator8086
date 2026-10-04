@@ -455,7 +455,7 @@ fn the_overlay_is_drawn_over_the_picture_and_only_where_it_is() {
         wgpu::TextureFormat::Rgba8UnormSrgb,
         wgpu::TextureFormat::Rgba8Unorm,
     ] {
-        let rt = text_screen();
+        let mut rt = text_screen();
         let mut picture = vec![0; TEXT.0 * TEXT.1 * 4];
         raster::rasterize_text(&mut picture, &vga(&rt), &rt.cpu.memory, ALL_ON);
         let mut blit = FrameBlit::new(&device, format, width, height);
@@ -471,9 +471,9 @@ fn the_overlay_is_drawn_over_the_picture_and_only_where_it_is() {
         };
 
         // A pass of the overlay at input time `time`, with no events, over
-        // a machine that runs.
-        let run = |overlay: &mut Overlay, time: f64| {
-            overlay.run(input(time, Vec::new()), false);
+        // the machine whose picture this is, running.
+        let mut run = |overlay: &mut Overlay, time: f64| {
+            overlay.run(input(time, Vec::new()), &mut rt, false);
         };
 
         // The first seconds: the hint, in the bottom left corner. It is

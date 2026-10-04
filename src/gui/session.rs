@@ -101,7 +101,8 @@ impl Session {
     /// commands it asked for are carried out, and the keyboard is given up
     /// if the pass took it.
     fn run_overlay(&mut self, input: egui::RawInput) {
-        for command in self.overlay.run(input, self.pacer.paused()) {
+        let paused = self.pacer.paused();
+        for command in self.overlay.run(input, &mut self.runtime, paused) {
             self.execute(command);
         }
         self.yield_keyboard();

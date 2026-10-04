@@ -2,18 +2,24 @@
 //! hand-made input (`testing`), and what each pass shows and asks for.
 //!
 //! The invariant: time is the input's. A test states when each frame is;
-//! nothing here waits or reads a clock.
+//! nothing here waits or reads a clock, and the machine the shell is lent
+//! never runs.
 
 use egui::accesskit::Role;
 
 use super::messages::{DONE_SECONDS, FAILED_SECONDS};
 use super::testing::{Driver, Passes, key};
 use super::*;
+use crate::wall_clock::HostClock;
+use emu8086_core::io::disk::DiskImage;
+use emu8086_core::io::disk_spec::parse_disk_specs;
+use emu8086_core::io::keyboard::KeyboardController;
 
-/// The shell, what it is told of the machine, and the commands its passes
-/// asked for. Nobody carries them out here: `paused` is what the test says.
+/// The shell, the machine it is lent, and the commands its passes asked
+/// for. Nobody carries them out here: `paused` is what the test says.
 struct Shell {
     overlay: Overlay,
+    runtime: Runtime,
     paused: bool,
     commands: Vec<Command>,
 }
@@ -24,16 +30,28 @@ impl Passes for Shell {
     }
 
     fn pass(&mut self, input: egui::RawInput) -> egui::PlatformOutput {
-        let commands = self.overlay.run(input, self.paused);
+        let commands = self.overlay.run(input, &mut self.runtime, self.paused);
         self.commands.extend(commands);
         self.overlay.take_platform_output()
     }
 }
 
-/// A shell as the app starts it: hidden, no frame run yet.
+/// A shell as the app starts it: hidden, no frame run yet. Its machine has
+/// a floppy in A: and a hard disk, both in memory.
 fn shell() -> Driver<Shell> {
+    let (_keys, key_events) = std::sync::mpsc::channel();
+    let runtime = Runtime::new(
+        parse_disk_specs(&["a:memory".to_string()]).unwrap(),
+        vec!["memory".to_string()],
+        None,
+        false,
+        KeyboardController::with_receiver(key_events),
+        &HostClock,
+    )
+    .unwrap();
     Driver::new(Shell {
         overlay: Overlay::new(),
+        runtime,
         paused: false,
         commands: Vec::new(),
     })
@@ -234,4 +252,100 @@ fn the_overlay_has_the_keyboard_with_an_open_menu_or_the_focus() {
 
     shell.target.overlay.toggle();
     assert!(!shell.target.overlay.wants_keyboard(), "hidden");
+}
+
+/// Ticks or unticks the checkbox of the panel titled `title` in the View
+/// menu, and gives its window the time to come or to go.
+fn toggle_in_view_menu(shell: &mut Driver<Shell>, title: &str) {
+    shell.click(Role::Button, "View");
+    shell.click(Role::CheckBox, title);
+    shell.wait(1.0);
+}
+
+/// The panel table is complete. `ALL` lists every variant, once; every
+/// panel has a title of its own, a checkbox in the View menu and a window
+/// with a body, which the checkbox opens and closes and which the View menu
+/// shows open or closed.
+#[test]
+fn every_panel_has_a_title_a_checkbox_and_a_window() {
+    // One arm per variant: a new variant does not compile until it is
+    // named here, and is then looked for in `ALL`.
+    fn listed(panel: Panel) -> bool {
+        match panel {
+            Panel::About => Panel::ALL.contains(&panel),
+        }
+    }
+    assert!(listed(Panel::About));
+
+    let mut shell = shown();
+    for (index, panel) in Panel::ALL.into_iter().enumerate() {
+        let title = panel.title();
+        assert!(!title.is_empty());
+        for earlier in &Panel::ALL[..index] {
+            assert_ne!(*earlier, panel, "{title} is listed twice");
+            assert_ne!(earlier.title(), title, "two panels share a title");
+        }
+
+        assert!(!shell.screen().has(Role::Window, title), "closed at first");
+        shell.click(Role::Button, "View");
+        assert!(!shell.screen().ticked(title));
+        shell.click(Role::Button, "View");
+
+        toggle_in_view_menu(&mut shell, title);
+        assert!(shell.screen().has(Role::Window, title), "{title} opened");
+        shell.click(Role::Button, "View");
+        assert!(shell.screen().ticked(title));
+        shell.click(Role::Button, "View");
+
+        toggle_in_view_menu(&mut shell, title);
+        assert!(!shell.screen().has(Role::Window, title), "{title} closed");
+    }
+}
+
+/// The window of a panel is closed by its own button as well, and the View
+/// menu then shows the panel closed.
+#[test]
+fn a_panel_closed_by_its_window_is_unticked_in_the_view_menu() {
+    let mut shell = shown();
+    toggle_in_view_menu(&mut shell, "About");
+    assert!(shell.screen().has(Role::Window, "About"));
+
+    shell.click(Role::Button, "Close window");
+    shell.wait(1.0);
+    assert!(!shell.screen().has(Role::Window, "About"));
+    shell.click(Role::Button, "View");
+    assert!(!shell.screen().ticked("About"));
+}
+
+/// The About panel shows the version, the keys and the machine as it is on
+/// that frame: its drives, their images and the boot order. A disk put in a
+/// drive while the panel is open is listed on the next frame.
+#[test]
+fn the_about_panel_shows_the_keys_and_the_machine_as_it_is() {
+    let mut shell = shown();
+    toggle_in_view_menu(&mut shell, "About");
+    let screen = shell.screen();
+    let version = format!("Version {}", env!("CARGO_PKG_VERSION"));
+    for text in [
+        version.as_str(),
+        "F12",
+        "Shows or hides the tools",
+        "A:",
+        "in memory",
+        "1440 KB",
+        "read-write",
+        "HD0",
+        "32 MB",
+        "Boot order: A:, HD0",
+    ] {
+        assert!(screen.shows(text), "{text:?} in {:?}", screen.texts());
+    }
+    assert!(!screen.shows("B:"));
+
+    let floppy = DiskImage::new_in_memory_sized(720 * 1024, true);
+    shell.target.runtime.disks.borrow_mut().attach(0x01, floppy);
+    let screen = shell.frame(Vec::new());
+    for text in ["B:", "720 KB", "read-only"] {
+        assert!(screen.shows(text), "{text:?} in {:?}", screen.texts());
+    }
 }

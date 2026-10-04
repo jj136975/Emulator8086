@@ -8,7 +8,7 @@
 //! showed, and clicked with the pointer at its centre: a control that is not
 //! on the screen, or lies under another, cannot be clicked.
 
-use egui::accesskit::{Node, Role};
+use egui::accesskit::{Node, Role, Toggled};
 use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
 
 /// Size of the window the tests pretend to draw in: in points, and since
@@ -84,6 +84,14 @@ impl Screen {
             .filter(|node| node.role() == Role::Label)
             .filter_map(Node::value)
             .collect()
+    }
+
+    /// Whether the checkbox labelled `label` is ticked.
+    pub fn ticked(&self, label: &str) -> bool {
+        let checkbox = self
+            .find(Role::CheckBox, label)
+            .unwrap_or_else(|| panic!("no checkbox {label:?} on the screen"));
+        checkbox.toggled() == Some(Toggled::True)
     }
 
     /// Where the control of `role` labelled `label` is.

@@ -1,10 +1,12 @@
 //! The overlay: the tools drawn over the emulator's picture with egui. This
 //! file is the shell: whether the overlay is shown, the hint of the first
-//! seconds, the menu bar and the messages. `messages` is where a tool says
-//! what it did; `theme` is the look.
+//! seconds, the menu bar, the windows of the panels and the messages.
+//! `panels` is THE panel table, with a file per panel beside it; `messages`
+//! is where a tool says what it did; `theme` is the look.
 //!
-//! The shell knows egui and nothing else: no window, no GPU, no file, no
-//! clock. The window gathers egui's input and calls `run`, which returns
+//! The shell knows egui and the machine and nothing else: no window, no GPU,
+//! no file, no clock, no thread. The window gathers egui's input and calls
+//! `run`, which is lent the machine for the length of the pass and returns
 //! what the user asked the app to do (`Command`); the renderer takes what to
 //! draw (`take_paint`). The only time there is, is the time of that input.
 //!
@@ -13,13 +15,17 @@
 //! renderer is given nothing to paint. Hidden, the overlay shows one thing,
 //! and only for the first seconds: the hint that names its key.
 
+mod about;
 mod messages;
+mod panels;
 pub mod theme;
 
 pub use messages::Messages;
+pub use panels::Panel;
 
-use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, vec2};
+use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Window, vec2};
 
+use emu8086_core::vm::runtime::Runtime;
 use theme::{METRICS, PALETTE};
 
 /// What the hint says. The key is the window's (`gui::OVERLAY_KEY`).
@@ -42,6 +48,19 @@ pub enum Command {
     Reset,
     /// Put the state of the display where it can be read.
     DumpVga,
+}
+
+/// What the menu bar and the panels work on during a pass: the machine, and
+/// the two ways out of the overlay.
+pub struct Cx<'a> {
+    /// The machine, the shell's for the length of the pass.
+    pub runtime: &'a mut Runtime,
+    /// Whether the app is holding the guest still.
+    pub paused: bool,
+    /// What the app is asked to do once the pass is over.
+    pub commands: &'a mut Vec<Command>,
+    /// Where to say what was done, or why it could not be.
+    pub messages: &'a mut Messages,
 }
 
 /// What a pass left to be drawn, ready for the GPU.
@@ -71,6 +90,8 @@ pub struct Overlay {
     ctx: egui::Context,
     visible: bool,
     hint: Hint,
+    /// The panels whose windows are open.
+    open: Vec<Panel>,
     messages: Messages,
     /// What the last pass drew, until `take_paint` hands it on.
     shapes: Vec<egui::epaint::ClippedShape>,
@@ -82,7 +103,7 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    /// A hidden overlay, in the theme.
+    /// A hidden overlay, in the theme, with no panel open.
     pub fn new() -> Self {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
@@ -97,6 +118,7 @@ impl Overlay {
             ctx,
             visible: false,
             hint: Hint::Unstarted,
+            open: Vec::new(),
             messages: Messages::default(),
             shapes: Vec::new(),
             pixels_per_point: 1.0,
@@ -141,16 +163,21 @@ impl Overlay {
         &mut self.messages
     }
 
-    /// Runs one pass over `input`. `paused` says whether the app is holding
-    /// the guest still. Returns what the user asked the app to do, in the
-    /// order asked.
-    pub fn run(&mut self, input: egui::RawInput, paused: bool) -> Vec<Command> {
+    /// Runs one pass over `input`, on the machine as it is: `paused` says
+    /// whether the app is holding the guest still. Returns what the user
+    /// asked the app to do, in the order asked.
+    pub fn run(
+        &mut self,
+        input: egui::RawInput,
+        runtime: &mut Runtime,
+        paused: bool,
+    ) -> Vec<Command> {
         // egui may run the UI twice for one frame, to lay out what it
         // shows for the first time: the commands of both runs count, and a
         // click is in only one of them.
         let mut commands = Vec::new();
         let ctx = self.ctx.clone();
-        let output = ctx.run_ui(input, |ui| self.ui(ui, paused, &mut commands));
+        let output = ctx.run_ui(input, |ui| self.ui(ui, runtime, paused, &mut commands));
         self.shapes = output.shapes;
         self.pixels_per_point = output.pixels_per_point;
         self.textures.append(output.textures_delta);
@@ -175,7 +202,13 @@ impl Overlay {
         std::mem::take(&mut self.platform)
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, paused: bool, commands: &mut Vec<Command>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        runtime: &mut Runtime,
+        paused: bool,
+        commands: &mut Vec<Command>,
+    ) {
         let now = ui.ctx().input(|input| input.time);
         if let Hint::Unstarted = self.hint {
             self.hint = Hint::Until(now + HINT_SECONDS);
@@ -192,15 +225,34 @@ impl Overlay {
             return;
         }
 
+        let mut cx = Cx {
+            runtime,
+            paused,
+            commands,
+            messages: &mut self.messages,
+        };
+        let open = &mut self.open;
         egui::Panel::top("overlay_menu_bar").show(ui, |ui| {
-            MenuBar::new().ui(ui, |ui| menu_bar(ui, paused, commands));
+            MenuBar::new().ui(ui, |ui| menu_bar(ui, &mut cx, open));
         });
 
-        // The messages go below the menu bar, in what it leaves of the
-        // window.
+        // What the menu bar leaves of the window: the panels stay in it,
+        // and the messages go to its corner.
         let below_bar = ui.available_rect_before_wrap();
+        for panel in Panel::ALL {
+            let mut is_open = open.contains(&panel);
+            Window::new(panel.title())
+                .open(&mut is_open)
+                .constrain_to(below_bar)
+                .show(ui.ctx(), |ui| panel.body(ui, &mut cx));
+            // The window's own button closed it.
+            if !is_open {
+                open.retain(|shown| *shown != panel);
+            }
+        }
+
         let corner = below_bar.right_top() + vec2(-METRICS.edge, METRICS.edge);
-        self.messages.show(ui.ctx(), corner, now);
+        cx.messages.show(ui.ctx(), corner, now);
     }
 }
 
@@ -213,27 +265,39 @@ impl Drop for Overlay {
     }
 }
 
-/// The menu bar: the Machine menu, and at the right end the mark of a
-/// paused machine.
-fn menu_bar(ui: &mut egui::Ui, paused: bool, commands: &mut Vec<Command>) {
+/// The menu bar: the Machine menu, the View menu with a checkbox for every
+/// panel, and at the right end the mark of a paused machine.
+fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, open: &mut Vec<Panel>) {
     ui.menu_button("Machine", |ui| {
-        let (label, command) = if paused {
+        let (label, command) = if cx.paused {
             ("Resume", Command::Resume)
         } else {
             ("Pause", Command::Pause)
         };
         if ui.button(label).clicked() {
-            commands.push(command);
+            cx.commands.push(command);
         }
         if ui.button("Reset").clicked() {
-            commands.push(Command::Reset);
+            cx.commands.push(Command::Reset);
         }
         ui.separator();
         if ui.button("Dump VGA state").clicked() {
-            commands.push(Command::DumpVga);
+            cx.commands.push(Command::DumpVga);
         }
     });
-    if paused {
+    ui.menu_button("View", |ui| {
+        for panel in Panel::ALL {
+            let mut is_open = open.contains(&panel);
+            if ui.checkbox(&mut is_open, panel.title()).changed() {
+                if is_open {
+                    open.push(panel);
+                } else {
+                    open.retain(|shown| *shown != panel);
+                }
+            }
+        }
+    });
+    if cx.paused {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.colored_label(PALETTE.warning, PAUSED);
         });
