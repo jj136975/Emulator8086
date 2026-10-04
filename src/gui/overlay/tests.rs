@@ -174,14 +174,23 @@ fn a_message_has_its_time_on_the_screen() {
     assert!(!shell.screen().shows("reported unseen"));
 }
 
-/// The keyboard is the overlay's while it is shown and one of its widgets
-/// has the focus. Tab moves the focus into it; a click on a menu gives none.
+/// The keyboard is the overlay's while it is shown and either one of its
+/// menus is open or one of its widgets has the focus. Escape closes a menu,
+/// Tab moves the focus into the overlay, and a click on a menu leaves no
+/// focus behind.
 #[test]
-fn the_overlay_has_the_keyboard_with_the_focus_and_only_while_shown() {
+fn the_overlay_has_the_keyboard_with_an_open_menu_or_the_focus() {
     let mut shell = shown();
+    assert!(!shell.target.overlay.wants_keyboard());
+
     shell.click(Role::Button, "Machine");
-    shell.click(Role::Button, "Machine");
-    assert!(!shell.screen().has(Role::Button, "Reset"), "closed again");
+    assert!(shell.target.overlay.wants_keyboard(), "a menu is open");
+    shell.frame(vec![key(egui::Key::Escape, true)]);
+    shell.frame(vec![key(egui::Key::Escape, false)]);
+    assert!(
+        !shell.screen().has(Role::Button, "Reset"),
+        "Escape closed it"
+    );
     assert!(
         !shell.target.overlay.wants_keyboard(),
         "a click gives no focus"

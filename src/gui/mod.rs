@@ -10,8 +10,8 @@
 //!   be pending. The loop asks for one after every frame and whenever it is
 //!   about to wait; a path that stops asking stops the machine.
 //! - The overlay's key is the window's: neither egui nor the guest sees it.
-//!   Every other event goes to egui first; a key egui does not keep is the
-//!   guest's (`Session::key`).
+//!   Every other event goes to egui first, and a key goes on to the guest
+//!   unless egui kept it or the overlay has the keyboard (`Session::key`).
 //! - A hidden overlay costs a frame nothing: no input is gathered for it,
 //!   no pass run, nothing painted. Events still go through egui's window
 //!   state, so that it knows where the pointer is and which modifiers are
@@ -172,7 +172,7 @@ impl ApplicationHandler for EmulatorApp {
             return;
         }
 
-        let taken = self.offer_to_overlay(&event);
+        let kept = self.offer_to_overlay(&event);
 
         match event {
             WindowEvent::CloseRequested => {
@@ -186,7 +186,7 @@ impl ApplicationHandler for EmulatorApp {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                self.session.key(event.physical_key, event.state, taken);
+                self.session.key(event.physical_key, event.state, kept);
             }
 
             WindowEvent::Focused(false) => self.session.focus_lost(),

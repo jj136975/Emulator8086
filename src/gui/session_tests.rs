@@ -128,6 +128,36 @@ fn the_guests_keys_are_let_go_when_the_overlay_takes_the_keyboard() {
     assert_eq!(sent(&events), NOTHING);
 }
 
+/// While a menu of the overlay is open the keys are the overlay's, whether
+/// egui has a use for them or not: Escape closes the menu and does not
+/// reach the guest, nor does any other key, and what the guest held when
+/// the menu opened is let go.
+#[test]
+fn an_open_menu_has_the_keyboard() {
+    let (mut session, events) = shown(&BUSY_ROM);
+    session
+        .target
+        .key(code(KeyCode::KeyA), ElementState::Pressed, false);
+    assert_eq!(sent(&events), [Scancode(0x1E)]);
+
+    session.click(Role::Button, "Machine");
+    assert_eq!(sent(&events), [ScanRelease(0x9E)], "the menu opened");
+
+    let guest = &mut session.target;
+    guest.key(code(KeyCode::KeyB), ElementState::Pressed, false);
+    guest.key(code(KeyCode::Escape), ElementState::Pressed, false);
+    session.frame(vec![key(egui::Key::Escape, true)]);
+    session.frame(vec![key(egui::Key::Escape, false)]);
+    assert!(!session.screen().has(Role::Button, "Reset"), "closed");
+    let guest = &mut session.target;
+    guest.key(code(KeyCode::Escape), ElementState::Released, false);
+    guest.key(code(KeyCode::KeyB), ElementState::Released, false);
+    assert_eq!(sent(&events), NOTHING, "the menu had the keyboard");
+
+    guest.key(code(KeyCode::KeyC), ElementState::Pressed, false);
+    assert_eq!(sent(&events), [Scancode(0x2E)], "it is the guest's again");
+}
+
 /// An overlay that is shown again with the focus where it was left has the
 /// keyboard from that moment: the keys the guest holds are let go then.
 #[test]

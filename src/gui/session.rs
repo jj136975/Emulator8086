@@ -6,9 +6,9 @@
 //!
 //! The invariant: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
-//! keyboard (one of its widgets has the focus) the keys the guest holds are
-//! let go: their releases will go to the overlay, and a key the guest never
-//! sees released stays down in it.
+//! keyboard (one of its widgets has the focus, or one of its menus is open)
+//! the keys the guest holds are let go: their releases will go to the
+//! overlay, and a key the guest never sees released stays down in it.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -64,9 +64,12 @@ impl Session {
         }
     }
 
-    /// Any other key of the window went down or came up. `taken` says the
-    /// overlay kept the event for itself.
-    pub fn key(&mut self, key: PhysicalKey, state: ElementState, taken: bool) {
+    /// Any other key of the window went down or came up. `kept` says that
+    /// egui, which was offered the event first, kept it for itself. While
+    /// the overlay has the keyboard every key is its own, whether egui has
+    /// a use for it or not.
+    pub fn key(&mut self, key: PhysicalKey, state: ElementState, kept: bool) {
+        let taken = kept || self.overlay.wants_keyboard();
         self.keys.key(key, state, taken);
     }
 

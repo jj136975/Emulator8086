@@ -122,10 +122,12 @@ impl Overlay {
         self.visible || !matches!(self.hint, Hint::Over)
     }
 
-    /// Whether the keys belong to the overlay: it is shown and one of its
-    /// widgets has the keyboard focus, as a field being typed in has.
+    /// Whether the keys belong to the overlay: it is shown, and one of its
+    /// widgets has the keyboard focus, as a field being typed in has, or
+    /// one of its menus is open, which Escape closes.
     pub fn wants_keyboard(&self) -> bool {
-        self.visible && self.ctx.egui_wants_keyboard_input()
+        self.visible
+            && (self.ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(&self.ctx))
     }
 
     /// Where the app says what came of a command.
