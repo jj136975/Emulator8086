@@ -82,10 +82,13 @@ fn boot_order(disks: &DiskController) -> String {
 }
 
 pub(super) fn body(ui: &mut Ui, cx: &mut Cx<'_>) {
+    // Gaps, not separators, between the parts: a separator spans the
+    // window, and the window takes the size of its contents.
+    let gap = ui.spacing().item_spacing.y * 2.0;
     ui.heading("Emulator 8086");
     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
 
-    ui.separator();
+    ui.add_space(gap);
     ui.strong("Keys");
     Grid::new("about_keys").num_columns(2).show(ui, |ui| {
         for (key, effect) in KEYS {
@@ -95,7 +98,7 @@ pub(super) fn body(ui: &mut Ui, cx: &mut Cx<'_>) {
         }
     });
 
-    ui.separator();
+    ui.add_space(gap);
     ui.strong("Machine");
     let disks = cx.runtime.disks.borrow();
     let drives = drives(&disks);

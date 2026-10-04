@@ -1,8 +1,9 @@
 //! The overlay: the tools drawn over the emulator's picture with egui. This
 //! file is the shell: whether the overlay is shown, the hint of the first
 //! seconds, the menu bar, the windows of the panels and the messages.
-//! `panels` is THE panel table, with a file per panel beside it; `messages`
-//! is where a tool says what it did; `theme` is the look.
+//! `panels` is THE panel table, with a file per panel beside it (`about`,
+//! `memory`); `messages` is where a tool says what it did; `theme` is the
+//! look.
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread. The window gathers egui's input and calls
@@ -16,6 +17,7 @@
 //! and only for the first seconds: the hint that names its key.
 
 mod about;
+mod memory;
 mod messages;
 mod panels;
 pub mod theme;
@@ -244,9 +246,13 @@ impl Overlay {
         let below_bar = ui.available_rect_before_wrap();
         for panel in Panel::ALL {
             let mut is_open = open.contains(&panel);
+            // A window takes the size of what its panel shows: a tool over
+            // the picture hides no more of it than it has to. A panel that
+            // shows more than fits scrolls it itself.
             Window::new(panel.title())
                 .open(&mut is_open)
                 .constrain_to(below_bar)
+                .auto_sized()
                 .show(ui.ctx(), |ui| panel.body(ui, &mut cx));
             // The window's own button closed it.
             if !is_open {

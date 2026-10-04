@@ -1,19 +1,32 @@
-//! Driving the overlay by hand, for the tests of the shell and of the
-//! session around it: frames of hand-made input, and what each pass left on
-//! the screen as egui describes it to a screen reader (the texts, and where
-//! each control is). No window and no GPU.
+//! Driving the overlay by hand, for the tests of the shell, of its panels
+//! and of the session around it: frames of hand-made input, and what each
+//! pass left on the screen as egui describes it to a screen reader (the
+//! texts, and where each control is). No window and no GPU. `Shell` is the
+//! shell alone, lent a machine; `waiting_for_a_key` is a machine in a state
+//! the BIOS put it in.
 //!
 //! The invariant: a test reaches the overlay only the way a user does. A
 //! control is found by its role and its label among what the last pass
 //! showed, and clicked with the pointer at its centre: a control that is not
 //! on the screen, or lies under another, cannot be clicked.
 
+use std::sync::mpsc::{Sender, channel};
+
 use egui::accesskit::{Node, Role, Toggled};
 use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
+
+use super::{Command, Overlay};
+use crate::wall_clock::HostClock;
+use emu8086_core::BIOS_ROM;
+use emu8086_core::io::keyboard::{EmulatorEvent, KeyboardController};
+use emu8086_core::vm::runtime::Runtime;
 
 /// Size of the window the tests pretend to draw in: in points, and since
 /// they draw at one pixel per point, in pixels.
 pub const SCREEN: [u32; 2] = [640, 400];
+
+/// Batches of instructions the BIOS is given to reach its wait for a key.
+const BOOT_BATCHES: usize = 2000;
 
 /// Seconds from one frame to the next.
 const FRAME_SECONDS: f64 = 1.0 / 60.0;
@@ -188,4 +201,100 @@ impl<T: Passes> Driver<T> {
         self.frame(vec![button(false)]);
         self.frame(Vec::new())
     }
+
+    /// Ticks or unticks the checkbox of the panel titled `title` in the
+    /// View menu, and gives its window the time to come or to go.
+    pub fn toggle_in_view_menu(&mut self, title: &str) -> &Screen {
+        self.click(Role::Button, "View");
+        self.click(Role::CheckBox, title);
+        self.wait(1.0)
+    }
+
+    /// Types `text` into the text field labelled `label` in place of what
+    /// it held, and presses Enter: a click gives the field the focus, Ctrl+A
+    /// selects what it holds.
+    pub fn fill(&mut self, label: &str, text: &str) -> &Screen {
+        self.click(Role::TextInput, label);
+        let select_all = Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        };
+        self.frame(vec![select_all, Event::Text(text.to_string())]);
+        self.frame(vec![key(egui::Key::Enter, true)]);
+        self.frame(vec![key(egui::Key::Enter, false)]);
+        self.frame(Vec::new())
+    }
+}
+
+/// The shell by itself, lent a machine: what the tests of the shell and of
+/// its panels drive. Nobody carries out the commands its passes ask for:
+/// `paused` is what the test says.
+pub struct Shell {
+    pub overlay: Overlay,
+    pub runtime: Runtime,
+    pub paused: bool,
+    pub commands: Vec<Command>,
+}
+
+impl Shell {
+    /// The shell as the app starts it, hidden, lent `runtime`.
+    pub fn new(runtime: Runtime) -> Self {
+        Self {
+            overlay: Overlay::new(),
+            runtime,
+            paused: false,
+            commands: Vec::new(),
+        }
+    }
+
+    /// A shell shown over `runtime`, its first frame run, with the panel
+    /// titled `title` open.
+    pub fn with_panel(runtime: Runtime, title: &str) -> Driver<Self> {
+        let mut shell = Self::new(runtime);
+        shell.overlay.toggle();
+        let mut driver = Driver::new(shell);
+        driver.frame(Vec::new());
+        driver.toggle_in_view_menu(title);
+        driver
+    }
+}
+
+impl Passes for Shell {
+    fn context(&self) -> &egui::Context {
+        self.overlay.context()
+    }
+
+    fn pass(&mut self, input: RawInput) -> egui::PlatformOutput {
+        let commands = self.overlay.run(input, &mut self.runtime, self.paused);
+        self.commands.extend(commands);
+        self.overlay.take_platform_output()
+    }
+}
+
+/// A machine without disks whose BIOS has run its power-on self test and
+/// found nothing to boot: it said so and waits in HLT, interrupts enabled,
+/// for a key, typed through the sender. It gets there without any time
+/// passing, and every run gets there the same way.
+pub fn waiting_for_a_key() -> (Runtime, Sender<EmulatorEvent>) {
+    let (keys, key_events) = channel();
+    let mut runtime = Runtime::new(
+        Vec::new(),
+        Vec::new(),
+        None,
+        false,
+        KeyboardController::with_receiver(key_events),
+        &HostClock,
+    )
+    .expect("a machine without disks has nothing to open");
+    runtime.load_rom_image(BIOS_ROM);
+    for _ in 0..BOOT_BATCHES {
+        runtime.run(50_000);
+        if runtime.cpu.halted {
+            return (runtime, keys);
+        }
+    }
+    panic!("the BIOS did not come to wait for a key");
 }

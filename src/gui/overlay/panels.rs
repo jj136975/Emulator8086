@@ -24,17 +24,18 @@
 //! compile until a new one is named there:
 //! `every_panel_has_a_title_a_checkbox_and_a_window`.
 
-use super::{Cx, about};
+use super::{Cx, about, memory};
 
 /// The panels of the overlay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
     About,
+    Memory,
 }
 
 impl Panel {
     /// Every panel, in the order of the View menu.
-    pub const ALL: [Self; 1] = [Self::About];
+    pub const ALL: [Self; 2] = [Self::About, Self::Memory];
 
     /// What the View menu and the window's title bar call the panel. The
     /// window is found again by its title from frame to frame, so two
@@ -42,6 +43,7 @@ impl Panel {
     pub fn title(self) -> &'static str {
         match self {
             Self::About => "About",
+            Self::Memory => "Memory",
         }
     }
 
@@ -49,6 +51,7 @@ impl Panel {
     pub(super) fn body(self, ui: &mut egui::Ui, cx: &mut Cx<'_>) {
         match self {
             Self::About => about::body(ui, cx),
+            Self::Memory => memory::body(ui, cx),
         }
     }
 }
