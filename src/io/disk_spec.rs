@@ -393,7 +393,7 @@ mod tests {
         let dir = ScratchDir::new("create");
         let hd = dir.path("new.vhd").display().to_string();
         let specs = vec![dir.spec("b", "new.img"), parse_disk_spec("a:memory").unwrap()];
-        let mut controller = open_drives(specs, &[hd.clone()]).unwrap();
+        let mut controller = open_drives(specs, std::slice::from_ref(&hd)).unwrap();
 
         assert_eq!(std::fs::metadata(dir.path("new.img")).unwrap().len(), FLOPPY_144_SIZE);
         assert_eq!(std::fs::metadata(dir.path("new.vhd")).unwrap().len(), 65 * 16 * 63 * 512);

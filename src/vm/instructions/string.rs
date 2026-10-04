@@ -1,7 +1,91 @@
-use super::{update_arithmetic_flags_byte, update_arithmetic_flags_word};
+use super::alu::{alu, CMP};
 use crate::utils::number::SpecialOps;
+use crate::vm::memory::Segment;
 use crate::vm::runtime::CpuFlag::*;
 use crate::vm::runtime::Runtime;
+
+/// An element width of the string instructions: `u8` for the byte forms,
+/// `u16` for the word forms.
+pub(super) trait Element: SpecialOps {
+    /// Bytes per element.
+    const SIZE: u16;
+
+    fn read(segment: &Segment, offset: u16) -> Self;
+    fn write(segment: &mut Segment, offset: u16, value: Self);
+    /// AL or AX.
+    fn accumulator(vm: &Runtime) -> Self;
+    fn set_accumulator(vm: &mut Runtime, value: Self);
+    fn port_in(vm: &mut Runtime, port: u16) -> Self;
+    fn port_out(vm: &mut Runtime, port: u16, value: Self);
+}
+
+impl Element for u8 {
+    const SIZE: u16 = 1;
+
+    #[inline(always)]
+    fn read(segment: &Segment, offset: u16) -> u8 {
+        segment.read_byte(offset)
+    }
+
+    #[inline(always)]
+    fn write(segment: &mut Segment, offset: u16, value: u8) {
+        segment.write_byte(offset, value)
+    }
+
+    #[inline(always)]
+    fn accumulator(vm: &Runtime) -> u8 {
+        vm.cpu.registers.ax.low()
+    }
+
+    #[inline(always)]
+    fn set_accumulator(vm: &mut Runtime, value: u8) {
+        vm.cpu.registers.ax.set_low(value)
+    }
+
+    #[inline(always)]
+    fn port_in(vm: &mut Runtime, port: u16) -> u8 {
+        vm.port_in_byte(port)
+    }
+
+    #[inline(always)]
+    fn port_out(vm: &mut Runtime, port: u16, value: u8) {
+        vm.port_out_byte(port, value)
+    }
+}
+
+impl Element for u16 {
+    const SIZE: u16 = 2;
+
+    #[inline(always)]
+    fn read(segment: &Segment, offset: u16) -> u16 {
+        segment.read_word(offset)
+    }
+
+    #[inline(always)]
+    fn write(segment: &mut Segment, offset: u16, value: u16) {
+        segment.write_word(offset, value)
+    }
+
+    #[inline(always)]
+    fn accumulator(vm: &Runtime) -> u16 {
+        vm.cpu.registers.ax.word()
+    }
+
+    #[inline(always)]
+    fn set_accumulator(vm: &mut Runtime, value: u16) {
+        vm.cpu.registers.ax.set(value)
+    }
+
+    #[inline(always)]
+    fn port_in(vm: &mut Runtime, port: u16) -> u16 {
+        vm.port_in_word(port)
+    }
+
+    #[inline(always)]
+    fn port_out(vm: &mut Runtime, port: u16, value: u16) {
+        vm.port_out_word(port, value)
+    }
+}
 
 /// Rewind PC to the start of the current REP-string instruction (the first
 /// prefix byte) so the main loop can service a pending interrupt. After
@@ -18,38 +102,28 @@ fn interrupt_pending(vm: &Runtime) -> bool {
     vm.cpu.check_flag(Interrupt) && vm.cpu.pic.has_interrupt()
 }
 
-pub(super) fn movs(vm: &mut Runtime, is_word: bool) {
-    let rep = vm.prefixes.rep.is_some();
-    let step: u16 = if is_word { 2 } else { 1 };
-    let dir = vm.cpu.check_flag(Directional);
-
+/// Runs a string instruction. `element` processes one element and moves SI
+/// and/or DI on. Without a REP prefix it runs once; with one it runs CX
+/// times, CX counting down. For the comparing instructions (`compares`:
+/// CMPS and SCAS) the repetition also ends when ZF stops matching the
+/// prefix: REPE/REPZ continues while ZF is set, REPNE/REPNZ while it is clear.
+#[inline(always)]
+fn repeat(vm: &mut Runtime, compares: bool, mut element: impl FnMut(&mut Runtime)) {
+    let rep = vm.prefixes.rep;
     loop {
-        if rep && vm.cpu.registers.cx.word() == 0 {
+        if rep.is_some() && vm.cpu.registers.cx.word() == 0 {
             break;
         }
 
-        let si = vm.cpu.registers.si.word();
-        let di = vm.cpu.registers.di.word();
-        if is_word {
-            let word = vm.data_segment().read_word(si);
-            vm.cpu.registers.es.write_word(di, word);
-        } else {
-            let byte = vm.data_segment().read_byte(si);
-            vm.cpu.registers.es.write_byte(di, byte);
-        }
-        if dir {
-            vm.cpu.registers.si.operation(step, u16::wrapping_sub);
-            vm.cpu.registers.di.operation(step, u16::wrapping_sub);
-        } else {
-            vm.cpu.registers.si.operation(step, u16::wrapping_add);
-            vm.cpu.registers.di.operation(step, u16::wrapping_add);
-        }
+        element(vm);
 
-        if !rep {
+        let Some(while_zero) = rep else {
             break;
-        }
+        };
         vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
-
+        if compares && vm.cpu.check_flag(Zero) != while_zero {
+            break;
+        }
         // Yield mid-REP so a pending, unmasked IRQ can be serviced.
         if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
             break_for_interrupt(vm);
@@ -58,237 +132,108 @@ pub(super) fn movs(vm: &mut Runtime, is_word: bool) {
     }
 }
 
-pub(super) fn cmps(vm: &mut Runtime, is_word: bool) {
-    let rep = vm.prefixes.rep;
-    let step: u16 = if is_word { 2 } else { 1 };
-    let dir = vm.cpu.check_flag(Directional);
-
-    loop {
-        if rep.is_some() && vm.cpu.registers.cx.word() == 0 {
-            break;
-        }
-
-        let si = vm.cpu.registers.si.word();
-        let di = vm.cpu.registers.di.word();
-        if is_word {
-            let word1 = vm.data_segment().read_word(si);
-            let word2 = vm.cpu.registers.es.read_word(di);
-            let (res, overflow, carry) = word1.oc_sub(word2);
-            update_arithmetic_flags_word(vm, res, overflow, carry);
-            vm.cpu.update_flag(AuxCarry, (word1 & 0xF) < (word2 & 0xF));
-        } else {
-            let byte1 = vm.data_segment().read_byte(si);
-            let byte2 = vm.cpu.registers.es.read_byte(di);
-            let (res, overflow, carry) = byte1.oc_sub(byte2);
-            update_arithmetic_flags_byte(vm, res, overflow, carry);
-            vm.cpu.update_flag(AuxCarry, (byte1 & 0xF) < (byte2 & 0xF));
-        }
-        if dir {
-            vm.cpu.registers.si.operation(step, u16::wrapping_sub);
-            vm.cpu.registers.di.operation(step, u16::wrapping_sub);
-        } else {
-            vm.cpu.registers.si.operation(step, u16::wrapping_add);
-            vm.cpu.registers.di.operation(step, u16::wrapping_add);
-        }
-
-        if rep.is_none() {
-            break;
-        }
-        vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
-        if vm.cpu.check_flag(Zero) != rep.unwrap() {
-            break;
-        }
-        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
-            break_for_interrupt(vm);
-            return;
-        }
+/// What is added to SI and DI after each element: the element size, negated
+/// when the direction flag is set.
+#[inline(always)]
+fn element_step<T: Element>(vm: &Runtime) -> u16 {
+    if vm.cpu.check_flag(Directional) {
+        T::SIZE.wrapping_neg()
+    } else {
+        T::SIZE
     }
 }
 
-pub(super) fn stos(vm: &mut Runtime, is_word: bool) {
-    let rep = vm.prefixes.rep.is_some();
-    let step: u16 = if is_word { 2 } else { 1 };
-    let dir = vm.cpu.check_flag(Directional);
+// The instructions are generic over the element width and kept out of line:
+// inlined into the opcode dispatcher, the REP loops of the byte forms run
+// about half as fast.
 
-    loop {
-        if rep && vm.cpu.registers.cx.word() == 0 {
-            break;
-        }
-
+/// MOVS — copy DS:[SI] to ES:[DI]
+#[inline(never)]
+pub(super) fn movs<T: Element>(vm: &mut Runtime) {
+    let step = element_step::<T>(vm);
+    repeat(vm, false, |vm| {
+        let si = vm.cpu.registers.si.word();
         let di = vm.cpu.registers.di.word();
-        if is_word {
-            let word = vm.cpu.registers.ax.word();
-            vm.cpu.registers.es.write_word(di, word);
-        } else {
-            let byte = vm.cpu.registers.ax.low();
-            vm.cpu.registers.es.write_byte(di, byte);
-        }
-        if dir {
-            vm.cpu.registers.di.operation(step, u16::wrapping_sub);
-        } else {
-            vm.cpu.registers.di.operation(step, u16::wrapping_add);
-        }
-
-        if !rep {
-            break;
-        }
-        vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
-        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
-            break_for_interrupt(vm);
-            return;
-        }
-    }
+        let value = T::read(vm.data_segment(), si);
+        T::write(&mut vm.cpu.registers.es, di, value);
+        vm.cpu.registers.si.operation(step, u16::wrapping_add);
+        vm.cpu.registers.di.operation(step, u16::wrapping_add);
+    });
 }
 
-pub(super) fn lods(vm: &mut Runtime, is_word: bool) {
-    let rep = vm.prefixes.rep.is_some();
-    let step: u16 = if is_word { 2 } else { 1 };
-    let dir = vm.cpu.check_flag(Directional);
-
-    loop {
-        if rep && vm.cpu.registers.cx.word() == 0 {
-            break;
-        }
-
+/// CMPS — compare DS:[SI] with ES:[DI]
+#[inline(never)]
+pub(super) fn cmps<T: Element>(vm: &mut Runtime) {
+    let step = element_step::<T>(vm);
+    repeat(vm, true, |vm| {
         let si = vm.cpu.registers.si.word();
-        if is_word {
-            let word = vm.data_segment().read_word(si);
-            vm.cpu.registers.ax.set(word);
-        } else {
-            let byte = vm.data_segment().read_byte(si);
-            vm.cpu.registers.ax.set_low(byte);
-        }
-        if dir {
-            vm.cpu.registers.si.operation(step, u16::wrapping_sub);
-        } else {
-            vm.cpu.registers.si.operation(step, u16::wrapping_add);
-        }
+        let di = vm.cpu.registers.di.word();
+        let source = T::read(vm.data_segment(), si);
+        let destination = T::read(&vm.cpu.registers.es, di);
+        alu(vm, CMP, source, destination);
+        vm.cpu.registers.si.operation(step, u16::wrapping_add);
+        vm.cpu.registers.di.operation(step, u16::wrapping_add);
+    });
+}
 
-        if !rep {
-            break;
-        }
-        vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
-        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
-            break_for_interrupt(vm);
-            return;
-        }
-    }
+/// STOS — store the accumulator at ES:[DI]
+#[inline(never)]
+pub(super) fn stos<T: Element>(vm: &mut Runtime) {
+    let step = element_step::<T>(vm);
+    repeat(vm, false, |vm| {
+        let di = vm.cpu.registers.di.word();
+        let value = T::accumulator(vm);
+        T::write(&mut vm.cpu.registers.es, di, value);
+        vm.cpu.registers.di.operation(step, u16::wrapping_add);
+    });
+}
+
+/// LODS — load the accumulator from DS:[SI]
+#[inline(never)]
+pub(super) fn lods<T: Element>(vm: &mut Runtime) {
+    let step = element_step::<T>(vm);
+    repeat(vm, false, |vm| {
+        let si = vm.cpu.registers.si.word();
+        let value = T::read(vm.data_segment(), si);
+        T::set_accumulator(vm, value);
+        vm.cpu.registers.si.operation(step, u16::wrapping_add);
+    });
 }
 
 /// INS — read from port [DX] into ES:[DI] (80186+)
-pub(super) fn ins(vm: &mut Runtime, is_word: bool) {
-    let rep = vm.prefixes.rep.is_some();
-    let step: u16 = if is_word { 2 } else { 1 };
-    let dir = vm.cpu.check_flag(Directional);
-
-    loop {
-        if rep && vm.cpu.registers.cx.word() == 0 {
-            break;
-        }
-
+#[inline(never)]
+pub(super) fn ins<T: Element>(vm: &mut Runtime) {
+    let step = element_step::<T>(vm);
+    repeat(vm, false, |vm| {
         let port = vm.cpu.registers.dx.word();
         let di = vm.cpu.registers.di.word();
-        if is_word {
-            let val = vm.port_in_word(port);
-            vm.cpu.registers.es.write_word(di, val);
-        } else {
-            let val = vm.port_in_byte(port);
-            vm.cpu.registers.es.write_byte(di, val);
-        }
-        if dir {
-            vm.cpu.registers.di.operation(step, u16::wrapping_sub);
-        } else {
-            vm.cpu.registers.di.operation(step, u16::wrapping_add);
-        }
-
-        if !rep {
-            break;
-        }
-        vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
-        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
-            break_for_interrupt(vm);
-            return;
-        }
-    }
+        let value = T::port_in(vm, port);
+        T::write(&mut vm.cpu.registers.es, di, value);
+        vm.cpu.registers.di.operation(step, u16::wrapping_add);
+    });
 }
 
 /// OUTS — write DS:[SI] to port [DX] (80186+)
-pub(super) fn outs(vm: &mut Runtime, is_word: bool) {
-    let rep = vm.prefixes.rep.is_some();
-    let step: u16 = if is_word { 2 } else { 1 };
-    let dir = vm.cpu.check_flag(Directional);
-
-    loop {
-        if rep && vm.cpu.registers.cx.word() == 0 {
-            break;
-        }
-
+#[inline(never)]
+pub(super) fn outs<T: Element>(vm: &mut Runtime) {
+    let step = element_step::<T>(vm);
+    repeat(vm, false, |vm| {
         let port = vm.cpu.registers.dx.word();
         let si = vm.cpu.registers.si.word();
-        if is_word {
-            let val = vm.data_segment().read_word(si);
-            vm.port_out_word(port, val);
-        } else {
-            let val = vm.data_segment().read_byte(si);
-            vm.port_out_byte(port, val);
-        }
-        if dir {
-            vm.cpu.registers.si.operation(step, u16::wrapping_sub);
-        } else {
-            vm.cpu.registers.si.operation(step, u16::wrapping_add);
-        }
-
-        if !rep {
-            break;
-        }
-        vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
-        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
-            break_for_interrupt(vm);
-            return;
-        }
-    }
+        let value = T::read(vm.data_segment(), si);
+        T::port_out(vm, port, value);
+        vm.cpu.registers.si.operation(step, u16::wrapping_add);
+    });
 }
 
-pub(super) fn scas(vm: &mut Runtime, is_word: bool) {
-    let rep = vm.prefixes.rep;
-    let step: u16 = if is_word { 2 } else { 1 };
-    let dir = vm.cpu.check_flag(Directional);
-
-    loop {
-        if rep.is_some() && vm.cpu.registers.cx.word() == 0 {
-            break;
-        }
-
+/// SCAS — compare the accumulator with ES:[DI]
+#[inline(never)]
+pub(super) fn scas<T: Element>(vm: &mut Runtime) {
+    let step = element_step::<T>(vm);
+    repeat(vm, true, |vm| {
         let di = vm.cpu.registers.di.word();
-        if is_word {
-            let word = vm.cpu.registers.es.read_word(di);
-            let ax = vm.cpu.registers.ax.word();
-            let (res, overflow, carry) = ax.oc_sub(word);
-            update_arithmetic_flags_word(vm, res, overflow, carry);
-            vm.cpu.update_flag(AuxCarry, (ax & 0xF) < (word & 0xF));
-        } else {
-            let byte = vm.cpu.registers.es.read_byte(di);
-            let al = vm.cpu.registers.ax.low();
-            let (res, overflow, carry) = al.oc_sub(byte);
-            update_arithmetic_flags_byte(vm, res, overflow, carry);
-            vm.cpu.update_flag(AuxCarry, (al & 0xF) < (byte & 0xF));
-        }
-        if dir {
-            vm.cpu.registers.di.operation(step, u16::wrapping_sub);
-        } else {
-            vm.cpu.registers.di.operation(step, u16::wrapping_add);
-        }
-
-        if rep.is_none() {
-            break;
-        }
-        vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
-        if vm.cpu.check_flag(Zero) != rep.unwrap() {
-            break;
-        }
-        if vm.cpu.registers.cx.word() != 0 && interrupt_pending(vm) {
-            break_for_interrupt(vm);
-            return;
-        }
-    }
+        let value = T::read(&vm.cpu.registers.es, di);
+        alu(vm, CMP, T::accumulator(vm), value);
+        vm.cpu.registers.di.operation(step, u16::wrapping_add);
+    });
 }

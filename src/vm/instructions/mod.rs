@@ -10,60 +10,41 @@ mod tests;
 mod regression_tests;
 
 use crate::utils::number::{div_rem, SpecialOps};
-use crate::vm::modrm::{direct_address, rm_address, ModRM};
+use crate::vm::modrm::{decode_rm, reg_field, ModRM};
 use crate::vm::runtime::CpuFlag::*;
 use crate::vm::runtime::{Prefixes, Runtime, SegmentType};
-use std::ops::{BitAnd, BitOr, BitXor};
 
 const WORD_MASK: u8 = 0b_00_00_00_01;
 const DIRECTION_MASK: u8 = 0b_00_00_00_10;
 
-const WORD_AUX_CARRY_MASK: u16 = 0b_0000_0000_0000_1111;
-const WORD_AUX_CARRY_FLAG: u16 = 0b_0000_0000_0001_0000;
 const WORD_SIGN_FLAG: u16 = 0b_1000_0000_0000_0000;
-
-const BYTE_AUX_CARRY_MASK: u8 = 0b_0000_1111;
-const BYTE_AUX_CARRY_FLAG: u8 = 0b_0001_0000;
 const BYTE_SIGN_FLAG: u8 = 0b_1000_0000;
 
+/// Sets ZF, SF and PF from a result.
 #[inline]
-fn update_arithmetic_flags_word(vm: &mut Runtime, res: u16, overflow: bool, carry: bool) {
+fn update_result_flags<T: SpecialOps>(vm: &mut Runtime, res: T) {
+    vm.cpu.update_flag(Zero, res == T::ZERO);
+    vm.cpu.update_flag(Sign, res.is_negative());
+    vm.cpu.update_flag(Parity, res.low_byte().count_ones() & 1 == 0);
+}
+
+/// Sets OF and CF as given, and ZF, SF and PF from the result.
+#[inline]
+fn update_arithmetic_flags<T: SpecialOps>(vm: &mut Runtime, res: T, overflow: bool, carry: bool) {
     vm.cpu.update_flag(Overflow, overflow);
     vm.cpu.update_flag(Carry, carry);
-    vm.cpu.update_flag(Zero, res == 0);
-    vm.cpu.update_flag(Sign, (res as i16) < 0);
-    vm.cpu.update_flag(Parity, (res as u8).count_ones() & 1 == 0);
+    update_result_flags(vm, res);
 }
 
+/// Clears OF and CF, and sets ZF, SF and PF from the result.
 #[inline]
-fn update_arithmetic_flags_byte(vm: &mut Runtime, res: u8, overflow: bool, carry: bool) {
-    vm.cpu.update_flag(Overflow, overflow);
-    vm.cpu.update_flag(Carry, carry);
-    vm.cpu.update_flag(Zero, res == 0);
-    vm.cpu.update_flag(Sign, (res as i8) < 0);
-    vm.cpu.update_flag(Parity, res.count_ones() & 1 == 0);
-}
-
-#[inline]
-fn update_logical_flags_word(vm: &mut Runtime, res: u16) {
+fn update_logical_flags<T: SpecialOps>(vm: &mut Runtime, res: T) {
     vm.cpu.unset_flag(Overflow);
     vm.cpu.unset_flag(Carry);
-    vm.cpu.update_flag(Zero, res == 0);
-    vm.cpu.update_flag(Sign, (res as i16) < 0);
-    vm.cpu.update_flag(Parity, (res as u8).count_ones() & 1 == 0);
-}
-
-#[inline]
-fn update_logical_flags_byte(vm: &mut Runtime, res: u8) {
-    vm.cpu.unset_flag(Overflow);
-    vm.cpu.unset_flag(Carry);
-    vm.cpu.update_flag(Zero, res == 0);
-    vm.cpu.update_flag(Sign, (res as i8) < 0);
-    vm.cpu.update_flag(Parity, res.count_ones() & 1 == 0);
+    update_result_flags(vm, res);
 }
 
 pub fn process(vm: &mut Runtime) {
-    vm.cpu.registers.op_pc = vm.cpu.registers.pc.word();
     if vm.prefixes.pending {
         // The previous call consumed a prefix byte: this byte continues the
         // same instruction, so the latched prefixes stay in force.
@@ -80,78 +61,25 @@ pub fn process(vm: &mut Runtime) {
     let directional: bool = opcode & DIRECTION_MASK != 0;
 
     match opcode {
-        // ADD ac,data
-        0b_0000_0100 | 0b_0000_0101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let ax = vm.cpu.registers.ax.word();
-                let (res, overflow, carry) = ax.oc_add(word);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(
-                    AuxCarry,
-                    (((word & WORD_AUX_CARRY_MASK) + (ax & WORD_AUX_CARRY_MASK))
-                        & WORD_AUX_CARRY_FLAG)
-                        != 0,
-                );
-
-                vm.cpu.registers.ax.set(res);
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let al = vm.cpu.registers.ax.low();
-                let (res, overflow, carry) = al.oc_add(byte);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(
-                    AuxCarry,
-                    (((byte & BYTE_AUX_CARRY_MASK) + (al & BYTE_AUX_CARRY_MASK))
-                        & BYTE_AUX_CARRY_FLAG)
-                        != 0,
-                );
-
-                vm.cpu.registers.ax.set_low(res);
-            }
-        }
-        // ADD MOD_R/M
-        0b_0000_0000..=0b_0000_0011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-                let prev = modrm.word();
-                let (res, overflow, carry) = prev.oc_add(word);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(
-                    AuxCarry,
-                    (((word & WORD_AUX_CARRY_MASK) + (prev & WORD_AUX_CARRY_MASK))
-                        & WORD_AUX_CARRY_FLAG)
-                        != 0,
-                );
-
-                modrm.set(res);
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-                let prev = modrm.byte();
-                let (res, overflow, carry) = prev.oc_add(byte);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(
-                    AuxCarry,
-                    (((byte & BYTE_AUX_CARRY_MASK) + (prev & BYTE_AUX_CARRY_MASK))
-                        & BYTE_AUX_CARRY_FLAG)
-                        != 0,
-                );
-
-                modrm.set(res);
-            }
-        }
+        // ADD, OR, ADC, SBB, AND, SUB, XOR and CMP. Bits 3-5 of the opcode
+        // select the operation; x0-x3 (x8-xB) take an r/m operand and a
+        // register, x4-x5 (xC-xD) the accumulator and an immediate.
+        0x00..=0x03 => alu::mod_rm(vm, alu::ADD, is_word, directional),
+        0x04 | 0x05 => alu::accumulator_immediate(vm, alu::ADD, is_word),
+        0x08..=0x0B => alu::mod_rm(vm, alu::OR, is_word, directional),
+        0x0C | 0x0D => alu::accumulator_immediate(vm, alu::OR, is_word),
+        0x10..=0x13 => alu::mod_rm(vm, alu::ADC, is_word, directional),
+        0x14 | 0x15 => alu::accumulator_immediate(vm, alu::ADC, is_word),
+        0x18..=0x1B => alu::mod_rm(vm, alu::SBB, is_word, directional),
+        0x1C | 0x1D => alu::accumulator_immediate(vm, alu::SBB, is_word),
+        0x20..=0x23 => alu::mod_rm(vm, alu::AND, is_word, directional),
+        0x24 | 0x25 => alu::accumulator_immediate(vm, alu::AND, is_word),
+        0x28..=0x2B => alu::mod_rm(vm, alu::SUB, is_word, directional),
+        0x2C | 0x2D => alu::accumulator_immediate(vm, alu::SUB, is_word),
+        0x30..=0x33 => alu::mod_rm(vm, alu::XOR, is_word, directional),
+        0x34 | 0x35 => alu::accumulator_immediate(vm, alu::XOR, is_word),
+        0x38..=0x3B => alu::mod_rm(vm, alu::CMP, is_word, directional),
+        0x3C | 0x3D => alu::accumulator_immediate(vm, alu::CMP, is_word),
         // AAA
         0x37 => {
             let al = vm.cpu.registers.ax.low();
@@ -220,100 +148,6 @@ pub fn process(vm: &mut Runtime) {
             let new_al = vm.cpu.registers.ax.low() & 0x0F;
             vm.cpu.registers.ax.set_low(new_al);
         }
-        // ADC ac,data
-        0b_0001_0100 | 0b_0001_0101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let ax = vm.cpu.registers.ax.word();
-                let cf = vm.cpu.check_flag(Carry);
-                let (res, overflow, carry) = ax.oc_carry_add(word, cf);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (ax & 0xF) + (word & 0xF) + (cf as u16) > 0xF);
-
-                vm.cpu.registers.ax.set(res);
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let al = vm.cpu.registers.ax.low();
-                let cf = vm.cpu.check_flag(Carry);
-                let (res, overflow, carry) = al.oc_carry_add(byte, cf);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (al & 0xF) + (byte & 0xF) + (cf as u8) > 0xF);
-
-                vm.cpu.registers.ax.set_low(res);
-            }
-        }
-        // ADC Mod R/M
-        0b_0001_0000..=0b_0001_0011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-
-                let prev = modrm.word();
-                let cf = vm.cpu.check_flag(Carry);
-                let (res, overflow, carry) = prev.oc_carry_add(word, cf);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) + (word & 0xF) + (cf as u16) > 0xF);
-
-                modrm.set(res);
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-
-                let prev = modrm.byte();
-                let cf = vm.cpu.check_flag(Carry);
-                let (res, overflow, carry) = prev.oc_carry_add(byte, cf);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) + (byte & 0xF) + (cf as u8) > 0xF);
-
-                modrm.set(res);
-            }
-        }
-        // AND ac,data
-        0b_0010_0100 | 0b_0010_0101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let word = vm.cpu.registers.ax.operation(word, u16::bitand);
-
-                update_logical_flags_word(vm, word);
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let byte = vm.cpu.registers.ax.operation_low(byte, u8::bitand);
-
-                update_logical_flags_byte(vm, byte);
-            }
-        }
-        // AND Mod R/M
-        0b_0010_0000..=0b_0010_0011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-                let word = modrm.operation(word, u16::bitand);
-
-                update_logical_flags_word(vm, word);
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-                let byte = modrm.operation(byte, u8::bitand);
-
-                update_logical_flags_byte(vm, byte);
-            }
-        }
         // CALL addr
         0x9A => {
             let address = vm.cpu.fetch_word();
@@ -364,54 +198,9 @@ pub fn process(vm: &mut Runtime) {
         0xF5 => {
             vm.cpu.flip_flag(Carry);
         }
-        // CMP ac,imm
-        0b_0011_1100 | 0b_0011_1101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let ax = vm.cpu.registers.ax.word();
-                let (res, overflow, carry) = ax.oc_sub(word);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (ax & 0xF) < (word & 0xF));
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let al = vm.cpu.registers.ax.low();
-                let (res, overflow, carry) = al.oc_sub(byte);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (al & 0xF) < (byte & 0xF));
-            }
-        }
-        // CMP modrm
-        0b_0011_1000..=0b_0011_1011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-                let prev = modrm.word();
-                let (res, overflow, carry) = prev.oc_sub(word);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF));
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-                let prev = modrm.byte();
-                let (res, overflow, carry) = prev.oc_sub(byte);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF));
-            }
-        }
         // CMPS
-        0b_1010_0110 | 0b_1010_0111 => {
-            string::cmps(vm, is_word);
-        }
+        0xA6 => string::cmps::<u8>(vm),
+        0xA7 => string::cmps::<u16>(vm),
         // CWD
         0x99 => {
             let ax = vm.cpu.registers.ax.word();
@@ -487,18 +276,8 @@ pub fn process(vm: &mut Runtime) {
         }
         // DEC reg
         0b_0100_1000..=0b_0100_1111 => {
-            let reg = opcode & 0b111;
-            let rh = vm.cpu.registers.ref_reg_word(reg);
-            let prev = rh.word();
-            let (res, overflow, _) = prev.oc_sub(1);
-
-            vm.cpu.update_flag(Overflow, overflow);
-            vm.cpu.update_flag(Zero, res == 0);
-            vm.cpu.update_flag(Sign, (res as i16) < 0);
-            vm.cpu.update_flag(Parity, (res as u8).count_ones() & 1 == 0);
-            vm.cpu.update_flag(AuxCarry, (prev & 0xF) < 1);
-
-            rh.set(res);
+            let reg = vm.cpu.registers.ref_reg_word(opcode & 0b111);
+            alu::inc_dec(vm, &reg, true);
         }
         // TEST, NOT, NEG, MUL, IMUL, DIV, IDIV
         0b_1111_0110 | 0b_1111_0111 => {
@@ -536,18 +315,8 @@ pub fn process(vm: &mut Runtime) {
         }
         // INC reg
         0b_0100_0000..=0b_0100_0111 => {
-            let reg = opcode & 0b111;
-            let rh = vm.cpu.registers.ref_reg_word(reg);
-            let prev = rh.word();
-            let (res, overflow, _) = prev.oc_add(1);
-
-            vm.cpu.update_flag(Overflow, overflow);
-            vm.cpu.update_flag(Zero, res == 0);
-            vm.cpu.update_flag(Sign, (res as i16) < 0);
-            vm.cpu.update_flag(Parity, (res as u8).count_ones() & 1 == 0);
-            vm.cpu.update_flag(AuxCarry, (prev & 0xF) + 1 > 0xF);
-
-            rh.set(res);
+            let reg = vm.cpu.registers.ref_reg_word(opcode & 0b111);
+            alu::inc_dec(vm, &reg, false);
         }
         // INT 3 (breakpoint)
         0xCC => {
@@ -632,91 +401,30 @@ pub fn process(vm: &mut Runtime) {
         // LDS reg, mem
         0xC5 => {
             let mod_rm = vm.cpu.fetch_byte();
-            let rm = mod_rm & 0b111;
-            let mod_val = (mod_rm >> 6) & 0b11;
-
-            let address: u16 = match mod_val {
-                0b00 => direct_address(vm, rm),
-                0b01 => {
-                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
-                    let address = rm_address(vm, rm);
-                    address.wrapping_add_signed(displacement)
-                }
-                0b10 => {
-                    let displacement = vm.cpu.fetch_word();
-                    let address = rm_address(vm, rm);
-                    address.wrapping_add(displacement)
-                }
-                0b11 => vm.cpu.registers.read_reg_word(rm),
-                _ => unreachable!(),
-            };
-            let offset = vm.effective_segment(mod_val, rm).read_word(address);
-            let segment = vm
-                .effective_segment(mod_val, rm)
-                .read_word(address.wrapping_add(2));
-            vm.cpu.registers.ref_reg_word((mod_rm >> 3) & 0b111).set(offset);
+            let (offset, segment) = decode_rm(vm, mod_rm).as_memory(vm).read_far_pointer(vm);
+            vm.cpu.registers.ref_reg_word(reg_field(mod_rm)).set(offset);
             vm.cpu.registers.ds.reg_mut().set(segment);
         }
         // LEA
         0x8D => {
             let mod_rm = vm.cpu.fetch_byte();
-            let rm = mod_rm & 0b111;
-
-            let address: u16 = match (mod_rm >> 6) & 0b11 {
-                0b00 => direct_address(vm, rm),
-                0b01 => {
-                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
-                    let address = rm_address(vm, rm);
-                    address.wrapping_add_signed(displacement)
-                }
-                0b10 => {
-                    let displacement = vm.cpu.fetch_word();
-                    let address = rm_address(vm, rm);
-                    address.wrapping_add(displacement)
-                }
-                0b11 => vm.cpu.registers.read_reg_word(rm),
-                _ => unreachable!(),
-            };
-            vm.cpu.registers
-                .ref_reg_word((mod_rm >> 3) & 0b111)
-                .set(address);
+            let address = decode_rm(vm, mod_rm).as_memory(vm).offset;
+            vm.cpu.registers.ref_reg_word(reg_field(mod_rm)).set(address);
         }
-        // LES
+        // LES reg, mem
         0xC4 => {
             let mod_rm = vm.cpu.fetch_byte();
-            let rm = mod_rm & 0b111;
-            let mod_val = (mod_rm >> 6) & 0b11;
-
-            let address: u16 = match mod_val {
-                0b00 => direct_address(vm, rm),
-                0b01 => {
-                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
-                    let address = rm_address(vm, rm);
-                    address.wrapping_add_signed(displacement)
-                }
-                0b10 => {
-                    let displacement = vm.cpu.fetch_word();
-                    let address = rm_address(vm, rm);
-                    address.wrapping_add(displacement)
-                }
-                0b11 => vm.cpu.registers.read_reg_word(rm),
-                _ => unreachable!(),
-            };
-            let word = vm.effective_segment(mod_val, rm).read_word(address);
-            vm.cpu.registers.ref_reg_word((mod_rm >> 3) & 0b111).set(word);
-            let word = vm
-                .effective_segment(mod_val, rm)
-                .read_word(address.wrapping_add(2));
-            vm.cpu.registers.es.reg_mut().set(word);
+            let (offset, segment) = decode_rm(vm, mod_rm).as_memory(vm).read_far_pointer(vm);
+            vm.cpu.registers.ref_reg_word(reg_field(mod_rm)).set(offset);
+            vm.cpu.registers.es.reg_mut().set(segment);
         }
         // LOCK (0xF1 is undocumented alias on 8086)
         0xF0 | 0xF1 => {
             vm.prefixes.pending = true;
         }
         // LODS
-        0b_1010_1100 | 0b_1010_1101 => {
-            string::lods(vm, is_word);
-        }
+        0xAC => string::lods::<u8>(vm),
+        0xAD => string::lods::<u16>(vm),
         // LOOP
         0xE2 => {
             let disp = vm.cpu.fetch_byte() as i8 as i16;
@@ -799,29 +507,8 @@ pub fn process(vm: &mut Runtime) {
         // MOV segreg,mem/reg
         0x8E => {
             let mod_rm = vm.cpu.fetch_byte();
-            let rm = mod_rm & 0b111;
-            let mod_val = (mod_rm >> 6) & 0b11;
-
-            let word = match mod_val {
-                0b00 => {
-                    let address = direct_address(vm, rm);
-                    vm.effective_segment(0b00, rm).read_word(address)
-                }
-                0b01 => {
-                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
-                    let address = rm_address(vm, rm);
-                    vm.effective_segment(0b01, rm)
-                        .read_word(address.wrapping_add_signed(displacement))
-                }
-                0b10 => {
-                    let displacement = vm.cpu.fetch_word();
-                    let address = rm_address(vm, rm);
-                    vm.effective_segment(0b10, rm)
-                        .read_word(address.wrapping_add(displacement))
-                }
-                0b11 => vm.cpu.registers.read_reg_word(rm),
-                _ => unreachable!(),
-            };
+            let operand = decode_rm(vm, mod_rm);
+            let word = u16::read_rm(vm, operand);
             let seg_field = (mod_rm >> 3) & 0b011;
             vm.cpu.get_segment(SegmentType::from(seg_field))
                 .reg_mut()
@@ -855,9 +542,8 @@ pub fn process(vm: &mut Runtime) {
             }
         }
         // MOVS
-        0b_1010_0100 | 0b_1010_0101 => {
-            string::movs(vm, is_word);
-        }
+        0xA4 => string::movs::<u8>(vm),
+        0xA5 => string::movs::<u16>(vm),
         // PUSHA (80186+)
         0x60 => {
             let ax = vm.cpu.registers.ax.word();
@@ -932,7 +618,7 @@ pub fn process(vm: &mut Runtime) {
             let imm = vm.cpu.fetch_word();
             let result = (src as i16 as i32) * (imm as i16 as i32);
             vm.cpu.registers.ref_reg_word(reg).set(result as u16);
-            let overflow = result < -32768 || result > 32767;
+            let overflow = !(-32768..=32767).contains(&result);
             vm.cpu.update_flag(Overflow, overflow);
             vm.cpu.update_flag(Carry, overflow);
         }
@@ -948,56 +634,18 @@ pub fn process(vm: &mut Runtime) {
             let imm = vm.cpu.fetch_byte() as i8 as i16;
             let result = (src as i16 as i32) * (imm as i32);
             vm.cpu.registers.ref_reg_word(reg).set(result as u16);
-            let overflow = result < -32768 || result > 32767;
+            let overflow = !(-32768..=32767).contains(&result);
             vm.cpu.update_flag(Overflow, overflow);
             vm.cpu.update_flag(Carry, overflow);
         }
         // INSB/INSW (80186+) — port [DX] -> ES:[DI]
-        0x6C | 0x6D => {
-            string::ins(vm, is_word);
-        }
+        0x6C => string::ins::<u8>(vm),
+        0x6D => string::ins::<u16>(vm),
         // OUTSB/OUTSW (80186+) — DS:[SI] -> port [DX]
-        0x6E | 0x6F => {
-            string::outs(vm, is_word);
-        }
+        0x6E => string::outs::<u8>(vm),
+        0x6F => string::outs::<u16>(vm),
         // NOP
         0x90 => {}
-        // OR ac,data
-        0b_0000_1100 | 0b_0000_1101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let word = vm.cpu.registers.ax.operation(word, u16::bitor);
-
-                update_logical_flags_word(vm, word);
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let byte = vm.cpu.registers.ax.ref_mut_low().operation(byte, u8::bitor);
-
-                update_logical_flags_byte(vm, byte);
-            }
-        }
-        // OR Mod/RM
-        0b_0000_1000..=0b_0000_1011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-                let word = modrm.operation(word, u16::bitor);
-
-                update_logical_flags_word(vm, word);
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-                let byte = modrm.operation(byte, u8::bitor);
-
-                update_logical_flags_byte(vm, byte);
-            }
-        }
         // OUT DX,ac
         0xEE | 0xEF => {
             let port = vm.cpu.registers.dx.word();
@@ -1022,33 +670,10 @@ pub fn process(vm: &mut Runtime) {
         }
         // POP mem/reg
         0x8F => {
+            // The word is popped before the operand is decoded.
             let word = vm.pop_word();
-
-            let mod_rm = vm.cpu.fetch_byte();
-            let rm = mod_rm & 0b111;
-            let mod_val = (mod_rm >> 6) & 0b11;
-
-            match mod_val {
-                0b00 => {
-                    let address = direct_address(vm, rm);
-                    vm.effective_segment(0b00, rm).ref_word(address)
-                }
-                0b01 => {
-                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
-                    let address = rm_address(vm, rm);
-                    vm.effective_segment(0b01, rm)
-                        .ref_word(address.wrapping_add_signed(displacement))
-                }
-                0b10 => {
-                    let displacement = vm.cpu.fetch_word();
-                    let address = rm_address(vm, rm);
-                    vm.effective_segment(0b10, rm)
-                        .ref_word(address.wrapping_add(displacement))
-                }
-                0b11 => vm.cpu.registers.ref_reg_word(rm),
-                _ => unreachable!(),
-            }
-            .set(word);
+            let (operand, _reg) = u16::mod_rm_single(vm);
+            operand.set(word);
         }
         // POP reg
         0b_0101_1000..=0b_0101_1111 => {
@@ -1081,8 +706,10 @@ pub fn process(vm: &mut Runtime) {
         // PUSH reg
         0b_0101_0000..=0b_0101_0111 => {
             let reg = opcode & 0b111;
-            if reg == 4 && !vm.cpu.is_186() {
-                // 8086 quirk: PUSH SP pushes the already-decremented value
+            if reg == 4 {
+                // PUSH SP stores the already-decremented value. This is the
+                // 8086's behaviour, kept deliberately: the 80286 and later
+                // store the value SP had before the push.
                 vm.cpu.registers.sp.operation(2, u16::wrapping_sub);
                 let sp = vm.cpu.registers.sp.word();
                 vm.cpu.registers.ss.write_word(sp, sp);
@@ -1169,7 +796,7 @@ pub fn process(vm: &mut Runtime) {
             vm.cpu.registers.cs.reg_mut().set(cs);
             vm.cpu.registers.sp.operation(disp, u16::wrapping_add);
         }
-        // RET disp16
+        // RET imm16
         0xC2 => {
             let disp = vm.cpu.fetch_word();
             let pc = vm.pop_word();
@@ -1182,153 +809,40 @@ pub fn process(vm: &mut Runtime) {
             // Load AH into low byte of flags; 8086: bit 1=1, bits 3,5=0
             vm.cpu.flags = (vm.cpu.flags & 0xFF00) | ((vm.cpu.registers.ax.high() as u16) & 0x00D5) | 0x0002;
         }
-        // SBB ac,imm
-        0b_0001_1100 | 0b_0001_1101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let ax = vm.cpu.registers.ax.word();
-                let cf = vm.cpu.check_flag(Carry) as u16;
-                let (res, overflow, carry) = ax.oc_carry_sub(word, cf != 0);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (ax & 0xF) < (word & 0xF) + cf);
-                vm.cpu.registers.ax.set(res);
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let al = vm.cpu.registers.ax.low();
-                let cf = vm.cpu.check_flag(Carry) as u8;
-                let (res, overflow, carry) = al.oc_carry_sub(byte, cf != 0);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (al & 0xF) < (byte & 0xF) + cf);
-                vm.cpu.registers.ax.set_low(res);
-            }
-        }
-        // Group 80-83: SBB, SUB, XOR, CMP, AND, ADC, ADD, OR
+        // Group 80-83: the same eight operations on an r/m operand and an
+        // immediate, selected by the reg field
         0b_1000_0000..=0b_1000_0011 => {
-            alu::group_80_83(vm, opcode, is_word, directional);
-        }
-        // SBB modrm
-        0b_0001_1000..=0b_0001_1011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-                let prev = modrm.word();
-                let cf = vm.cpu.check_flag(Carry) as u16;
-                let (res, overflow, carry) = prev.oc_carry_sub(word, cf != 0);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF) + cf);
-
-                modrm.set(res);
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-                let prev = modrm.byte();
-                let cf = vm.cpu.check_flag(Carry) as u8;
-                let (res, overflow, carry) = prev.oc_carry_sub(byte, cf != 0);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF) + cf);
-
-                modrm.set(res);
-            }
+            alu::group_80_83(vm, is_word, directional);
         }
         // SCAS
-        0b_1010_1110 | 0b_1010_1111 => {
-            string::scas(vm, is_word);
-        }
+        0xAE => string::scas::<u8>(vm),
+        0xAF => string::scas::<u16>(vm),
         // SEG
         0b_0010_0110 | 0b_0010_1110 | 0b_0011_0110 | 0b_0011_1110 => {
             vm.prefixes.segment = Some(SegmentType::from((opcode >> 3) & 0b_11));
             vm.prefixes.pending = true;
         }
         // STOS
-        0b_1010_1010 | 0b_1010_1011 => {
-            string::stos(vm, is_word);
-        }
-        // SUB AL/AX, imm
-        0b_0010_1100 | 0b_0010_1101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let ax = vm.cpu.registers.ax.word();
-                let (res, overflow, carry) = ax.oc_sub(word);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (ax & 0xF) < (word & 0xF));
-                vm.cpu.registers.ax.set(res);
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let al = vm.cpu.registers.ax.low();
-                let (res, overflow, carry) = al.oc_sub(byte);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (al & 0xF) < (byte & 0xF));
-                vm.cpu.registers.ax.set_low(res);
-            }
-        }
-        // SUB modrm
-        0b_0010_1000..=0b_0010_1011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-                let prev = modrm.word();
-                let (res, overflow, carry) = prev.oc_sub(word);
-
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF));
-
-                modrm.set(res);
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-                let prev = modrm.byte();
-                let (res, overflow, carry) = prev.oc_sub(byte);
-
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF));
-
-                modrm.set(res);
-            }
-        }
+        0xAA => string::stos::<u8>(vm),
+        0xAB => string::stos::<u16>(vm),
         // TEST ac,data
         0b_1010_1000 | 0b_1010_1001 => {
             if is_word {
                 let word = vm.cpu.fetch_word();
-                let word = vm.cpu.registers.ax.word().bitand(word);
-
-                update_logical_flags_word(vm, word);
+                update_logical_flags(vm, vm.cpu.registers.ax.word() & word);
             } else {
                 let byte = vm.cpu.fetch_byte();
-                let byte = vm.cpu.registers.ax.low().bitand(byte);
-
-                update_logical_flags_byte(vm, byte);
+                update_logical_flags(vm, vm.cpu.registers.ax.low() & byte);
             }
         }
         // TEST Mod R/M
         0b_1000_0100 | 0b_1000_0101 => {
             if is_word {
                 let (modrm, word) = u16::mod_rm_lhs(vm);
-                let word = modrm.word().bitand(word);
-
-                update_logical_flags_word(vm, word);
+                update_logical_flags(vm, modrm.word() & word);
             } else {
                 let (modrm, byte) = u8::mod_rm_lhs(vm);
-                let byte = modrm.byte().bitand(byte);
-
-                update_logical_flags_byte(vm, byte);
+                update_logical_flags(vm, modrm.byte() & byte);
             }
         }
         // WAIT
@@ -1360,38 +874,6 @@ pub fn process(vm: &mut Runtime) {
             let address = (vm.cpu.registers.ax.low() as u16).wrapping_add(vm.cpu.registers.bx.word());
             let byte = vm.data_segment().read_byte(address);
             vm.cpu.registers.ax.set_low(byte);
-        }
-        // XOR
-        0b_0011_0100 | 0b_0011_0101 => {
-            if is_word {
-                let word = vm.cpu.fetch_word();
-                let word = vm.cpu.registers.ax.operation(word, u16::bitxor);
-                update_logical_flags_word(vm, word);
-            } else {
-                let byte = vm.cpu.fetch_byte();
-                let byte = vm.cpu.registers.ax.operation_low(byte, u8::bitxor);
-                update_logical_flags_byte(vm, byte);
-            }
-        }
-        // XOR
-        0b_0011_0000..=0b_0011_0011 => {
-            if is_word {
-                let (modrm, word) = if directional {
-                    u16::mod_rm_lhs(vm)
-                } else {
-                    u16::mod_rm_rhs(vm)
-                };
-                let word = modrm.operation(word, u16::bitxor);
-                update_logical_flags_word(vm, word);
-            } else {
-                let (modrm, byte) = if directional {
-                    u8::mod_rm_lhs(vm)
-                } else {
-                    u8::mod_rm_rhs(vm)
-                };
-                let byte = modrm.operation(byte, u8::bitxor);
-                update_logical_flags_byte(vm, byte);
-            }
         }
     }
 }

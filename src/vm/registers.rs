@@ -37,18 +37,6 @@ impl ByteWrapper {
         unsafe { *self.inner = byte }
     }
 
-    #[inline(always)]
-    pub fn operation(&self, value: u8, operation: fn(u8, u8) -> u8) -> u8 {
-        let res = operation(unsafe { *self.inner }, value);
-        unsafe { *self.inner = res };
-        res
-    }
-
-    #[inline(always)]
-    pub fn apply<T>(&self, value: u8, operation: fn(u8, u8) -> T) -> T {
-        operation(unsafe { *self.inner }, value)
-    }
-
     #[inline]
     pub fn swap(&mut self, other: &mut ByteWrapper) {
         unsafe { core::ptr::swap(self.inner, other.inner) };
@@ -91,13 +79,6 @@ impl WordWrapper {
         unsafe { *self.hi = bytes[1] };
     }
 
-    #[inline(always)]
-    pub fn operation<T>(&self, value: T, operation: fn(u16, T) -> u16) -> u16 {
-        let res = operation(self.word(), value);
-        self.set(res);
-        res
-    }
-
     #[inline]
     pub fn swap(&mut self, other: &mut WordWrapper) {
         let mine = self.word();
@@ -110,6 +91,37 @@ impl WordWrapper {
         let mine = self.word();
         self.set(register.word());
         register.set(mine);
+    }
+}
+
+/// Access to an operand of width `T` through its wrapper, for code that is
+/// written once for both widths.
+pub trait OperandRef<T> {
+    fn get(&self) -> T;
+    fn set(&self, value: T);
+}
+
+impl OperandRef<u8> for ByteWrapper {
+    #[inline(always)]
+    fn get(&self) -> u8 {
+        self.byte()
+    }
+
+    #[inline(always)]
+    fn set(&self, value: u8) {
+        ByteWrapper::set(self, value)
+    }
+}
+
+impl OperandRef<u16> for WordWrapper {
+    #[inline(always)]
+    fn get(&self) -> u16 {
+        self.word()
+    }
+
+    #[inline(always)]
+    fn set(&self, value: u16) {
+        WordWrapper::set(self, value)
     }
 }
 
@@ -205,7 +217,6 @@ pub struct Registers {
     pub es: Segment,
     pub ss: Segment,
     pub pc: Register,
-    pub op_pc: u16,
     /// IP of the first byte of the current instruction sequence, including
     /// any prefix bytes. Used by interruptible REP-string ops to rewind the
     /// PC when breaking out for a pending IRQ.
@@ -232,7 +243,6 @@ impl Registers {
             es: Segment::new(0x0000, memory),
             ss: Segment::new(0x0000, memory),
             pc: Register::default(),          // IP = 0x0000
-            op_pc: 0,
             op_start_pc: 0,
         }
     }

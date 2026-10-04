@@ -39,7 +39,7 @@ impl BlinkPhase {
     /// The phase `elapsed` after an arbitrary starting point.
     pub fn at(elapsed: Duration) -> Self {
         let half_periods = elapsed.as_millis() / CURSOR_BLINK_MS;
-        Self { cursor_on: half_periods % 2 == 0, text_on: half_periods % 4 < 2 }
+        Self { cursor_on: half_periods.is_multiple_of(2), text_on: half_periods % 4 < 2 }
     }
 }
 

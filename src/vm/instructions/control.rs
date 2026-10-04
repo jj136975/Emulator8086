@@ -1,122 +1,76 @@
-use super::{update_arithmetic_flags_byte, update_arithmetic_flags_word};
-use crate::utils::number::SpecialOps;
-use crate::vm::modrm::{direct_address, rm_address, ModRM};
-use crate::vm::runtime::CpuFlag::*;
+use super::alu::inc_dec;
+use crate::vm::modrm::{decode_rm, reg_field, ModRM, RmOperand};
 use crate::vm::runtime::Runtime;
+
+/// Opcodes FE and FF: INC, DEC, CALL, JMP or PUSH of the r/m operand,
+/// selected by the reg field.
 pub(super) fn group_fe_ff(vm: &mut Runtime, is_word: bool) {
-    if !is_word {
-        let modrm_byte = vm.cpu.registers.cs.read_byte(vm.cpu.registers.pc.word());
-        let reg = (modrm_byte >> 3) & 0b_111;
-        if reg <= 1 {
-            let (modrm, _) = u8::mod_rm_single(vm);
-            match reg {
-                0b_000 => {
-                    let prev = modrm.byte();
-                    let (b, o, _) = prev.oc_add(1);
-                    modrm.set(b);
-                    update_arithmetic_flags_byte(vm, b, o, vm.cpu.check_flag(Carry));
-                    vm.cpu.update_flag(AuxCarry, (prev & 0xF) + 1 > 0xF);
-                }
-                0b_001 => {
-                    let prev = modrm.byte();
-                    let (b, o, _) = prev.oc_sub(1);
-                    modrm.set(b);
-                    update_arithmetic_flags_byte(vm, b, o, vm.cpu.check_flag(Carry));
-                    vm.cpu.update_flag(AuxCarry, (prev & 0xF) < 1);
-                }
-                _ => unreachable!(),
-            };
-            return;
-        }
-    }
+    let mod_rm = vm.cpu.fetch_byte();
+    let operand = decode_rm(vm, mod_rm);
 
-    let modrm_byte = vm.cpu.registers.cs.read_byte(vm.cpu.registers.pc.word());
-
-    // CALL FAR / JMP FAR through a memory pointer: offset word at EA, segment
-    // word at EA+2, with the +2 wrapping inside the segment as for LES/LDS.
-    let far_reg = (modrm_byte >> 3) & 0b_111;
-    if far_reg == 0b_011 || far_reg == 0b_101 {
-        vm.cpu.fetch_byte();
-        let rm = modrm_byte & 0b_111;
-        let mod_val = modrm_byte >> 6;
-        let (new_ip, new_cs) = if mod_val == 0b11 {
-            // A register operand has no second word; this form is undefined
-            // on the 8086. Keep CS.
-            (
-                vm.cpu.registers.read_reg_word(rm),
-                vm.cpu.registers.cs.reg().word(),
-            )
-        } else {
-            let address = match mod_val {
-                0b00 => direct_address(vm, rm),
-                0b01 => {
-                    let displacement = vm.cpu.fetch_byte() as i8 as i16;
-                    rm_address(vm, rm).wrapping_add_signed(displacement)
-                }
-                _ => {
-                    let displacement = vm.cpu.fetch_word();
-                    rm_address(vm, rm).wrapping_add(displacement)
-                }
-            };
-            let segment = vm.effective_segment(mod_val, rm);
-            (
-                segment.read_word(address),
-                segment.read_word(address.wrapping_add(2)),
-            )
-        };
-        if far_reg == 0b_011 {
-            vm.push_word(vm.cpu.registers.cs.reg().word());
-            vm.push_word(vm.cpu.registers.pc.word());
+    match reg_field(mod_rm) {
+        // INC r/m (000) / DEC r/m (001)
+        reg @ (0b_000 | 0b_001) => {
+            let decrement = reg == 0b_001;
+            if is_word {
+                let dest = u16::ref_rm(vm, operand);
+                inc_dec(vm, &dest, decrement);
+            } else {
+                let dest = u8::ref_rm(vm, operand);
+                inc_dec(vm, &dest, decrement);
+            }
         }
-        vm.cpu.registers.pc.set(new_ip);
-        vm.cpu.registers.cs.reg_mut().set(new_cs);
-        return;
-    }
-
-    let (modrm, reg) = u16::mod_rm_single(vm);
-
-    match reg & 0b_111 {
-        0b_000 => {
-            let prev = modrm.word();
-            let (w, o, _) = prev.oc_add(1);
-            modrm.set(w);
-            update_arithmetic_flags_word(vm, w, o, vm.cpu.check_flag(Carry));
-            vm.cpu.update_flag(AuxCarry, (prev & 0xF) + 1 > 0xF);
-        }
-        0b_001 => {
-            let prev = modrm.word();
-            let (w, o, _) = prev.oc_sub(1);
-            modrm.set(w);
-            update_arithmetic_flags_word(vm, w, o, vm.cpu.check_flag(Carry));
-            vm.cpu.update_flag(AuxCarry, (prev & 0xF) < 1);
-        }
+        // The remaining operations take a word operand. Only FF defines
+        // them; FE with these reg values is undefined on the 8086 and is
+        // executed like FF here.
+        // CALL near
         0b_010 => {
-            let target = modrm.word();
+            let target = u16::read_rm(vm, operand);
             vm.push_word(vm.cpu.registers.pc.word());
             vm.cpu.registers.pc.set(target);
         }
-        0b_100 => vm.cpu.registers.pc.set(modrm.word()),
-        // Far CALL / JMP were handled above.
-        0b_011 | 0b_101 => unreachable!(),
-        0b_110 | 0b_111 => {
-            let is_sp_reg = !vm.cpu.is_186() && (modrm_byte >> 6) == 0b11 && (modrm_byte & 0b111) == 4;
-            if is_sp_reg {
+        // CALL far / JMP far through the pointer stored at the operand
+        reg @ (0b_011 | 0b_101) => {
+            let (new_ip, new_cs) = match operand {
+                // A register operand has no second word; this form is
+                // undefined on the 8086. Keep CS.
+                RmOperand::Register(rm) => (
+                    vm.cpu.registers.read_reg_word(rm),
+                    vm.cpu.registers.cs.reg().word(),
+                ),
+                RmOperand::Memory(memory) => memory.read_far_pointer(vm),
+            };
+            if reg == 0b_011 {
+                vm.push_word(vm.cpu.registers.cs.reg().word());
+                vm.push_word(vm.cpu.registers.pc.word());
+            }
+            vm.cpu.registers.pc.set(new_ip);
+            vm.cpu.registers.cs.reg_mut().set(new_cs);
+        }
+        // JMP near
+        0b_100 => {
+            let target = u16::read_rm(vm, operand);
+            vm.cpu.registers.pc.set(target);
+        }
+        // PUSH r/m (110, and its undocumented alias 111)
+        _ => {
+            if matches!(operand, RmOperand::Register(0b100)) {
+                // PUSH SP stores the already-decremented value, as opcode
+                // 54h does: the 8086's behaviour, kept deliberately.
                 vm.cpu.registers.sp.operation(2, u16::wrapping_sub);
                 let sp = vm.cpu.registers.sp.word();
                 vm.cpu.registers.ss.write_word(sp, sp);
             } else {
-                vm.push_word(modrm.word());
+                let word = u16::read_rm(vm, operand);
+                vm.push_word(word);
             }
         }
-        _ => unreachable!()
-    };
+    }
 }
 
+/// Divide error (INT 0). The return address pushed is that of the next
+/// instruction. This is the 8086's behaviour, kept deliberately: the 80286
+/// and later push the address of the failing instruction instead.
 pub(super) fn div_zero(vm: &mut Runtime) {
-    // 80186+: return address points to the faulting DIV/IDIV instruction (allows retry)
-    // 8086: return address points past the instruction (already advanced)
-    if vm.cpu.is_186() {
-        vm.cpu.registers.pc.set(vm.cpu.registers.op_pc);
-    }
     vm.handle_interrupt(0x00);
 }

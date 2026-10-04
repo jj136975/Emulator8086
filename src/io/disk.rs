@@ -2881,11 +2881,11 @@ mod inspection_tests {
         let mut slice = partition_slice();
         let mut two = [0u8; 2];
 
-        assert_eq!(slice.seek(SeekFrom::Current(0)).unwrap(), 0);
+        assert_eq!(slice.stream_position().unwrap(), 0);
         assert_eq!(slice.seek(SeekFrom::Start(5)).unwrap(), 5);
         slice.read_exact(&mut two).unwrap();
         assert_eq!(two, [15, 16]);
-        assert_eq!(slice.seek(SeekFrom::Current(0)).unwrap(), 7);
+        assert_eq!(slice.stream_position().unwrap(), 7);
         assert_eq!(slice.seek(SeekFrom::Current(-4)).unwrap(), 3);
         assert_eq!(slice.seek(SeekFrom::End(0)).unwrap(), 30, "the end of the partition");
         assert_eq!(slice.seek(SeekFrom::End(-2)).unwrap(), 28);
@@ -2903,7 +2903,7 @@ mod inspection_tests {
         assert!(slice.seek(SeekFrom::Current(-4)).is_err(), "in front of the partition");
         assert!(slice.seek(SeekFrom::Start(31)).is_err(), "behind the partition");
         assert!(slice.seek(SeekFrom::End(1)).is_err());
-        assert_eq!(slice.seek(SeekFrom::Current(0)).unwrap(), 0, "a failed seek does not move");
+        assert_eq!(slice.stream_position().unwrap(), 0, "a failed seek does not move");
         slice.read_exact(&mut buffer[..1]).unwrap();
         assert_eq!(buffer[0], 10);
 

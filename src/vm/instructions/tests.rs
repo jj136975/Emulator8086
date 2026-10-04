@@ -1409,7 +1409,7 @@ fn ja_taken() {
 #[test]
 fn loop_basic() {
     // Loop 3 times, incrementing AX each time
-    // MOV CX,3; INC AX; LOOP -2
+    // MOV CX,3; INC AX; LOOP -3
     let mut vm = setup(&[
         0xB9, 0x03, 0x00, // MOV CX,3
         0x40,             // INC AX (offset 3)

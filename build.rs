@@ -271,7 +271,7 @@ mod tests {
         }
 
         fn rebuild(&self, assemble: impl FnOnce(&Path, &Path) -> Assembly) -> Result<Rebuild, String> {
-            rebuild_rom(&[self.asm.clone()], &self.asm, &self.bin, &self.scratch, assemble)
+            rebuild_rom(std::slice::from_ref(&self.asm), &self.asm, &self.bin, &self.scratch, assemble)
         }
 
         fn image_is_the_old_one(&self) -> bool {

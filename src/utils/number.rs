@@ -1,3 +1,5 @@
+use std::ops::{BitAnd, BitOr, BitXor};
+
 #[inline]
 pub fn div_rem<T: std::ops::Div<Output=T> + std::ops::Rem<Output=T> + Copy>(x: T, y: T) -> (T, T) {
     let quot = x / y;
@@ -10,7 +12,33 @@ pub const fn extend_sign(value: u8) -> u16 {
     value as i8 as i16 as u16
 }
 
-pub trait SpecialOps: Sized {
+/// An operand width of the 8086 (`u8` or `u16`), with the arithmetic the
+/// instruction implementations need in order to be written once for both.
+/// The `oc_` operations return (result, overflow, carry).
+pub trait SpecialOps:
+    Copy + PartialEq + BitAnd<Output = Self> + BitOr<Output = Self> + BitXor<Output = Self>
+{
+    /// Width in bits.
+    const BITS: u32;
+    const ZERO: Self;
+    const ONE: Self;
+    const ALL_ONES: Self;
+
+    /// The top bit: the sign of the value read as a signed number.
+    fn is_negative(self) -> bool;
+    /// The low eight bits.
+    fn low_byte(self) -> u8;
+    /// Bit `n`, which must be below `BITS`.
+    fn bit(self, n: u32) -> bool;
+
+    /// Rotation by `count` bits; any count is allowed.
+    fn rotl(self, count: u32) -> Self;
+    fn rotr(self, count: u32) -> Self;
+    /// Shifts by `count` bits, which must be below `BITS`.
+    fn logical_shl(self, count: u32) -> Self;
+    fn logical_shr(self, count: u32) -> Self;
+    fn arithmetic_shr(self, count: u32) -> Self;
+
     fn oc_carry_add(self, y: Self, carry: bool) -> (Self, bool, bool);
     fn oc_add(self, y: Self) -> (Self, bool, bool);
 
@@ -27,6 +55,51 @@ macro_rules! special_uint_impl {
         SignedT = $SignedT:ident,
     ) => {
         impl SpecialOps for $SelfT {
+            const BITS: u32 = <$SelfT>::BITS;
+            const ZERO: Self = 0;
+            const ONE: Self = 1;
+            const ALL_ONES: Self = <$SelfT>::MAX;
+
+            #[inline]
+            fn is_negative(self) -> bool {
+                (self as $SignedT) < 0
+            }
+
+            #[inline]
+            fn low_byte(self) -> u8 {
+                self as u8
+            }
+
+            #[inline]
+            fn bit(self, n: u32) -> bool {
+                (self >> n) & 1 != 0
+            }
+
+            #[inline]
+            fn rotl(self, count: u32) -> Self {
+                self.rotate_left(count)
+            }
+
+            #[inline]
+            fn rotr(self, count: u32) -> Self {
+                self.rotate_right(count)
+            }
+
+            #[inline]
+            fn logical_shl(self, count: u32) -> Self {
+                self.wrapping_shl(count)
+            }
+
+            #[inline]
+            fn logical_shr(self, count: u32) -> Self {
+                self.wrapping_shr(count)
+            }
+
+            #[inline]
+            fn arithmetic_shr(self, count: u32) -> Self {
+                (self as $SignedT).wrapping_shr(count) as $SelfT
+            }
+
             #[inline]
             fn oc_carry_add(self, y: Self, carry: bool) -> (Self, bool, bool) {
                 let (a, c1) = self.overflowing_add(y);

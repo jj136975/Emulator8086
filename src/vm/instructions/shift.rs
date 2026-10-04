@@ -1,167 +1,114 @@
 use crate::utils::number::SpecialOps;
 use crate::vm::modrm::ModRM;
+use crate::vm::registers::OperandRef;
 use crate::vm::runtime::Runtime;
 use crate::vm::runtime::CpuFlag::*;
-use super::{update_arithmetic_flags_word, update_arithmetic_flags_byte};
+use super::update_arithmetic_flags;
 
 /// 0xC0/0xC1: shift/rotate r/m8 or r/m16 by immediate byte count.
 /// Used by MS-DOS 6.22 IO.SYS (186+ but required for compatibility).
 pub(super) fn group_c0_c1(vm: &mut Runtime, is_word: bool) {
     if is_word {
-        let (modrm, reg) = u16::mod_rm_single(vm);
+        let (operand, op) = u16::mod_rm_single(vm);
         let count = vm.cpu.fetch_byte() as u32 & 0x1F;
-        shift_word(vm, modrm, reg, count);
+        shift(vm, &operand, op, count);
     } else {
-        let (modrm, reg) = u8::mod_rm_single(vm);
+        let (operand, op) = u8::mod_rm_single(vm);
         let count = vm.cpu.fetch_byte() as u32 & 0x1F;
-        shift_byte(vm, modrm, reg, count);
+        shift(vm, &operand, op, count);
     }
 }
 
 pub(super) fn group_d0_d3(vm: &mut Runtime, is_word: bool, directional: bool) {
-    let mut count = if !directional { 1 } else { vm.cpu.registers.cx.low() as u32 };
-    // 80186+: shift counts are masked to 5 bits (max 31)
-    if vm.cpu.is_186() { count &= 0x1F; }
+    // All eight bits of CL count. This is the 8086's behaviour, kept
+    // deliberately: the 80186 and later mask the count to 5 bits.
+    let count = if !directional { 1 } else { vm.cpu.registers.cx.low() as u32 };
 
     if is_word {
-        let (modrm, reg) = u16::mod_rm_single(vm);
-        shift_word(vm, modrm, reg, count);
+        let (operand, op) = u16::mod_rm_single(vm);
+        shift(vm, &operand, op, count);
     } else {
-        let (modrm, reg) = u8::mod_rm_single(vm);
-        shift_byte(vm, modrm, reg, count);
+        let (operand, op) = u8::mod_rm_single(vm);
+        shift(vm, &operand, op, count);
     }
 }
 
-fn shift_word(vm: &mut Runtime, modrm: <u16 as ModRM>::Target, reg: u8, count: u32) {
-    if count == 0 { return; }
-    let word = modrm.word();
+/// Shifts or rotates the operand behind `dest` by `count`. `op` is the reg
+/// field of the ModR/M byte. A count of 0 changes nothing, flags included.
+fn shift<T: SpecialOps>(vm: &mut Runtime, dest: &impl OperandRef<T>, op: u8, count: u32) {
+    if count == 0 {
+        return;
+    }
+    let value = dest.get();
+    let bits = T::BITS;
 
-    let (w, c) = match reg & 0b_111 {
+    let (res, carry) = match op & 0b_111 {
         // ROL — CF = bit 0 of result (last bit rotated around)
-        0b_000 => { let r = word.rotate_left(count); (r, r & 1 != 0) },
+        0b_000 => {
+            let res = value.rotl(count);
+            (res, res.bit(0))
+        }
         // ROR — CF = MSB of result (last bit rotated around)
-        0b_001 => { let r = word.rotate_right(count); (r, r & 0x8000 != 0) },
+        0b_001 => {
+            let res = value.rotr(count);
+            (res, res.is_negative())
+        }
         // RCL
-        0b_010 => word.rotate_carry_left(count, vm.cpu.check_flag(Carry)),
+        0b_010 => value.rotate_carry_left(count, vm.cpu.check_flag(Carry)),
         // RCR
-        0b_011 => word.rotate_carry_right(count, vm.cpu.check_flag(Carry)),
-        // SHL | SAL
+        0b_011 => value.rotate_carry_right(count, vm.cpu.check_flag(Carry)),
+        // SHL | SAL — CF = last bit shifted out, if the count reaches that far
         0b_100 => {
-            let result = if count >= 16 { 0u16 } else { word.wrapping_shl(count) };
-            let cf = if count <= 16 { word & (1u16 << (16u32 - count)) != 0 } else { false };
-            (result, cf)
-        },
+            let res = if count >= bits { T::ZERO } else { value.logical_shl(count) };
+            (res, count <= bits && value.bit(bits - count))
+        }
         // SETMO (undocumented: result is always all-1s on real 8086)
-        0b_110 => {
-            let cf = if count <= 16 { word & (1u16 << (16u32 - count)) != 0 } else { false };
-            (0xFFFFu16, cf)
-        },
+        0b_110 => (T::ALL_ONES, count <= bits && value.bit(bits - count)),
         // SHR
         0b_101 => {
-            let result = if count >= 16 { 0u16 } else { word.wrapping_shr(count) };
-            let cf = if count <= 16 { word & (1u16.wrapping_shl(count - 1)) != 0 } else { false };
-            (result, cf)
-        },
-        // SAR
+            let res = if count >= bits { T::ZERO } else { value.logical_shr(count) };
+            (res, count <= bits && value.bit(count - 1))
+        }
+        // SAR — past the operand width, result and CF are copies of the sign
         0b_111 => {
-            let result = if count >= 16 { if (word as i16) < 0 { 0xFFFFu16 } else { 0u16 } }
-                         else { (word as i16).wrapping_shr(count) as u16 };
-            let cf = if count <= 16 { word & (1u16.wrapping_shl(count - 1)) != 0 }
-                     else { (word as i16) < 0 };
-            (result, cf)
-        },
-        _ => unreachable!()
+            let res = if count < bits {
+                value.arithmetic_shr(count)
+            } else if value.is_negative() {
+                T::ALL_ONES
+            } else {
+                T::ZERO
+            };
+            let carry = if count <= bits { value.bit(count - 1) } else { value.is_negative() };
+            (res, carry)
+        }
+        _ => unreachable!(),
     };
 
-    if reg & 0b_100 != 0 {
+    if op & 0b_100 != 0 {
+        // Shifts set CF, ZF, SF and PF; OF only for a count of 1.
         let overflow = if count == 1 {
-            if reg & 0b_001 == 0 {
-                ((w as i16) < 0) != c
+            if op & 0b_001 == 0 {
+                res.is_negative() != carry
             } else {
-                ((word ^ w) as i16) < 0
+                (value ^ res).is_negative()
             }
         } else {
             vm.cpu.check_flag(Overflow)
         };
-        update_arithmetic_flags_word(vm, w, overflow, c);
+        update_arithmetic_flags(vm, res, overflow, carry);
     } else {
-        vm.cpu.update_flag(Carry, c);
+        // Rotates set CF and, for a count of 1, OF.
+        vm.cpu.update_flag(Carry, carry);
         if count == 1 {
-            match reg & 0b_111 {
-                0b_000 => vm.cpu.update_flag(Overflow, ((w as i16) < 0) != c),
-                0b_001 => vm.cpu.update_flag(Overflow, ((w >> 15) ^ ((w >> 14) & 1)) != 0),
-                0b_010 => vm.cpu.update_flag(Overflow, ((w as i16) < 0) != c),
-                0b_011 => vm.cpu.update_flag(Overflow, ((w >> 15) ^ ((w >> 14) & 1)) != 0),
-                _ => unreachable!()
-            }
-        }
-    }
-    modrm.set(w);
-}
-
-fn shift_byte(vm: &mut Runtime, modrm: <u8 as ModRM>::Target, reg: u8, count: u32) {
-    if count == 0 { return; }
-    let byte = modrm.byte();
-
-    let (b, c) = match reg & 0b_111 {
-        // ROL — CF = bit 0 of result (last bit rotated around)
-        0b_000 => { let r = byte.rotate_left(count); (r, r & 1 != 0) },
-        // ROR — CF = MSB of result (last bit rotated around)
-        0b_001 => { let r = byte.rotate_right(count); (r, r & 0x80 != 0) },
-        // RCL
-        0b_010 => byte.rotate_carry_left(count, vm.cpu.check_flag(Carry)),
-        // RCR
-        0b_011 => byte.rotate_carry_right(count, vm.cpu.check_flag(Carry)),
-        // SHL | SAL
-        0b_100 => {
-            let result = if count >= 8 { 0u8 } else { byte.wrapping_shl(count) };
-            let cf = if count <= 8 { byte & (1u8 << (8u32 - count)) != 0 } else { false };
-            (result, cf)
-        },
-        // SETMO (undocumented: result is always all-1s on real 8086)
-        0b_110 => {
-            let cf = if count <= 8 { byte & (1u8 << (8u32 - count)) != 0 } else { false };
-            (0xFFu8, cf)
-        },
-        // SHR
-        0b_101 => {
-            let result = if count >= 8 { 0u8 } else { byte.wrapping_shr(count) };
-            let cf = if count <= 8 { byte & (1u8.wrapping_shl(count - 1)) != 0 } else { false };
-            (result, cf)
-        },
-        // SAR
-        0b_111 => {
-            let result = if count >= 8 { if (byte as i8) < 0 { 0xFFu8 } else { 0u8 } }
-                         else { (byte as i8).wrapping_shr(count) as u8 };
-            let cf = if count <= 8 { byte & (1u8.wrapping_shl(count - 1)) != 0 }
-                     else { (byte as i8) < 0 };
-            (result, cf)
-        },
-        _ => unreachable!()
-    };
-
-    if reg & 0b_100 != 0 {
-        let overflow = if count == 1 {
-            if reg & 0b_001 == 0 {
-                ((b as i8) < 0) != c
+            let overflow = if op & 0b_001 == 0 {
+                // ROL, RCL: the sign changed
+                res.is_negative() != carry
             } else {
-                ((byte ^ b) as i8) < 0
-            }
-        } else {
-            vm.cpu.check_flag(Overflow)
-        };
-        update_arithmetic_flags_byte(vm, b, overflow, c);
-    } else {
-        vm.cpu.update_flag(Carry, c);
-        if count == 1 {
-            match reg & 0b_111 {
-                0b_000 => vm.cpu.update_flag(Overflow, ((b as i8) < 0) != c),
-                0b_001 => vm.cpu.update_flag(Overflow, ((b >> 7) ^ ((b >> 6) & 1)) != 0),
-                0b_010 => vm.cpu.update_flag(Overflow, ((b as i8) < 0) != c),
-                0b_011 => vm.cpu.update_flag(Overflow, ((b >> 7) ^ ((b >> 6) & 1)) != 0),
-                _ => unreachable!()
-            }
+                // ROR, RCR: the top two bits differ
+                res.is_negative() != res.bit(bits - 2)
+            };
+            vm.cpu.update_flag(Overflow, overflow);
         }
     }
-    modrm.set(b);
+    dest.set(res);
 }

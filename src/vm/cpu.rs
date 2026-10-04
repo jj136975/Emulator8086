@@ -3,14 +3,7 @@ use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::{CpuFlag, SegmentType};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CpuType {
-    Intel8086,
-    Intel80186,
-}
-
 pub struct Cpu {
-    pub cpu_type: CpuType,
     pub registers: Registers,
     pub memory: Box<Memory>,
     pub flags: u16,
@@ -19,11 +12,6 @@ pub struct Cpu {
 }
 
 impl Cpu {
-    #[inline]
-    pub fn is_186(&self) -> bool {
-        self.cpu_type == CpuType::Intel80186
-    }
-
     #[inline]
     pub fn fetch_byte(&mut self) -> u8 {
         let res = self.registers.cs.read_byte(self.registers.pc.word());

@@ -9,7 +9,7 @@ use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
 use crate::io::vga::VgaDevice;
 use crate::vm::cli::{enter_monitor, MonitorAction};
-use crate::vm::cpu::{Cpu, CpuType};
+use crate::vm::cpu::Cpu;
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
@@ -137,7 +137,6 @@ impl Runtime {
         let registers = Registers::new(memory.deref_mut());
         Self {
             cpu: Cpu {
-                cpu_type: CpuType::Intel8086,
                 registers,
                 memory,
                 flags: 0,
@@ -213,7 +212,6 @@ impl Runtime {
 
         Self {
             cpu: Cpu {
-                cpu_type: CpuType::Intel8086,
                 registers,
                 memory,
                 flags: 0xF002, // 8086 reset state: interrupts disabled
@@ -307,7 +305,7 @@ impl Runtime {
             // Timer
             if sample_clock
                 || self.cpu.halted
-                || self.instruction_count % CLOCK_SAMPLE_INTERVAL == 0
+                || self.instruction_count.is_multiple_of(CLOCK_SAMPLE_INTERVAL)
             {
                 sample_clock = false;
                 self.sample_host_clock();
@@ -318,7 +316,7 @@ impl Runtime {
 
             // Keyboard polling
             let mut reset_requested = false;
-            if self.instruction_count % 1000 == 0 || self.cpu.halted {
+            if self.instruction_count.is_multiple_of(1000) || self.cpu.halted {
                 if let Some(kb) = &self.keyboard {
                     match kb.borrow_mut().poll(&mut self.cpu.pic) {
                         Some(crate::io::keyboard::EmulatorEvent::Quit) => {

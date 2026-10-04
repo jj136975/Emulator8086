@@ -1,137 +1,140 @@
-use std::ops::{BitAnd, BitOr, BitXor, Not};
+use std::ops::Not;
 use crate::utils::number::{extend_sign, SpecialOps};
 use crate::vm::modrm::ModRM;
+use crate::vm::registers::OperandRef;
 use crate::vm::runtime::Runtime;
 use crate::vm::runtime::CpuFlag::*;
-use super::{
-    update_arithmetic_flags_word, update_arithmetic_flags_byte,
-    update_logical_flags_word, update_logical_flags_byte,
-    WORD_AUX_CARRY_MASK, WORD_AUX_CARRY_FLAG,
-    BYTE_AUX_CARRY_MASK, BYTE_AUX_CARRY_FLAG,
-};
+use super::{update_arithmetic_flags, update_logical_flags, update_result_flags};
 use super::control::div_zero;
 
-pub(super) fn group_80_83(vm: &mut Runtime, opcode: u8, is_word: bool, directional: bool) {
-    // Opcode 0x82 is an alias for 0x80 (byte operations), so treat it as byte path
-    if is_word || (directional && opcode != 0x82) {
-        let (modrm, reg) = u16::mod_rm_single(vm);
-        let word = if directional {
+// The eight two-operand ALU operations, numbered as in bits 3-5 of opcodes
+// 00h-3Fh and in the reg field of group 80h-83h.
+pub(super) const ADD: u8 = 0b_000;
+pub(super) const OR: u8 = 0b_001;
+pub(super) const ADC: u8 = 0b_010;
+pub(super) const SBB: u8 = 0b_011;
+pub(super) const AND: u8 = 0b_100;
+pub(super) const SUB: u8 = 0b_101;
+pub(super) const XOR: u8 = 0b_110;
+pub(super) const CMP: u8 = 0b_111;
+
+/// Performs ALU operation `op` on destination `a` and source `b`, sets the
+/// flags and returns the result. For CMP that is the difference, which the
+/// caller does not store.
+#[inline(always)]
+pub(super) fn alu<T: SpecialOps>(vm: &mut Runtime, op: u8, a: T, b: T) -> T {
+    let (res, overflow, carry) = match op {
+        ADD => a.oc_add(b),
+        ADC => a.oc_carry_add(b, vm.cpu.check_flag(Carry)),
+        SBB => a.oc_carry_sub(b, vm.cpu.check_flag(Carry)),
+        SUB | CMP => a.oc_sub(b),
+        // OR, AND and XOR clear OF and CF and leave AF alone
+        _ => {
+            let res = match op {
+                OR => a | b,
+                AND => a & b,
+                XOR => a ^ b,
+                _ => unreachable!(),
+            };
+            update_logical_flags(vm, res);
+            return res;
+        }
+    };
+    update_arithmetic_flags(vm, res, overflow, carry);
+    vm.cpu.update_flag(AuxCarry, auxiliary_carry(a, b, res));
+    res
+}
+
+/// AF for `res = a + b` or `a - b` (with or without carry in): the carry or
+/// borrow between bits 3 and 4, which is what makes bit 4 of the result
+/// differ from the XOR of the operands' bit 4.
+#[inline(always)]
+fn auxiliary_carry<T: SpecialOps>(a: T, b: T, res: T) -> bool {
+    (a ^ b ^ res).low_byte() & 0x10 != 0
+}
+
+/// Applies `op` to the operand behind `dest` and `src`, storing the result
+/// unless the operation is CMP.
+#[inline(always)]
+fn apply<T: SpecialOps>(vm: &mut Runtime, op: u8, dest: &impl OperandRef<T>, src: T) {
+    let res = alu(vm, op, dest.get(), src);
+    if op != CMP {
+        dest.set(res);
+    }
+}
+
+/// INC or DEC of the operand behind `dest`. The flags are those of adding or
+/// subtracting one, except that CF is not touched.
+#[inline(always)]
+pub(super) fn inc_dec<T: SpecialOps>(vm: &mut Runtime, dest: &impl OperandRef<T>, decrement: bool) {
+    let prev = dest.get();
+    let (res, overflow, _) = if decrement {
+        prev.oc_sub(T::ONE)
+    } else {
+        prev.oc_add(T::ONE)
+    };
+    vm.cpu.update_flag(Overflow, overflow);
+    update_result_flags(vm, res);
+    vm.cpu.update_flag(AuxCarry, auxiliary_carry(prev, T::ONE, res));
+    dest.set(res);
+}
+
+/// `op` between the accumulator and an immediate (opcodes x4h, x5h, xCh, xDh).
+#[inline(always)]
+pub(super) fn accumulator_immediate(vm: &mut Runtime, op: u8, is_word: bool) {
+    if is_word {
+        let imm = vm.cpu.fetch_word();
+        let res = alu(vm, op, vm.cpu.registers.ax.word(), imm);
+        if op != CMP {
+            vm.cpu.registers.ax.set(res);
+        }
+    } else {
+        let imm = vm.cpu.fetch_byte();
+        let res = alu(vm, op, vm.cpu.registers.ax.low(), imm);
+        if op != CMP {
+            vm.cpu.registers.ax.set_low(res);
+        }
+    }
+}
+
+/// `op` between an r/m operand and a register (opcodes x0h-x3h, x8h-xBh).
+/// With `directional` set the register is the destination.
+#[inline(always)]
+pub(super) fn mod_rm(vm: &mut Runtime, op: u8, is_word: bool, directional: bool) {
+    if is_word {
+        mod_rm_sized::<u16>(vm, op, directional)
+    } else {
+        mod_rm_sized::<u8>(vm, op, directional)
+    }
+}
+
+#[inline(always)]
+fn mod_rm_sized<T: SpecialOps + ModRM>(vm: &mut Runtime, op: u8, directional: bool) {
+    let (dest, src) = if directional {
+        T::mod_rm_lhs(vm)
+    } else {
+        T::mod_rm_rhs(vm)
+    };
+    apply(vm, op, &dest, src);
+}
+
+/// Opcodes 80h-83h: the operation in the reg field, between an r/m operand
+/// and an immediate. 81h takes a word immediate, 83h (`sign_extended`) a
+/// byte that is sign-extended to a word; 80h and its alias 82h are the byte
+/// forms.
+pub(super) fn group_80_83(vm: &mut Runtime, is_word: bool, sign_extended: bool) {
+    if is_word {
+        let (dest, op) = u16::mod_rm_single(vm);
+        let imm = if sign_extended {
             extend_sign(vm.cpu.fetch_byte())
         } else {
             vm.cpu.fetch_word()
         };
-
-        let prev = modrm.word();
-        let (w, o, c) = match reg & 0b_111 {
-            // ADD
-            0b_000 => prev.oc_add(word),
-            // OR
-            0b_001 => (modrm.operation(word, u16::bitor), false, false),
-            // ADC
-            0b_010 => prev.oc_carry_add(word, vm.cpu.check_flag(Carry)),
-            // SBB
-            0b_011 => prev.oc_carry_sub(word, vm.cpu.check_flag(Carry)),
-            // AND
-            0b_100 => (modrm.operation(word, u16::bitand), false, false),
-            // SUB
-            0b_101 => prev.oc_sub(word),
-            // XOR
-            0b_110 => (modrm.operation(word, u16::bitxor), false, false),
-            // CMP
-            0b_111 => prev.oc_sub(word),
-            _ => unreachable!()
-        };
-
-        match reg & 0b_111 {
-            // OR, AND, XOR - logical flags
-            0b_001 | 0b_100 | 0b_110 => {
-                update_logical_flags_word(vm, w);
-            }
-            // ADD
-            0b_000 => {
-                update_arithmetic_flags_word(vm, w, o, c);
-                vm.cpu.update_flag(AuxCarry, ((prev & WORD_AUX_CARRY_MASK) + (word & WORD_AUX_CARRY_MASK)) & WORD_AUX_CARRY_FLAG != 0);
-                modrm.set(w);
-            }
-            // ADC
-            0b_010 => {
-                let cf = vm.cpu.check_flag(Carry);
-                update_arithmetic_flags_word(vm, w, o, c);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) + (word & 0xF) + (cf as u16) > 0xF);
-                modrm.set(w);
-            }
-            // SUB, CMP
-            0b_101 | 0b_111 => {
-                update_arithmetic_flags_word(vm, w, o, c);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF));
-                if reg & 0b_111 != 0b_111 {
-                    modrm.set(w);
-                }
-            }
-            // SBB
-            0b_011 => {
-                let cf = vm.cpu.check_flag(Carry) as u16;
-                update_arithmetic_flags_word(vm, w, o, c);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (word & 0xF) + cf);
-                modrm.set(w);
-            }
-            _ => {}
-        }
+        apply(vm, op, &dest, imm);
     } else {
-        let (modrm, reg) = u8::mod_rm_single(vm);
-        let byte = vm.cpu.fetch_byte();
-
-        let prev = modrm.byte();
-        let (b, o, c) = match reg & 0b_111 {
-            // ADD
-            0b_000 => prev.oc_add(byte),
-            // OR
-            0b_001 => (modrm.operation(byte, u8::bitor), false, false),
-            // ADC
-            0b_010 => prev.oc_carry_add(byte, vm.cpu.check_flag(Carry)),
-            // SBB
-            0b_011 => prev.oc_carry_sub(byte, vm.cpu.check_flag(Carry)),
-            // AND
-            0b_100 => (modrm.operation(byte, u8::bitand), false, false),
-            // SUB
-            0b_101 => prev.oc_sub(byte),
-            // XOR
-            0b_110 => (modrm.operation(byte, u8::bitxor), false, false),
-            // CMP
-            0b_111 => prev.oc_sub(byte),
-            _ => unreachable!()
-        };
-
-        match reg & 0b_111 {
-            0b_001 | 0b_100 | 0b_110 => {
-                update_logical_flags_byte(vm, b);
-            }
-            0b_000 => {
-                update_arithmetic_flags_byte(vm, b, o, c);
-                vm.cpu.update_flag(AuxCarry, ((prev & BYTE_AUX_CARRY_MASK) + (byte & BYTE_AUX_CARRY_MASK)) & BYTE_AUX_CARRY_FLAG != 0);
-                modrm.set(b);
-            }
-            0b_010 => {
-                let cf = vm.cpu.check_flag(Carry);
-                update_arithmetic_flags_byte(vm, b, o, c);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) + (byte & 0xF) + (cf as u8) > 0xF);
-                modrm.set(b);
-            }
-            0b_101 | 0b_111 => {
-                update_arithmetic_flags_byte(vm, b, o, c);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF));
-                if reg & 0b_111 != 0b_111 {
-                    modrm.set(b);
-                }
-            }
-            0b_011 => {
-                let cf = vm.cpu.check_flag(Carry) as u8;
-                update_arithmetic_flags_byte(vm, b, o, c);
-                vm.cpu.update_flag(AuxCarry, (prev & 0xF) < (byte & 0xF) + cf);
-                modrm.set(b);
-            }
-            _ => {}
-        }
+        let (dest, op) = u8::mod_rm_single(vm);
+        let imm = vm.cpu.fetch_byte();
+        apply(vm, op, &dest, imm);
     }
 }
 
@@ -143,21 +146,17 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             // TEST (reg=1 is undocumented alias on 8086)
             0b_000 | 0b_001 => {
                 let word = vm.cpu.fetch_word();
-                let res = modrm.word().bitand(word);
-                update_logical_flags_word(vm, res);
+                update_logical_flags(vm, modrm.word() & word);
             },
             // NOT - no flags modified
             0b_010 => {
                 let res = modrm.word().not();
                 modrm.set(res);
             },
-            // NEG
+            // NEG: 0 - operand
             0b_011 => {
-                let operand = modrm.word();
-                let (res, overflow, carry) = 0u16.oc_sub(operand);
+                let res = alu(vm, SUB, 0, modrm.word());
                 modrm.set(res);
-                update_arithmetic_flags_word(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (operand & 0xF) != 0);
             },
             // MUL - only CF/OF defined
             0b_100 => {
@@ -188,19 +187,15 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 let numerator: u32 = (vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32);
                 let denum = modrm.word() as u32;
 
-                if denum == 0 {
-                    div_zero(vm);
-                } else {
-                    // A REP prefix has no effect here: the 8086 only consults
-                    // its F1 flag when fixing up signs for IDIV.
-                    let quot = numerator / denum;
-                    let rem = numerator % denum;
-                    if quot > u16::MAX as u32 {
-                        div_zero(vm);
-                    } else {
+                // A REP prefix has no effect here: the 8086 only consults
+                // its F1 flag when fixing up signs for IDIV.
+                match numerator.checked_div(denum) {
+                    Some(quot) if quot <= u16::MAX as u32 => {
                         vm.cpu.registers.ax.set(quot as u16);
-                        vm.cpu.registers.dx.set(rem as u16);
+                        vm.cpu.registers.dx.set((numerator % denum) as u16);
                     }
+                    // Division by zero, or a quotient that does not fit in AX
+                    _ => div_zero(vm),
                 }
             },
             // IDIV - sign-extend divisor, truncated division, no flags defined
@@ -220,7 +215,7 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     // This causes an extra negation of the quotient.
                     if vm.prefixes.rep.is_some() { quot = -quot; }
                     // 8086 checks unsigned quotient > 0x7FFF before sign application
-                    if quot < -32767 || quot > 32767 {
+                    if !(-32767..=32767).contains(&quot) {
                         div_zero(vm);
                     } else {
                         vm.cpu.registers.ax.set(quot as u16);
@@ -237,21 +232,17 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             // TEST (reg=1 is undocumented alias on 8086)
             0b_000 | 0b_001 => {
                 let byte = vm.cpu.fetch_byte();
-                let res = modrm.apply(byte, u8::bitand);
-                update_logical_flags_byte(vm, res);
+                update_logical_flags(vm, modrm.byte() & byte);
             },
             // NOT - no flags modified
             0b_010 => {
                 let res = modrm.byte().not();
                 modrm.set(res);
             },
-            // NEG
+            // NEG: 0 - operand
             0b_011 => {
-                let operand = modrm.byte();
-                let (res, overflow, carry) = 0u8.oc_sub(operand);
+                let res = alu(vm, SUB, 0, modrm.byte());
                 modrm.set(res);
-                update_arithmetic_flags_byte(vm, res, overflow, carry);
-                vm.cpu.update_flag(AuxCarry, (operand & 0xF) != 0);
             },
             // MUL - only CF/OF defined
             0b_100 => {
@@ -279,18 +270,14 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 let numerator: u16 = vm.cpu.registers.ax.word();
                 let denum = modrm.byte() as u16;
 
-                if denum == 0 {
-                    div_zero(vm);
-                } else {
-                    // A REP prefix has no effect here (see the word form).
-                    let quot = numerator / denum;
-                    let rem = numerator % denum;
-                    if quot > u8::MAX as u16 {
-                        div_zero(vm);
-                    } else {
+                // A REP prefix has no effect here (see the word form).
+                match numerator.checked_div(denum) {
+                    Some(quot) if quot <= u8::MAX as u16 => {
                         vm.cpu.registers.ax.set_low(quot as u8);
-                        vm.cpu.registers.ax.set_high(rem as u8);
+                        vm.cpu.registers.ax.set_high((numerator % denum) as u8);
                     }
+                    // Division by zero, or a quotient that does not fit in AL
+                    _ => div_zero(vm),
                 }
             },
             // IDIV - truncated division, no flags defined
@@ -308,7 +295,7 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
                     if vm.prefixes.rep.is_some() { quot = -quot; }
                     // 8086 checks unsigned quotient > 0x7F before sign application
-                    if quot < -127 || quot > 127 {
+                    if !(-127..=127).contains(&quot) {
                         div_zero(vm);
                     } else {
                         vm.cpu.registers.ax.set_low(quot as u8);

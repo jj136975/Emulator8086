@@ -381,7 +381,7 @@ impl VgaDevice {
             let _ = write!(f, "Row {:02}: |", row);
             for col in 0..cols {
                 let ch = memory.read_byte(self.text_cell_address(row * cols + col));
-                if ch >= 0x20 && ch < 0x7F {
+                if (0x20..0x7F).contains(&ch) {
                     let _ = write!(f, "{}", ch as char);
                 } else {
                     let _ = write!(f, ".");
