@@ -108,13 +108,13 @@ const HBLANK_CLOCKS: u64 = 19;
 
 /// Standard VGA default 6-bit DAC values for the first 16 CGA colors.
 const CGA_DAC: [[u8; 3]; 16] = [
-    [ 0,  0,  0], // 0  Black
-    [ 0,  0, 42], // 1  Blue
-    [ 0, 42,  0], // 2  Green
-    [ 0, 42, 42], // 3  Cyan
-    [42,  0,  0], // 4  Red
-    [42,  0, 42], // 5  Magenta
-    [42, 21,  0], // 6  Brown
+    [0, 0, 0],    // 0  Black
+    [0, 0, 42],   // 1  Blue
+    [0, 42, 0],   // 2  Green
+    [0, 42, 42],  // 3  Cyan
+    [42, 0, 0],   // 4  Red
+    [42, 0, 42],  // 5  Magenta
+    [42, 21, 0],  // 6  Brown
     [42, 42, 42], // 7  Light gray
     [21, 21, 21], // 8  Dark gray
     [21, 21, 63], // 9  Light blue
@@ -164,7 +164,6 @@ impl VgaDevice {
             seq_regs: [0x03, 0x00, 0x0F, 0x00, 0x02, 0, 0, 0],
             // seq[0]=Reset, seq[1]=Clocking, seq[2]=Map Mask (all planes),
             // seq[3]=Char Map, seq[4]=Memory Mode (odd/even, no chain-4)
-
             attr_index: 0,
             attr_regs,
             attr_flip_flop: false,
@@ -199,8 +198,7 @@ impl VgaDevice {
     fn input_status_1(&self) -> u8 {
         let in_frame = self.timer_clock.get() % FRAME_CLOCKS;
         let vertical_retrace = in_frame >= FRAME_CLOCKS - VRETRACE_CLOCKS;
-        let display_off =
-            vertical_retrace || in_frame % LINE_CLOCKS >= LINE_CLOCKS - HBLANK_CLOCKS;
+        let display_off = vertical_retrace || in_frame % LINE_CLOCKS >= LINE_CLOCKS - HBLANK_CLOCKS;
         0xF0 | (vertical_retrace as u8) << 3 | display_off as u8
     }
 
@@ -242,8 +240,8 @@ impl VgaDevice {
     /// the displayed page.
     pub fn visible_cursor_cell(&self) -> Option<usize> {
         self.cursor_shape()?;
-        let cell = (self.cursor_offset() as usize).wrapping_sub(self.start_address())
-            & TEXT_CELL_MASK;
+        let cell =
+            (self.cursor_offset() as usize).wrapping_sub(self.start_address()) & TEXT_CELL_MASK;
         (cell < self.cols() * ROWS).then_some(cell)
     }
 
@@ -312,30 +310,61 @@ impl VgaDevice {
         let offset = self.cursor_offset();
         let _ = writeln!(f, "=== VGA Diagnostic Dump ===");
         let _ = writeln!(f, "Video mode: {:?}", self.video_mode);
-        let _ = writeln!(f, "CRTC start_address={} cursor_offset={} (row={}, col={})",
-            start, offset, offset / cols as u16, offset % cols as u16);
-        let _ = writeln!(f, "CRTC regs: 0x0C={:02X} 0x0D={:02X} 0x0E={:02X} 0x0F={:02X}",
-            self.crtc_regs[0x0C], self.crtc_regs[0x0D], self.crtc_regs[0x0E], self.crtc_regs[0x0F]);
-        let _ = writeln!(f, "BDA video_mode={:02X} video_cols={} active_page={:02X}",
+        let _ = writeln!(
+            f,
+            "CRTC start_address={} cursor_offset={} (row={}, col={})",
+            start,
+            offset,
+            offset / cols as u16,
+            offset % cols as u16
+        );
+        let _ = writeln!(
+            f,
+            "CRTC regs: 0x0C={:02X} 0x0D={:02X} 0x0E={:02X} 0x0F={:02X}",
+            self.crtc_regs[0x0C], self.crtc_regs[0x0D], self.crtc_regs[0x0E], self.crtc_regs[0x0F]
+        );
+        let _ = writeln!(
+            f,
+            "BDA video_mode={:02X} video_cols={} active_page={:02X}",
             memory.read_byte(0x0449),
             memory.read_word(0x044A),
-            memory.read_byte(0x0462));
-        let _ = writeln!(f, "BDA cursor_pos page0: col={:02X} row={:02X}",
-            memory.read_byte(0x0450), memory.read_byte(0x0451));
+            memory.read_byte(0x0462)
+        );
+        let _ = writeln!(
+            f,
+            "BDA cursor_pos page0: col={:02X} row={:02X}",
+            memory.read_byte(0x0450),
+            memory.read_byte(0x0451)
+        );
         let _ = write!(f, "BDA cursor_pos all pages:");
         for p in 0..8 {
             let addr = 0x0450 + p * 2;
-            let _ = write!(f, " p{}=[{:02X},{:02X}]", p,
-                memory.read_byte(addr), memory.read_byte(addr + 1));
+            let _ = write!(
+                f,
+                " p{}=[{:02X},{:02X}]",
+                p,
+                memory.read_byte(addr),
+                memory.read_byte(addr + 1)
+            );
         }
         let _ = writeln!(f);
 
-        let _ = writeln!(f, "Mode register: {:02X} (display {}abled, blink={})",
+        let _ = writeln!(
+            f,
+            "Mode register: {:02X} (display {}abled, blink={})",
             self.mode_register,
-            if self.mode_register & 0x08 != 0 { "en" } else { "dis" },
-            self.blink_mode);
-        let _ = writeln!(f, "Misc output: {:02X}, Seq[4]={:02X}, GC[5]={:02X}, GC[6]={:02X}",
-            self.misc_output, self.seq_regs[4], self.gc_regs[5], self.gc_regs[6]);
+            if self.mode_register & 0x08 != 0 {
+                "en"
+            } else {
+                "dis"
+            },
+            self.blink_mode
+        );
+        let _ = writeln!(
+            f,
+            "Misc output: {:02X}, Seq[4]={:02X}, GC[5]={:02X}, GC[6]={:02X}",
+            self.misc_output, self.seq_regs[4], self.gc_regs[5], self.gc_regs[6]
+        );
         let _ = writeln!(f, "DAC mask: {:02X}", self.dac_mask);
 
         // IVT entries
@@ -361,17 +390,30 @@ impl VgaDevice {
         let kbd_end = memory.read_word(0x0482);
         let kbd_flags1 = memory.read_byte(0x0417);
         let kbd_flags2 = memory.read_byte(0x0418);
-        let _ = writeln!(f, "Keyboard buffer: head={:04X} tail={:04X} start={:04X} end={:04X}",
-            kbd_head, kbd_tail, kbd_start, kbd_end);
-        let _ = writeln!(f, "Keyboard flags: flags1={:02X} flags2={:02X}", kbd_flags1, kbd_flags2);
+        let _ = writeln!(
+            f,
+            "Keyboard buffer: head={:04X} tail={:04X} start={:04X} end={:04X}",
+            kbd_head, kbd_tail, kbd_start, kbd_end
+        );
+        let _ = writeln!(
+            f,
+            "Keyboard flags: flags1={:02X} flags2={:02X}",
+            kbd_flags1, kbd_flags2
+        );
         let _ = write!(f, "Buffer contents:");
         let mut ptr = kbd_start;
         while ptr < kbd_end {
             let w = memory.read_word(0x0400 + ptr as usize);
-            if ptr == kbd_head { let _ = write!(f, " [H"); }
-            if ptr == kbd_tail { let _ = write!(f, " [T"); }
+            if ptr == kbd_head {
+                let _ = write!(f, " [H");
+            }
+            if ptr == kbd_tail {
+                let _ = write!(f, " [T");
+            }
             let _ = write!(f, " {:04X}", w);
-            if ptr == kbd_head || ptr == kbd_tail { let _ = write!(f, "]"); }
+            if ptr == kbd_head || ptr == kbd_tail {
+                let _ = write!(f, "]");
+            }
             ptr += 2;
         }
         let _ = writeln!(f);
@@ -633,7 +675,11 @@ mod inspection_tests {
             clock.set(at);
             let status = vga.port_in_byte(0x3DA, &mut rt.cpu);
             if status & 0x08 != 0 {
-                assert_eq!(status & 0x01, 0x01, "display off during retrace, clock {at}");
+                assert_eq!(
+                    status & 0x01,
+                    0x01,
+                    "display off during retrace, clock {at}"
+                );
             } else if status & 0x01 != 0 {
                 blank_clocks += 1;
             }
@@ -643,9 +689,17 @@ mod inspection_tests {
         assert_eq!(blank_clocks, lines * HBLANK_CLOCKS);
 
         clock.set(0);
-        assert_eq!(vga.port_in_byte(0x3DA, &mut rt.cpu) & 0x01, 0, "start of a line");
+        assert_eq!(
+            vga.port_in_byte(0x3DA, &mut rt.cpu) & 0x01,
+            0,
+            "start of a line"
+        );
         clock.set(LINE_CLOCKS - 1);
-        assert_eq!(vga.port_in_byte(0x3DA, &mut rt.cpu) & 0x01, 0x01, "end of a line");
+        assert_eq!(
+            vga.port_in_byte(0x3DA, &mut rt.cpu) & 0x01,
+            0x01,
+            "end of a line"
+        );
     }
 
     fn write_crtc(vga: &mut VgaDevice, rt: &mut Runtime, index: u8, value: u8) {
@@ -704,7 +758,11 @@ mod inspection_tests {
             write_crtc(&mut vga, &mut rt, index, 0xA5 ^ index);
         }
         for index in 0x00..=0x18 {
-            assert_eq!(read_crtc(&mut vga, &mut rt, index), 0xA5 ^ index, "index {index:#04X}");
+            assert_eq!(
+                read_crtc(&mut vga, &mut rt, index),
+                0xA5 ^ index,
+                "index {index:#04X}"
+            );
         }
         // There is no register 19h.
         write_crtc(&mut vga, &mut rt, 0x19, 0x77);
@@ -722,12 +780,20 @@ mod inspection_tests {
             vga.port_out_byte(port, 0xFF, &mut rt.cpu);
         }
         assert_eq!(vga.port_in_byte(0x3C4, &mut rt.cpu), 0x07, "sequencer");
-        assert_eq!(vga.port_in_byte(0x3CE, &mut rt.cpu), 0x0F, "graphics controller");
+        assert_eq!(
+            vga.port_in_byte(0x3CE, &mut rt.cpu),
+            0x0F,
+            "graphics controller"
+        );
         assert_eq!(vga.port_in_byte(0x3D4, &mut rt.cpu), 0x3F, "CRTC");
 
         vga.port_in_byte(0x3DA, &mut rt.cpu); // attribute flip-flop to "index"
         vga.port_out_byte(0x3C0, 0xFF, &mut rt.cpu);
-        assert_eq!(vga.port_in_byte(0x3C0, &mut rt.cpu), 0x3F, "attribute controller");
+        assert_eq!(
+            vga.port_in_byte(0x3C0, &mut rt.cpu),
+            0x3F,
+            "attribute controller"
+        );
 
         vga.port_out_byte(0x3CE, 0x15, &mut rt.cpu); // register 5
         vga.port_out_byte(0x3CF, 0x40, &mut rt.cpu);
@@ -769,11 +835,23 @@ mod inspection_tests {
         let mut vga = VgaDevice::new();
         let mut rt = Runtime::new_test();
         vga.port_out_byte(0x3C8, 0x10, &mut rt.cpu);
-        assert_eq!(vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03, 0x00, "write mode");
+        assert_eq!(
+            vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03,
+            0x00,
+            "write mode"
+        );
         vga.port_out_byte(0x3C7, 0x10, &mut rt.cpu);
-        assert_eq!(vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03, 0x03, "read mode");
+        assert_eq!(
+            vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03,
+            0x03,
+            "read mode"
+        );
         vga.port_out_byte(0x3C8, 0x10, &mut rt.cpu);
-        assert_eq!(vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03, 0x00, "write mode again");
+        assert_eq!(
+            vga.port_in_byte(0x3C7, &mut rt.cpu) & 0x03,
+            0x00,
+            "write mode again"
+        );
     }
 
     /// `dac_to_rgb8` widens the 6-bit DAC components by bit replication

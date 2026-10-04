@@ -148,7 +148,12 @@ mod tests {
 
     #[test]
     fn keys_the_83_key_keyboard_lacks_send_nothing() {
-        for code in [KeyCode::F11, KeyCode::F12, KeyCode::PrintScreen, KeyCode::Pause] {
+        for code in [
+            KeyCode::F11,
+            KeyCode::F12,
+            KeyCode::PrintScreen,
+            KeyCode::Pause,
+        ] {
             assert_eq!(scancode(code), None, "{code:?}");
         }
     }

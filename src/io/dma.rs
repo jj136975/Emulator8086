@@ -49,7 +49,11 @@ impl IoDevice for DmaController {
             // byte, as the flip-flop says
             0x00..=0x07 => {
                 let value = *self.channel_register(port);
-                let byte = if self.flip_flop { (value >> 8) as u8 } else { value as u8 };
+                let byte = if self.flip_flop {
+                    (value >> 8) as u8
+                } else {
+                    value as u8
+                };
                 self.flip_flop = !self.flip_flop;
                 byte
             }
@@ -152,7 +156,10 @@ impl IoDevice for DmaPageRegisters {
         match Self::port_to_channel(port) {
             Some(ch) => self.pages[ch] = value,
             None => {
-                debug!("DMA Page: unhandled write to port {:04X} = {:02X}", port, value);
+                debug!(
+                    "DMA Page: unhandled write to port {:04X} = {:02X}",
+                    port, value
+                );
             }
         }
     }
@@ -197,7 +204,11 @@ mod tests {
 
         assert_eq!(dma.port_in_byte(0x04, &mut rt.cpu), 0x34);
         dma.port_out_byte(0x0C, 0, &mut rt.cpu);
-        assert_eq!(dma.port_in_byte(0x04, &mut rt.cpu), 0x34, "low byte again, not the high byte");
+        assert_eq!(
+            dma.port_in_byte(0x04, &mut rt.cpu),
+            0x34,
+            "low byte again, not the high byte"
+        );
         assert_eq!(dma.port_in_byte(0x04, &mut rt.cpu), 0x12);
     }
 
@@ -212,7 +223,11 @@ mod tests {
         dma.port_out_byte(0x02, 0x55, &mut rt.cpu); // leaves the flip-flop on the high byte
         dma.port_out_byte(0x0D, 0, &mut rt.cpu); // master clear
         assert_eq!(dma.port_in_byte(0x08, &mut rt.cpu), 0x00);
-        assert_eq!(dma.port_in_byte(0x02, &mut rt.cpu), 0x55, "flip-flop is back on the low byte");
+        assert_eq!(
+            dma.port_in_byte(0x02, &mut rt.cpu),
+            0x55,
+            "flip-flop is back on the low byte"
+        );
     }
 
     #[test]
@@ -221,7 +236,11 @@ mod tests {
         let mut dma = DmaController::new();
         assert_eq!(dma.port_in_byte(0x0D, &mut rt.cpu), 0x00);
         for port in [0x09, 0x0A, 0x0B, 0x0C, 0x0E, 0x0F] {
-            assert_eq!(dma.port_in_byte(port, &mut rt.cpu), 0xFF, "port {port:02X}h");
+            assert_eq!(
+                dma.port_in_byte(port, &mut rt.cpu),
+                0xFF,
+                "port {port:02X}h"
+            );
         }
     }
 
@@ -233,8 +252,16 @@ mod tests {
             pages.port_out_byte(port, value, &mut rt.cpu);
         }
         for (port, value) in [(0x87, 0x10), (0x83, 0x21), (0x81, 0x32), (0x82, 0x43)] {
-            assert_eq!(pages.port_in_byte(port, &mut rt.cpu), value, "port {port:02X}h");
+            assert_eq!(
+                pages.port_in_byte(port, &mut rt.cpu),
+                value,
+                "port {port:02X}h"
+            );
         }
-        assert_eq!(pages.port_in_byte(0x84, &mut rt.cpu), 0xFF, "no register at 84h");
+        assert_eq!(
+            pages.port_in_byte(0x84, &mut rt.cpu),
+            0xFF,
+            "no register at 84h"
+        );
     }
 }

@@ -1,11 +1,13 @@
 [package]
 name = "emulator_8086"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 [features]
 default = []
+# The window frontend (winit + wgpu). Off by default: the terminal frontend
+# needs no GPU and is what the tests and a plain `cargo run` use.
 gui = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck"]
 
 [dependencies]
@@ -17,16 +19,28 @@ crossterm = "0.29.0"
 # MS-DOS 6 shows such an entry as the volume label of a disk that has none.
 fatfs = { version = "0.3", default-features = false, features = ["std", "chrono"] }
 
-# GUI-only dependencies
+# `gui` feature only.
 wgpu = { version = "24", optional = true }
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 
+# The hardware-captured CPU vectors (the `8086` submodule) are gzipped JSON.
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 flate2 = "1"
 
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+# line-tables-only: fast compiles/links; backtraces (function names +
+# file:line) keep working — only debugger variable inspection gets thinner.
+[profile.dev]
+debug = "line-tables-only"
+
+# Fat LTO is worth 4-10 % of interpreter speed (measured on synthetic guest
+# loops and on DOOM's timedemo) for a longer release link.
 [profile.release]
 lto = "fat"

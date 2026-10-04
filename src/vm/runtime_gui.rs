@@ -10,7 +10,7 @@ use winit::window::{Window, WindowId};
 
 use crate::io::keyboard::EmulatorEvent;
 use crate::io::keyboard_winit::physical_key_to_scancode;
-use crate::io::renderer_wgpu::{WgpuRenderer, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH};
+use crate::io::renderer_wgpu::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, WgpuRenderer};
 use crate::vm::runtime::Runtime;
 
 /// Host time the CPU runs for before each frame is drawn. The rest of the
@@ -67,11 +67,11 @@ impl ApplicationHandler for EmulatorApp {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 // F12: dump VGA (CLI monitor not supported in GUI mode)
-                if let PhysicalKey::Code(winit::keyboard::KeyCode::F12) = event.physical_key {
-                    if event.state == ElementState::Pressed {
-                        let _ = self.kbd_tx.send(EmulatorEvent::DumpVga);
-                        return;
-                    }
+                if let PhysicalKey::Code(winit::keyboard::KeyCode::F12) = event.physical_key
+                    && event.state == ElementState::Pressed
+                {
+                    let _ = self.kbd_tx.send(EmulatorEvent::DumpVga);
+                    return;
                 }
 
                 if let Some(scancode) = physical_key_to_scancode(event.physical_key) {
@@ -80,8 +80,9 @@ impl ApplicationHandler for EmulatorApp {
                             let _ = self.kbd_tx.send(EmulatorEvent::Scancode(scancode));
                         }
                         ElementState::Released => {
-                            let _ =
-                                self.kbd_tx.send(EmulatorEvent::ScanRelease(scancode | 0x80));
+                            let _ = self
+                                .kbd_tx
+                                .send(EmulatorEvent::ScanRelease(scancode | 0x80));
                         }
                     }
                 }
@@ -95,9 +96,7 @@ impl ApplicationHandler for EmulatorApp {
                 }
 
                 // Render VGA
-                if let (Some(renderer), Some(vga)) =
-                    (&mut self.renderer, &self.runtime.vga)
-                {
+                if let (Some(renderer), Some(vga)) = (&mut self.renderer, &self.runtime.vga) {
                     let vga = vga.borrow();
                     renderer.render(&vga, &self.runtime.cpu.memory);
                 }

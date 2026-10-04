@@ -5,9 +5,9 @@
 //!
 //! Ports (master): 0x20 (command), 0x21 (data)
 
-use log::debug;
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
+use log::debug;
 
 #[derive(Clone, Copy, PartialEq)]
 enum TriggerMode {
@@ -58,7 +58,7 @@ impl Pic {
         Self {
             irr: 0,
             isr: 0,
-            imr: 0xFF, // all masked until initialized
+            imr: 0xFF,         // all masked until initialized
             vector_base: 0x08, // default IBM PC mapping: IRQ0 = INT 08h
             icw_step: 0,
             icw4_expected: false,
@@ -161,9 +161,15 @@ impl Pic {
         // Pending interrupt must be strictly higher priority (lower number) than in-service
         let pending_priority = self.priority_of(highest_pending);
         let in_service_priority = self.priority_of(highest_in_service);
-        debug!("PIC: pending IRQ{} (prio {}, vector {:02X}), in-service IRQ{} (prio {}, vector {:02X})",
-            highest_pending, pending_priority, self.vector_base + highest_pending,
-            highest_in_service, in_service_priority, self.vector_base + highest_in_service);
+        debug!(
+            "PIC: pending IRQ{} (prio {}, vector {:02X}), in-service IRQ{} (prio {}, vector {:02X})",
+            highest_pending,
+            pending_priority,
+            self.vector_base + highest_pending,
+            highest_in_service,
+            in_service_priority,
+            self.vector_base + highest_in_service
+        );
         pending_priority < in_service_priority
     }
 
@@ -361,7 +367,11 @@ impl Pic {
     }
 
     fn read_command(&self) -> u8 {
-        if self.read_register == 1 { self.isr } else { self.irr }
+        if self.read_register == 1 {
+            self.isr
+        } else {
+            self.irr
+        }
     }
 
     fn read_data(&self) -> u8 {
@@ -378,15 +388,15 @@ impl IoDevice for PicDevice {
             return cpu.pic.poll_read();
         }
         match port & 0x01 {
-            0 => cpu.pic.read_command(),  // 0x20
-            _ => cpu.pic.read_data(),     // 0x21
+            0 => cpu.pic.read_command(), // 0x20
+            _ => cpu.pic.read_data(),    // 0x21
         }
     }
 
     fn port_out_byte(&mut self, port: u16, value: u8, cpu: &mut Cpu) {
         match port & 0x01 {
-            0 => cpu.pic.write_command(value),  // 0x20
-            _ => cpu.pic.write_data(value),     // 0x21
+            0 => cpu.pic.write_command(value), // 0x20
+            _ => cpu.pic.write_data(value),    // 0x21
         }
     }
 }
@@ -455,7 +465,10 @@ mod inspection_tests {
         assert_eq!(rt.cpu.pic.acknowledge(), 0x09);
 
         rt.cpu.pic.request_interrupt(3);
-        assert!(!rt.cpu.pic.has_interrupt(), "IRQ3 waits while IRQ1 is in service");
+        assert!(
+            !rt.cpu.pic.has_interrupt(),
+            "IRQ3 waits while IRQ1 is in service"
+        );
         rt.cpu.pic.request_interrupt(0);
         assert!(rt.cpu.pic.has_interrupt(), "IRQ0 preempts IRQ1");
         assert_eq!(rt.cpu.pic.acknowledge(), 0x08);
@@ -485,7 +498,11 @@ mod inspection_tests {
         dev.port_out_byte(0x21, 0x02, &mut rt.cpu);
         rt.cpu.pic.request_interrupt(1);
         assert!(!rt.cpu.pic.has_interrupt());
-        assert_eq!(dev.port_in_byte(0x21, &mut rt.cpu), 0x02, "port 21h reads the mask");
+        assert_eq!(
+            dev.port_in_byte(0x21, &mut rt.cpu),
+            0x02,
+            "port 21h reads the mask"
+        );
 
         dev.port_out_byte(0x21, 0x00, &mut rt.cpu);
         assert!(rt.cpu.pic.has_interrupt());
@@ -495,7 +512,10 @@ mod inspection_tests {
     fn acknowledge_without_a_request_returns_the_irq7_vector() {
         let (mut rt, _dev) = initialized();
         assert_eq!(rt.cpu.pic.acknowledge(), 0x0F);
-        assert_eq!(rt.cpu.pic.isr, 0x00, "a default IRQ7 is not marked in service");
+        assert_eq!(
+            rt.cpu.pic.isr, 0x00,
+            "a default IRQ7 is not marked in service"
+        );
     }
 
     #[test]
@@ -517,7 +537,11 @@ mod inspection_tests {
         rt.cpu.pic.acknowledge();
         rt.cpu.pic.request_interrupt(2);
 
-        assert_eq!(dev.port_in_byte(0x20, &mut rt.cpu), 0x04, "IRR after initialisation");
+        assert_eq!(
+            dev.port_in_byte(0x20, &mut rt.cpu),
+            0x04,
+            "IRR after initialisation"
+        );
         dev.port_out_byte(0x20, 0x0B, &mut rt.cpu);
         assert_eq!(dev.port_in_byte(0x20, &mut rt.cpu), 0x01, "ISR");
         dev.port_out_byte(0x20, 0x0A, &mut rt.cpu);
@@ -534,7 +558,10 @@ mod inspection_tests {
         rt.cpu.pic.request_interrupt(2);
         assert_eq!(rt.cpu.pic.acknowledge(), 0x0A);
         dev.port_out_byte(0x20, 0x20, &mut rt.cpu);
-        assert!(rt.cpu.pic.has_interrupt(), "the line is still asserted after the EOI");
+        assert!(
+            rt.cpu.pic.has_interrupt(),
+            "the line is still asserted after the EOI"
+        );
 
         rt.cpu.pic.clear_interrupt(2);
         assert!(!rt.cpu.pic.has_interrupt());
@@ -547,7 +574,13 @@ mod inspection_tests {
         let mut rt = Runtime::new_test();
         let mut dev = PicDevice;
         // First set-up: auto-EOI, then status reads switched to the ISR.
-        for (port, value) in [(0x20, 0x13), (0x21, 0x08), (0x21, 0x03), (0x21, 0x00), (0x20, 0x0B)] {
+        for (port, value) in [
+            (0x20, 0x13),
+            (0x21, 0x08),
+            (0x21, 0x03),
+            (0x21, 0x00),
+            (0x20, 0x0B),
+        ] {
             dev.port_out_byte(port, value, &mut rt.cpu);
         }
         // Second set-up, this time without an ICW4.
@@ -556,9 +589,16 @@ mod inspection_tests {
         }
 
         rt.cpu.pic.request_interrupt(1);
-        assert_eq!(dev.port_in_byte(0x20, &mut rt.cpu), 0x02, "status reads return the IRR again");
+        assert_eq!(
+            dev.port_in_byte(0x20, &mut rt.cpu),
+            0x02,
+            "status reads return the IRR again"
+        );
         assert_eq!(rt.cpu.pic.acknowledge(), 0x09);
-        assert_eq!(rt.cpu.pic.isr, 0x02, "normal EOI: the interrupt stays in service");
+        assert_eq!(
+            rt.cpu.pic.isr, 0x02,
+            "normal EOI: the interrupt stays in service"
+        );
     }
 
     /// Regression: the poll command (OCW3 with P set) was ignored, and the
@@ -570,17 +610,33 @@ mod inspection_tests {
         rt.cpu.pic.request_interrupt(1);
 
         dev.port_out_byte(0x20, 0x0C, &mut rt.cpu);
-        assert_eq!(dev.port_in_byte(0x20, &mut rt.cpu), 0x81, "request present, level 1");
+        assert_eq!(
+            dev.port_in_byte(0x20, &mut rt.cpu),
+            0x81,
+            "request present, level 1"
+        );
         assert_eq!(rt.cpu.pic.isr, 0x02, "the polled level is in service");
-        assert_eq!(dev.port_in_byte(0x20, &mut rt.cpu), 0x08, "one read per poll command");
+        assert_eq!(
+            dev.port_in_byte(0x20, &mut rt.cpu),
+            0x08,
+            "one read per poll command"
+        );
 
         dev.port_out_byte(0x20, 0x20, &mut rt.cpu); // EOI for IRQ1
         dev.port_out_byte(0x20, 0x0C, &mut rt.cpu);
-        assert_eq!(dev.port_in_byte(0x21, &mut rt.cpu), 0x83, "either port answers the poll");
+        assert_eq!(
+            dev.port_in_byte(0x21, &mut rt.cpu),
+            0x83,
+            "either port answers the poll"
+        );
         dev.port_out_byte(0x20, 0x20, &mut rt.cpu);
 
         dev.port_out_byte(0x20, 0x0C, &mut rt.cpu);
-        assert_eq!(dev.port_in_byte(0x20, &mut rt.cpu), 0x00, "nothing left to serve");
+        assert_eq!(
+            dev.port_in_byte(0x20, &mut rt.cpu),
+            0x00,
+            "nothing left to serve"
+        );
         assert_eq!(rt.cpu.pic.isr, 0x00);
     }
 
@@ -595,7 +651,10 @@ mod inspection_tests {
 
         dev.port_out_byte(0x21, 0x01, &mut rt.cpu); // its handler masks IRQ0
         rt.cpu.pic.request_interrupt(1);
-        assert!(!rt.cpu.pic.has_interrupt(), "fully nested: IRQ0 in service blocks IRQ1");
+        assert!(
+            !rt.cpu.pic.has_interrupt(),
+            "fully nested: IRQ0 in service blocks IRQ1"
+        );
 
         dev.port_out_byte(0x20, 0x68, &mut rt.cpu); // special mask mode on
         assert!(rt.cpu.pic.has_interrupt());

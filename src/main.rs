@@ -46,7 +46,7 @@ struct Cli {
     boot: Option<String>,
     /// Enable register trace output
     #[arg(long)]
-    trace: bool
+    trace: bool,
 }
 
 /// Builds the machine the command line describes and runs it. An error is
@@ -107,7 +107,14 @@ mod tests {
     fn bad_option_values_are_reported_not_guessed() {
         for bad in [
             &["emulator8086", "bios.bin", "--disk", "e:foo.img"][..],
-            &["emulator8086", "bios.bin", "--disk", "a:one.img", "--disk", "a:two.img"],
+            &[
+                "emulator8086",
+                "bios.bin",
+                "--disk",
+                "a:one.img",
+                "--disk",
+                "a:two.img",
+            ],
             &["emulator8086", "bios.bin", "--disk", "b:memory:1000"],
             &["emulator8086", "bios.bin", "--boot", "hd200"],
             &["emulator8086", "bios.bin", "--boot", "x"],

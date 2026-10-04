@@ -1,4 +1,4 @@
-use super::alu::{alu, CMP};
+use super::alu::{CMP, alu};
 use crate::utils::number::SpecialOps;
 use crate::vm::memory::Segment;
 use crate::vm::runtime::CpuFlag::*;

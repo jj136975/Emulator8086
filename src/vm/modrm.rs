@@ -127,22 +127,46 @@ pub fn decode_rm(vm: &mut Runtime, mod_rm: u8) -> RmOperand {
         }
         _ => return RmOperand::Register(rm),
     };
-    RmOperand::Memory(MemoryOperand { mod_val, rm, offset })
+    RmOperand::Memory(MemoryOperand {
+        mod_val,
+        rm,
+        offset,
+    })
 }
 
 /// Sum of the base and index registers selected by the r/m field.
 #[inline(always)]
 fn base_address(vm: &Runtime, rm: u8) -> u16 {
     match rm {
-        0b000 => vm.cpu.registers.bx.word().wrapping_add(vm.cpu.registers.si.word()),
-        0b001 => vm.cpu.registers.bx.word().wrapping_add(vm.cpu.registers.di.word()),
-        0b010 => vm.cpu.registers.bp.word().wrapping_add(vm.cpu.registers.si.word()),
-        0b011 => vm.cpu.registers.bp.word().wrapping_add(vm.cpu.registers.di.word()),
+        0b000 => vm
+            .cpu
+            .registers
+            .bx
+            .word()
+            .wrapping_add(vm.cpu.registers.si.word()),
+        0b001 => vm
+            .cpu
+            .registers
+            .bx
+            .word()
+            .wrapping_add(vm.cpu.registers.di.word()),
+        0b010 => vm
+            .cpu
+            .registers
+            .bp
+            .word()
+            .wrapping_add(vm.cpu.registers.si.word()),
+        0b011 => vm
+            .cpu
+            .registers
+            .bp
+            .word()
+            .wrapping_add(vm.cpu.registers.di.word()),
         0b100 => vm.cpu.registers.si.word(),
         0b101 => vm.cpu.registers.di.word(),
         0b110 => vm.cpu.registers.bp.word(),
         0b111 => vm.cpu.registers.bx.word(),
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 

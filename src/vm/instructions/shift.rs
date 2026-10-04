@@ -1,9 +1,9 @@
+use super::update_arithmetic_flags;
 use crate::utils::number::SpecialOps;
 use crate::vm::modrm::ModRM;
 use crate::vm::registers::OperandRef;
-use crate::vm::runtime::Runtime;
 use crate::vm::runtime::CpuFlag::*;
-use super::update_arithmetic_flags;
+use crate::vm::runtime::Runtime;
 
 /// 0xC0/0xC1: shift/rotate r/m8 or r/m16 by immediate byte count.
 /// Used by MS-DOS 6.22 IO.SYS (186+ but required for compatibility).
@@ -22,7 +22,11 @@ pub(super) fn group_c0_c1(vm: &mut Runtime, is_word: bool) {
 pub(super) fn group_d0_d3(vm: &mut Runtime, is_word: bool, directional: bool) {
     // All eight bits of CL count. This is the 8086's behaviour, kept
     // deliberately: the 80186 and later mask the count to 5 bits.
-    let count = if !directional { 1 } else { vm.cpu.registers.cx.low() as u32 };
+    let count = if !directional {
+        1
+    } else {
+        vm.cpu.registers.cx.low() as u32
+    };
 
     if is_word {
         let (operand, op) = u16::mod_rm_single(vm);
@@ -59,14 +63,22 @@ fn shift<T: SpecialOps>(vm: &mut Runtime, dest: &impl OperandRef<T>, op: u8, cou
         0b_011 => value.rotate_carry_right(count, vm.cpu.check_flag(Carry)),
         // SHL | SAL — CF = last bit shifted out, if the count reaches that far
         0b_100 => {
-            let res = if count >= bits { T::ZERO } else { value.logical_shl(count) };
+            let res = if count >= bits {
+                T::ZERO
+            } else {
+                value.logical_shl(count)
+            };
             (res, count <= bits && value.bit(bits - count))
         }
         // SETMO (undocumented: result is always all-1s on real 8086)
         0b_110 => (T::ALL_ONES, count <= bits && value.bit(bits - count)),
         // SHR
         0b_101 => {
-            let res = if count >= bits { T::ZERO } else { value.logical_shr(count) };
+            let res = if count >= bits {
+                T::ZERO
+            } else {
+                value.logical_shr(count)
+            };
             (res, count <= bits && value.bit(count - 1))
         }
         // SAR — past the operand width, result and CF are copies of the sign
@@ -78,7 +90,11 @@ fn shift<T: SpecialOps>(vm: &mut Runtime, dest: &impl OperandRef<T>, op: u8, cou
             } else {
                 T::ZERO
             };
-            let carry = if count <= bits { value.bit(count - 1) } else { value.is_negative() };
+            let carry = if count <= bits {
+                value.bit(count - 1)
+            } else {
+                value.is_negative()
+            };
             (res, carry)
         }
         _ => unreachable!(),

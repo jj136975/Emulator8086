@@ -9,8 +9,8 @@ mod tests;
 #[cfg(test)]
 mod regression_tests;
 
-use crate::utils::number::{div_rem, SpecialOps};
-use crate::vm::modrm::{decode_rm, reg_field, ModRM};
+use crate::utils::number::{SpecialOps, div_rem};
+use crate::vm::modrm::{ModRM, decode_rm, reg_field};
 use crate::vm::runtime::CpuFlag::*;
 use crate::vm::runtime::{Prefixes, Runtime, SegmentType};
 
@@ -25,7 +25,8 @@ const BYTE_SIGN_FLAG: u8 = 0b_1000_0000;
 fn update_result_flags<T: SpecialOps>(vm: &mut Runtime, res: T) {
     vm.cpu.update_flag(Zero, res == T::ZERO);
     vm.cpu.update_flag(Sign, res.is_negative());
-    vm.cpu.update_flag(Parity, res.low_byte().count_ones() & 1 == 0);
+    vm.cpu
+        .update_flag(Parity, res.low_byte().count_ones() & 1 == 0);
 }
 
 /// Sets OF and CF as given, and ZF, SF and PF from the result.
@@ -86,7 +87,8 @@ pub fn process(vm: &mut Runtime) {
 
             if (al & 0x0F) >= 0xA || vm.cpu.check_flag(AuxCarry) {
                 vm.cpu.registers.ax.set_low(al.wrapping_add(6));
-                vm.cpu.registers
+                vm.cpu
+                    .registers
                     .ax
                     .set_high(vm.cpu.registers.ax.high().wrapping_add(1));
                 vm.cpu.set_flag(AuxCarry);
@@ -135,7 +137,8 @@ pub fn process(vm: &mut Runtime) {
 
             if (al & 0x0F) >= 0xA || vm.cpu.check_flag(AuxCarry) {
                 vm.cpu.registers.ax.set_low(al.wrapping_sub(6));
-                vm.cpu.registers
+                vm.cpu
+                    .registers
                     .ax
                     .set_high(vm.cpu.registers.ax.high().wrapping_sub(1));
                 vm.cpu.set_flag(AuxCarry);
@@ -362,11 +365,15 @@ pub fn process(vm: &mut Runtime) {
                 // JL,JNGE / JGE,JNL
                 0b_110 => vm.cpu.check_flag(Sign) != vm.cpu.check_flag(Overflow),
                 // JLE,JNG / JG,JNLE
-                0b_111 => vm.cpu.check_flag(Zero) || vm.cpu.check_flag(Sign) != vm.cpu.check_flag(Overflow),
+                0b_111 => {
+                    vm.cpu.check_flag(Zero)
+                        || vm.cpu.check_flag(Sign) != vm.cpu.check_flag(Overflow)
+                }
                 _ => unreachable!(),
             }) != is_word
             {
-                vm.cpu.registers
+                vm.cpu
+                    .registers
                     .pc
                     .operation(disp as i16, u16::wrapping_add_signed);
             }
@@ -375,7 +382,8 @@ pub fn process(vm: &mut Runtime) {
         0xE3 => {
             let disp = vm.cpu.fetch_byte() as i8;
             if vm.cpu.registers.cx.word() == 0 {
-                vm.cpu.registers
+                vm.cpu
+                    .registers
                     .pc
                     .operation(disp as i16, u16::wrapping_add_signed);
             }
@@ -390,7 +398,8 @@ pub fn process(vm: &mut Runtime) {
         // JMP disp
         0xEB => {
             let disp = vm.cpu.fetch_byte() as i8;
-            vm.cpu.registers
+            vm.cpu
+                .registers
                 .pc
                 .operation(disp as i16, u16::wrapping_add_signed);
         }
@@ -409,7 +418,10 @@ pub fn process(vm: &mut Runtime) {
         0x8D => {
             let mod_rm = vm.cpu.fetch_byte();
             let address = decode_rm(vm, mod_rm).as_memory(vm).offset;
-            vm.cpu.registers.ref_reg_word(reg_field(mod_rm)).set(address);
+            vm.cpu
+                .registers
+                .ref_reg_word(reg_field(mod_rm))
+                .set(address);
         }
         // LES reg, mem
         0xC4 => {
@@ -431,7 +443,10 @@ pub fn process(vm: &mut Runtime) {
             vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
 
             if vm.cpu.registers.cx.word() != 0 {
-                vm.cpu.registers.pc.operation(disp, u16::wrapping_add_signed);
+                vm.cpu
+                    .registers
+                    .pc
+                    .operation(disp, u16::wrapping_add_signed);
             }
         }
         // LOOPZ disp, LOOPE disp
@@ -440,7 +455,10 @@ pub fn process(vm: &mut Runtime) {
             vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
 
             if vm.cpu.registers.cx.word() != 0 && vm.cpu.check_flag(Zero) {
-                vm.cpu.registers.pc.operation(disp, u16::wrapping_add_signed);
+                vm.cpu
+                    .registers
+                    .pc
+                    .operation(disp, u16::wrapping_add_signed);
             }
         }
         // LOOPNZ disp, LOOPNE disp
@@ -449,7 +467,10 @@ pub fn process(vm: &mut Runtime) {
             vm.cpu.registers.cx.operation(1, u16::wrapping_sub);
 
             if vm.cpu.registers.cx.word() != 0 && !vm.cpu.check_flag(Zero) {
-                vm.cpu.registers.pc.operation(disp, u16::wrapping_add_signed);
+                vm.cpu
+                    .registers
+                    .pc
+                    .operation(disp, u16::wrapping_add_signed);
             }
         }
         // MOV Mod R/M
@@ -510,7 +531,8 @@ pub fn process(vm: &mut Runtime) {
             let operand = decode_rm(vm, mod_rm);
             let word = u16::read_rm(vm, operand);
             let seg_field = (mod_rm >> 3) & 0b011;
-            vm.cpu.get_segment(SegmentType::from(seg_field))
+            vm.cpu
+                .get_segment(SegmentType::from(seg_field))
                 .reg_mut()
                 .set(word);
             // MOV SS inhibits interrupts for the next instruction
@@ -592,7 +614,8 @@ pub fn process(vm: &mut Runtime) {
         0x63 => {
             let disp = vm.cpu.fetch_byte() as i8;
             if !vm.cpu.check_flag(Carry) {
-                vm.cpu.registers
+                vm.cpu
+                    .registers
                     .pc
                     .operation(disp as i16, u16::wrapping_add_signed);
             }
@@ -807,7 +830,8 @@ pub fn process(vm: &mut Runtime) {
         // SAHF
         0x9E => {
             // Load AH into low byte of flags; 8086: bit 1=1, bits 3,5=0
-            vm.cpu.flags = (vm.cpu.flags & 0xFF00) | ((vm.cpu.registers.ax.high() as u16) & 0x00D5) | 0x0002;
+            vm.cpu.flags =
+                (vm.cpu.flags & 0xFF00) | ((vm.cpu.registers.ax.high() as u16) & 0x00D5) | 0x0002;
         }
         // Group 80-83: the same eight operations on an r/m operand and an
         // immediate, selected by the reg field
@@ -849,7 +873,8 @@ pub fn process(vm: &mut Runtime) {
         0x9B => {}
         // XCHG reg
         0b_1001_0001..=0b_1001_0111 => {
-            vm.cpu.registers
+            vm.cpu
+                .registers
                 .ref_reg_word(opcode & 0b_111)
                 .swap_register(&mut vm.cpu.registers.ax);
         }
@@ -865,13 +890,15 @@ pub fn process(vm: &mut Runtime) {
         }
         // SALC (undocumented) — set AL to 0xFF if CF, else 0x00
         0xD6 => {
-            vm.cpu.registers
+            vm.cpu
+                .registers
                 .ax
                 .set_low(if vm.cpu.check_flag(Carry) { 0xFF } else { 0x00 });
         }
         // XLAT
         0xD7 => {
-            let address = (vm.cpu.registers.ax.low() as u16).wrapping_add(vm.cpu.registers.bx.word());
+            let address =
+                (vm.cpu.registers.ax.low() as u16).wrapping_add(vm.cpu.registers.bx.word());
             let byte = vm.data_segment().read_byte(address);
             vm.cpu.registers.ax.set_low(byte);
         }

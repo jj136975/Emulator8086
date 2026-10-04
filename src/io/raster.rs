@@ -39,7 +39,10 @@ impl BlinkPhase {
     /// The phase `elapsed` after an arbitrary starting point.
     pub fn at(elapsed: Duration) -> Self {
         let half_periods = elapsed.as_millis() / CURSOR_BLINK_MS;
-        Self { cursor_on: half_periods.is_multiple_of(2), text_on: half_periods % 4 < 2 }
+        Self {
+            cursor_on: half_periods.is_multiple_of(2),
+            text_on: half_periods % 4 < 2,
+        }
     }
 }
 
@@ -53,7 +56,11 @@ fn put_pixel(frame: &mut [u8], width: usize, x: usize, y: usize, rgb: [u8; 3]) {
 /// attribute controller palette register -> DAC entry.
 fn cell_colours(vga: &VgaDevice, attr: u8) -> ([u8; 3], [u8; 3]) {
     let fg_index = attr & 0x0F;
-    let bg_index = if vga.blink_mode { (attr >> 4) & 0x07 } else { attr >> 4 };
+    let bg_index = if vga.blink_mode {
+        (attr >> 4) & 0x07
+    } else {
+        attr >> 4
+    };
     let colour = |index: u8| vga.dac_to_rgb8(vga.attr_regs[index as usize] & 0x3F);
     (colour(fg_index), colour(bg_index))
 }
@@ -93,7 +100,13 @@ pub fn rasterize_text(frame: &mut [u8], vga: &VgaDevice, memory: &Memory, phase:
                 let y = row * CELL_HEIGHT + scanline;
                 for bit in 0..CELL_WIDTH {
                     let lit = !hidden && bits & (0x80 >> bit) != 0;
-                    put_pixel(frame, TEXT_WIDTH, col * CELL_WIDTH + bit, y, if lit { fg } else { bg });
+                    put_pixel(
+                        frame,
+                        TEXT_WIDTH,
+                        col * CELL_WIDTH + bit,
+                        y,
+                        if lit { fg } else { bg },
+                    );
                 }
             }
         }
@@ -118,7 +131,13 @@ fn draw_cursor(frame: &mut [u8], vga: &VgaDevice, memory: &Memory) {
 
     for scanline in cursor_scanlines(start, end) {
         for bit in 0..CELL_WIDTH {
-            put_pixel(frame, TEXT_WIDTH, col * CELL_WIDTH + bit, row * CELL_HEIGHT + scanline, fg);
+            put_pixel(
+                frame,
+                TEXT_WIDTH,
+                col * CELL_WIDTH + bit,
+                row * CELL_HEIGHT + scanline,
+                fg,
+            );
         }
     }
 }
@@ -147,9 +166,18 @@ mod tests {
     const WHITE: [u8; 3] = [255, 255, 255];
     const BRIGHT_BLUE: [u8; 3] = [85, 85, 255];
 
-    const ALL_ON: BlinkPhase = BlinkPhase { cursor_on: true, text_on: true };
-    const CURSOR_OFF: BlinkPhase = BlinkPhase { cursor_on: false, text_on: true };
-    const TEXT_OFF: BlinkPhase = BlinkPhase { cursor_on: false, text_on: false };
+    const ALL_ON: BlinkPhase = BlinkPhase {
+        cursor_on: true,
+        text_on: true,
+    };
+    const CURSOR_OFF: BlinkPhase = BlinkPhase {
+        cursor_on: false,
+        text_on: true,
+    };
+    const TEXT_OFF: BlinkPhase = BlinkPhase {
+        cursor_on: false,
+        text_on: false,
+    };
 
     fn text_frame() -> Vec<u8> {
         vec![0; TEXT_WIDTH * TEXT_HEIGHT * BYTES_PER_PIXEL]
@@ -186,9 +214,8 @@ mod tests {
     fn filled_scanlines(frame: &[u8], row: usize, col: usize, rgb: [u8; 3]) -> Vec<usize> {
         (0..CELL_HEIGHT)
             .filter(|scanline| {
-                (0..CELL_WIDTH).all(|bit| {
-                    pixel(frame, TEXT_WIDTH, col * 8 + bit, row * 16 + scanline) == rgb
-                })
+                (0..CELL_WIDTH)
+                    .all(|bit| pixel(frame, TEXT_WIDTH, col * 8 + bit, row * 16 + scanline) == rgb)
             })
             .collect()
     }
@@ -222,7 +249,10 @@ mod tests {
 
         // The power-on shape is the BIOS one, lines 6-7 of an 8-line cell:
         // the bottom quarter of the 16-line cell.
-        assert_eq!(filled_scanlines(&frame, 1, 2, LIGHT_GREY), vec![12, 13, 14, 15]);
+        assert_eq!(
+            filled_scanlines(&frame, 1, 2, LIGHT_GREY),
+            vec![12, 13, 14, 15]
+        );
         assert_eq!(filled_scanlines(&frame, 1, 2, BLACK).len(), 12);
         // Neighbouring cells are untouched.
         assert_eq!(filled_scanlines(&frame, 1, 1, BLACK).len(), 16);
@@ -248,7 +278,10 @@ mod tests {
         let lit = |vga: &VgaDevice, rt: &Runtime, phase: BlinkPhase| {
             let mut frame = text_frame();
             rasterize_text(&mut frame, vga, &rt.cpu.memory, phase);
-            frame.chunks(BYTES_PER_PIXEL).filter(|p| p[..3] != BLACK).count()
+            frame
+                .chunks(BYTES_PER_PIXEL)
+                .filter(|p| p[..3] != BLACK)
+                .count()
         };
 
         set_cursor(&mut vga, &mut rt, 1, 2);
@@ -277,8 +310,16 @@ mod tests {
             pixel(&frame, TEXT_WIDTH, 0, 0)
         };
 
-        assert_eq!(cell(&vga, &rt, CURSOR_OFF), WHITE, "visible half of the blink");
-        assert_eq!(cell(&vga, &rt, TEXT_OFF), BLUE, "hidden half: background only");
+        assert_eq!(
+            cell(&vga, &rt, CURSOR_OFF),
+            WHITE,
+            "visible half of the blink"
+        );
+        assert_eq!(
+            cell(&vga, &rt, TEXT_OFF),
+            BLUE,
+            "hidden half: background only"
+        );
 
         // Mode control bit 3 clear: bit 7 selects a bright background.
         vga.port_in_byte(0x3DA, &mut rt.cpu);
@@ -292,11 +333,41 @@ mod tests {
     #[test]
     fn blink_phase_follows_elapsed_time() {
         let phase = |ms| BlinkPhase::at(Duration::from_millis(ms));
-        assert_eq!(phase(0), BlinkPhase { cursor_on: true, text_on: true });
-        assert_eq!(phase(229), BlinkPhase { cursor_on: false, text_on: true });
-        assert_eq!(phase(458), BlinkPhase { cursor_on: true, text_on: false });
-        assert_eq!(phase(687), BlinkPhase { cursor_on: false, text_on: false });
-        assert_eq!(phase(916), BlinkPhase { cursor_on: true, text_on: true });
+        assert_eq!(
+            phase(0),
+            BlinkPhase {
+                cursor_on: true,
+                text_on: true
+            }
+        );
+        assert_eq!(
+            phase(229),
+            BlinkPhase {
+                cursor_on: false,
+                text_on: true
+            }
+        );
+        assert_eq!(
+            phase(458),
+            BlinkPhase {
+                cursor_on: true,
+                text_on: false
+            }
+        );
+        assert_eq!(
+            phase(687),
+            BlinkPhase {
+                cursor_on: false,
+                text_on: false
+            }
+        );
+        assert_eq!(
+            phase(916),
+            BlinkPhase {
+                cursor_on: true,
+                text_on: true
+            }
+        );
     }
 
     #[test]

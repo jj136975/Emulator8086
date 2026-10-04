@@ -25,13 +25,28 @@ mod inspection_tests {
     /// text frame only at scale 1 and left more than half of it black.
     #[test]
     fn default_window_is_filled_by_both_frame_sizes() {
-        let filled = (0.0, 0.0, DEFAULT_WINDOW_WIDTH as f32, DEFAULT_WINDOW_HEIGHT as f32);
+        let filled = (
+            0.0,
+            0.0,
+            DEFAULT_WINDOW_WIDTH as f32,
+            DEFAULT_WINDOW_HEIGHT as f32,
+        );
         assert_eq!(
-            compute_viewport_math(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, TEXT_WIDTH, TEXT_HEIGHT),
+            compute_viewport_math(
+                DEFAULT_WINDOW_WIDTH,
+                DEFAULT_WINDOW_HEIGHT,
+                TEXT_WIDTH,
+                TEXT_HEIGHT
+            ),
             filled
         );
         assert_eq!(
-            compute_viewport_math(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, GFX_WIDTH, GFX_HEIGHT),
+            compute_viewport_math(
+                DEFAULT_WINDOW_WIDTH,
+                DEFAULT_WINDOW_HEIGHT,
+                GFX_WIDTH,
+                GFX_HEIGHT
+            ),
             filled
         );
     }
@@ -142,7 +157,12 @@ pub(crate) fn compute_viewport_math(
     let offset_x = (win_width as i32 - scaled_w as i32) / 2;
     let offset_y = (win_height as i32 - scaled_h as i32) / 2;
 
-    (offset_x as f32, offset_y as f32, scaled_w as f32, scaled_h as f32)
+    (
+        offset_x as f32,
+        offset_y as f32,
+        scaled_w as f32,
+        scaled_h as f32,
+    )
 }
 
 /// Format of the frame texture for a given surface format. The frame holds
@@ -354,38 +374,37 @@ impl WgpuRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Blit BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Blit BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Blit BG"),
@@ -496,7 +515,12 @@ impl WgpuRenderer {
 
     /// Compute integer-scaled viewport centered in window.
     fn compute_viewport(&self) -> (f32, f32, f32, f32) {
-        compute_viewport_math(self.win_width, self.win_height, self.fb_width, self.fb_height)
+        compute_viewport_math(
+            self.win_width,
+            self.win_height,
+            self.fb_width,
+            self.fb_height,
+        )
     }
 
     /// Recreate the framebuffer texture when mode changes.
@@ -506,7 +530,9 @@ impl WgpuRenderer {
         self.framebuffer.resize((width * height * 4) as usize, 0);
 
         self.texture = create_framebuffer_texture(&self.device, self.fb_format, width, height);
-        self.texture_view = self.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.texture_view = self
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         // Rebuild bind group with new texture view
         self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

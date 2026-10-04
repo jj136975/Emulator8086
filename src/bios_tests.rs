@@ -117,7 +117,11 @@ impl Machine {
         for row in 0..25 {
             for col in 0..80 {
                 let ch = self.rt.cpu.memory.read_byte(0xB8000 + (row * 80 + col) * 2);
-                text.push(if (0x20..0x7F).contains(&ch) { ch as char } else { ' ' });
+                text.push(if (0x20..0x7F).contains(&ch) {
+                    ch as char
+                } else {
+                    ' '
+                });
             }
             text.push('\n');
         }
@@ -137,10 +141,17 @@ impl Machine {
 fn boot_sector() -> Vec<u8> {
     let mut sector = vec![0u8; 512];
     let code = [
-        0x88, 0x16, 0x00, 0x05, // MOV [0x0500],DL
-        0xC6, 0x06, 0x01, 0x05, BOOT_MARKER, // MOV BYTE [0x0501],marker
-        0xFA, // CLI
-        0xF4, // HLT
+        0x88,
+        0x16,
+        0x00,
+        0x05, // MOV [0x0500],DL
+        0xC6,
+        0x06,
+        0x01,
+        0x05,
+        BOOT_MARKER, // MOV BYTE [0x0501],marker
+        0xFA,        // CLI
+        0xF4,        // HLT
     ];
     sector[..code.len()].copy_from_slice(&code);
     sector[510] = 0x55;
@@ -258,7 +269,11 @@ fn reset_reboots_the_guest() {
     machine.rt.reset();
     machine.run_until(Machine::parked);
 
-    assert_eq!(machine.booted_drive(), Some(0x00), "the boot sector must run again");
+    assert_eq!(
+        machine.booted_drive(),
+        Some(0x00),
+        "the boot sector must run again"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +294,11 @@ fn key_pressed_before_boot_does_not_block_the_keyboard() {
         0xB4, 0x00, // MOV AH,00h   (wait for a key)
         0xCD, 0x16, // INT 16h
     ]);
-    assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1F73, "scancode 1Fh, ASCII 's'");
+    assert_eq!(
+        machine.rt.cpu.registers.ax.word(),
+        0x1F73,
+        "scancode 1Fh, ASCII 's'"
+    );
 }
 
 /// The machine is wired to the keyboard controller its frontend hands to
@@ -298,7 +317,11 @@ fn machine_uses_the_keyboard_supplied_by_the_frontend() {
         0xB4, 0x00, // MOV AH,00h   (wait for a key)
         0xCD, 0x16, // INT 16h
     ]);
-    assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1F73, "scancode 1Fh, ASCII 's'");
+    assert_eq!(
+        machine.rt.cpu.registers.ax.word(),
+        0x1F73,
+        "scancode 1Fh, ASCII 's'"
+    );
 }
 
 /// Regression: the terminal keyboard pressed Shift according to the host's
@@ -342,7 +365,11 @@ fn int13_returns_with_interrupts_enabled() {
     ]);
     let flags = machine.rt.cpu.registers.bx.word();
     assert_ne!(flags & FLAG_INTERRUPT, 0, "IF must be set after INT 13h");
-    assert_ne!(flags & FLAG_CARRY, 0, "CF from the disk trap must reach the caller");
+    assert_ne!(
+        flags & FLAG_CARRY,
+        0,
+        "CF from the disk trap must reach the caller"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +413,10 @@ fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
     let before = machine.timer_ticks();
     assert!(machine.rt.run_slice(std::time::Duration::from_millis(250)));
     let ticks = machine.timer_ticks() - before;
-    assert!((3..=6).contains(&ticks), "{ticks} ticks in 250 ms, expected 4 or 5");
+    assert!(
+        (3..=6).contains(&ticks),
+        "{ticks} ticks in 250 ms, expected 4 or 5"
+    );
 }
 
 /// Regression: the vertical retrace bit of port 3DAh advanced with every
@@ -478,7 +508,10 @@ fn one_shot_timer_rearmed_with_a_new_count_interrupts_again() {
     let mut machine = machine_with_timer(0x30, 1000, &rearm_and_wait);
     machine.feed_time(2, 1_000_000); // 1 ms = 1,193 clocks each
     assert_eq!(machine.timer_ticks(), 2);
-    assert!(Machine::parked(&machine.rt), "the guest must get past its second HLT");
+    assert!(
+        Machine::parked(&machine.rt),
+        "the guest must get past its second HLT"
+    );
 }
 
 // ===========================================================================
@@ -503,11 +536,17 @@ impl Machine {
     /// A cell of text page `page` (pages are 4096 bytes apart): character in
     /// the low byte, attribute in the high byte.
     fn text_cell(&self, page: usize, row: usize, col: usize) -> u16 {
-        self.rt.cpu.memory.read_word(0xB8000 + page * 4096 + (row * 80 + col) * 2)
+        self.rt
+            .cpu
+            .memory
+            .read_word(0xB8000 + page * 4096 + (row * 80 + col) * 2)
     }
 
     fn set_text_cell(&mut self, page: usize, row: usize, col: usize, cell: u16) {
-        self.rt.cpu.memory.write_word(0xB8000 + page * 4096 + (row * 80 + col) * 2, cell);
+        self.rt
+            .cpu
+            .memory
+            .write_word(0xB8000 + page * 4096 + (row * 80 + col) * 2, cell);
     }
 
     /// Reads register `index` of an index/data port pair.
@@ -559,11 +598,23 @@ fn set_mode_resets_pages_and_cursors() {
     assert_eq!(machine.bda_byte(0x62), 0, "active page");
     assert_eq!(machine.bda_word(0x4E), 0, "offset of the active page");
     for page in 0..8 {
-        assert_eq!(machine.bda_word(0x50 + page * 2), 0, "cursor of page {page}");
+        assert_eq!(
+            machine.bda_word(0x50 + page * 2),
+            0,
+            "cursor of page {page}"
+        );
     }
     assert_eq!(machine.bda_word(0x60), 0x0607, "cursor shape");
-    assert_eq!(machine.indexed_register(0x3D4, 0x0A), 0x06, "CRTC cursor start line");
-    assert_eq!(machine.indexed_register(0x3D4, 0x0B), 0x07, "CRTC cursor end line");
+    assert_eq!(
+        machine.indexed_register(0x3D4, 0x0A),
+        0x06,
+        "CRTC cursor start line"
+    );
+    assert_eq!(
+        machine.indexed_register(0x3D4, 0x0B),
+        0x07,
+        "CRTC cursor end line"
+    );
 }
 
 /// Regression: a program that flips pages by writing the CRTC start address
@@ -598,8 +649,16 @@ fn set_mode_3_blanks_every_text_page() {
         0xCD, 0x10, // INT 10h   (set 80x25 text mode)
     ]);
     for page in 0..8 {
-        assert_eq!(machine.text_cell(page, 0, 0), 0x0720, "first cell of page {page}");
-        assert_eq!(machine.text_cell(page, 24, 79), 0x0720, "last cell of page {page}");
+        assert_eq!(
+            machine.text_cell(page, 0, 0),
+            0x0720,
+            "first cell of page {page}"
+        );
+        assert_eq!(
+            machine.text_cell(page, 24, 79),
+            0x0720,
+            "last cell of page {page}"
+        );
     }
 }
 
@@ -616,13 +675,29 @@ fn set_mode_3_reprograms_the_adapter_after_mode_13h() {
         0xCD, 0x10, // INT 10h   (back to 80x25 text)
     ]);
     assert_eq!(machine.rt.port_in_byte(0x3CC), 0x67, "miscellaneous output");
-    assert_eq!(machine.indexed_register(0x3C4, 0x04), 0x02, "sequencer memory mode");
+    assert_eq!(
+        machine.indexed_register(0x3C4, 0x04),
+        0x02,
+        "sequencer memory mode"
+    );
     assert_eq!(machine.indexed_register(0x3CE, 0x05), 0x10, "graphics mode");
-    assert_eq!(machine.indexed_register(0x3CE, 0x06), 0x0E, "graphics miscellaneous");
+    assert_eq!(
+        machine.indexed_register(0x3CE, 0x06),
+        0x0E,
+        "graphics miscellaneous"
+    );
     assert_eq!(machine.bda_byte(0x49), 0x03, "video mode");
     assert_eq!(machine.bda_word(0x4A), 80, "columns");
-    assert_eq!(machine.bda_byte(0x65), 0x29, "copy of the mode control register");
-    assert_eq!(machine.bda_byte(0x66), 0x30, "copy of the colour select register");
+    assert_eq!(
+        machine.bda_byte(0x65),
+        0x29,
+        "copy of the mode control register"
+    );
+    assert_eq!(
+        machine.bda_byte(0x66),
+        0x30,
+        "copy of the colour select register"
+    );
 }
 
 // ===========================================================================
@@ -678,7 +753,11 @@ const TEXT_COLOURS: [[u8; 3]; 16] = [
 fn text_colours_after_power_on() {
     let mut machine = Machine::booted();
     for (colour, rgb) in TEXT_COLOURS.iter().enumerate() {
-        assert_eq!(machine.text_colour(colour as u8), *rgb, "text colour {colour}");
+        assert_eq!(
+            machine.text_colour(colour as u8),
+            *rgb,
+            "text colour {colour}"
+        );
     }
 }
 
@@ -707,7 +786,11 @@ fn set_mode_3_restores_the_text_colours() {
         0xCD, 0x10, // INT 10h   (back to 80x25 text)
     ]);
     for (colour, rgb) in TEXT_COLOURS.iter().enumerate() {
-        assert_eq!(machine.text_colour(colour as u8), *rgb, "text colour {colour}");
+        assert_eq!(
+            machine.text_colour(colour as u8),
+            *rgb,
+            "text colour {colour}"
+        );
     }
     assert_eq!(machine.rt.port_in_byte(0x3C6), 0xFF, "DAC pixel mask");
 }
@@ -738,7 +821,11 @@ fn set_mode_13h_loads_the_default_256_colour_palette() {
         (0xFF, [0, 0, 0]),
     ];
     for (index, rgb) in expected {
-        assert_eq!(machine.dac_register(index), rgb, "DAC register {index:02X}h");
+        assert_eq!(
+            machine.dac_register(index),
+            rgb,
+            "DAC register {index:02X}h"
+        );
     }
 }
 
@@ -751,9 +838,21 @@ fn set_mode_programs_the_attribute_controller() {
         0xB8, 0x13, 0x00, // MOV AX,0013h
         0xCD, 0x10, // INT 10h   (320x200, 256 colours)
     ]);
-    assert_eq!(machine.attribute_register(0x06), 0x06, "mode 13h palette is the identity");
-    assert_eq!(machine.attribute_register(0x0F), 0x0F, "mode 13h palette is the identity");
-    assert_eq!(machine.attribute_register(0x10), 0x41, "mode control: 256-colour graphics");
+    assert_eq!(
+        machine.attribute_register(0x06),
+        0x06,
+        "mode 13h palette is the identity"
+    );
+    assert_eq!(
+        machine.attribute_register(0x0F),
+        0x0F,
+        "mode 13h palette is the identity"
+    );
+    assert_eq!(
+        machine.attribute_register(0x10),
+        0x41,
+        "mode control: 256-colour graphics"
+    );
     assert_eq!(machine.attribute_register(0x13), 0x00, "pixel panning");
 
     machine.run_stub(&[
@@ -763,8 +862,16 @@ fn set_mode_programs_the_attribute_controller() {
     assert_eq!(machine.attribute_register(0x06), 0x14, "brown");
     assert_eq!(machine.attribute_register(0x08), 0x38, "dark grey");
     assert_eq!(machine.attribute_register(0x0F), 0x3F, "white");
-    assert_eq!(machine.attribute_register(0x10), 0x0C, "mode control: text, blink");
-    assert_eq!(machine.attribute_register(0x12), 0x0F, "colour plane enable");
+    assert_eq!(
+        machine.attribute_register(0x10),
+        0x0C,
+        "mode control: text, blink"
+    );
+    assert_eq!(
+        machine.attribute_register(0x12),
+        0x0F,
+        "colour plane enable"
+    );
     assert_eq!(machine.attribute_register(0x13), 0x08, "pixel panning");
 }
 
@@ -835,8 +942,16 @@ fn insert_key_is_queued() {
 fn shift_tab_is_queued_as_back_tab() {
     let mut machine = Machine::booted();
     assert_eq!(machine.typed(&[0x0F, 0x8F]), [0x0F09], "Tab");
-    assert_eq!(machine.typed(&[0x2A, 0x0F, 0x8F, 0xAA]), [0x0F00], "left Shift+Tab");
-    assert_eq!(machine.typed(&[0x36, 0x0F, 0x8F, 0xB6]), [0x0F00], "right Shift+Tab");
+    assert_eq!(
+        machine.typed(&[0x2A, 0x0F, 0x8F, 0xAA]),
+        [0x0F00],
+        "left Shift+Tab"
+    );
+    assert_eq!(
+        machine.typed(&[0x36, 0x0F, 0x8F, 0xB6]),
+        [0x0F00],
+        "right Shift+Tab"
+    );
 }
 
 /// Regression: the cursor keys ignored Ctrl and were queued with their plain
@@ -922,8 +1037,16 @@ fn ctrl_alt_and_keypad_keys_follow_the_ibm_tables() {
     }
 
     // Caps Lock swaps the case of letters and leaves other keys alone.
-    assert_eq!(machine.typed(&[0x3A, 0xBA, 0x1E, 0x9E]), [0x1E41], "Caps Lock, a");
-    assert_eq!(machine.typed(&[0x2A, 0x1E, 0x9E, 0xAA]), [0x1E61], "Caps Lock, Shift+a");
+    assert_eq!(
+        machine.typed(&[0x3A, 0xBA, 0x1E, 0x9E]),
+        [0x1E41],
+        "Caps Lock, a"
+    );
+    assert_eq!(
+        machine.typed(&[0x2A, 0x1E, 0x9E, 0xAA]),
+        [0x1E61],
+        "Caps Lock, Shift+a"
+    );
     assert_eq!(machine.typed(&[0x02, 0x82]), [0x0231], "Caps Lock, 1");
 }
 
@@ -951,11 +1074,23 @@ fn ctrl_break_calls_int_1bh() {
     for _ in 0..3 {
         machine.rt.step_frame();
     }
-    let int_1b_calls = machine.rt.cpu.memory.read_byte(((STUB_SEG as usize) << 4) + 0x80);
+    let int_1b_calls = machine
+        .rt
+        .cpu
+        .memory
+        .read_byte(((STUB_SEG as usize) << 4) + 0x80);
     assert_eq!(int_1b_calls, 1, "INT 1Bh calls");
-    assert_eq!(machine.take_keystrokes(), [0x0000], "buffer flushed, dummy key queued");
+    assert_eq!(
+        machine.take_keystrokes(),
+        [0x0000],
+        "buffer flushed, dummy key queued"
+    );
     assert_eq!(machine.bda_byte(0x71), 0x80, "break flag");
-    assert_eq!(machine.bda_byte(0x17) & 0x10, 0, "Scroll Lock state untouched");
+    assert_eq!(
+        machine.bda_byte(0x17) & 0x10,
+        0,
+        "Scroll Lock state untouched"
+    );
 }
 
 /// Regression: Ctrl+Alt+Del was queued as an ordinary Del keystroke.
@@ -1009,8 +1144,16 @@ fn unsupported_video_modes_are_rejected() {
         ]);
         let ax = machine.rt.cpu.registers.ax.word();
         assert_eq!(ax, 0x5003, "mode {mode:02X}h: still 80 columns, mode 3");
-        assert_eq!(machine.bda_byte(0x49), 0x03, "mode {mode:02X}h: BDA video mode");
-        assert_eq!(machine.text_cell(0, 5, 5), 0x4E58, "mode {mode:02X}h: screen untouched");
+        assert_eq!(
+            machine.bda_byte(0x49),
+            0x03,
+            "mode {mode:02X}h: BDA video mode"
+        );
+        assert_eq!(
+            machine.text_cell(0, 5, 5),
+            0x4E58,
+            "mode {mode:02X}h: screen untouched"
+        );
     }
 }
 
@@ -1024,7 +1167,11 @@ fn video_mode_2_is_80x25_text() {
         0xCD, 0x10, // INT 10h   (get video mode)
     ]);
     assert_eq!(machine.rt.cpu.registers.ax.word(), 0x5002);
-    assert_eq!(machine.indexed_register(0x3CE, 0x05) & 0x40, 0, "not a 256-colour mode");
+    assert_eq!(
+        machine.indexed_register(0x3CE, 0x05) & 0x40,
+        0,
+        "not a 256-colour mode"
+    );
 }
 
 /// Regression: bit 7 of the mode number ("keep the video memory") was stored
@@ -1047,8 +1194,16 @@ fn set_mode_with_bit_7_keeps_video_memory() {
         0xCD, 0x10, // INT 10h   (mode 13h, keep video memory)
     ]);
     assert_eq!(machine.bda_byte(0x49), 0x13, "video mode");
-    assert_eq!(machine.indexed_register(0x3CE, 0x05) & 0x40, 0x40, "256-colour mode");
-    assert_eq!(machine.rt.cpu.memory.read_byte(0xA0000 + 1234), 0x5A, "frame buffer kept");
+    assert_eq!(
+        machine.indexed_register(0x3CE, 0x05) & 0x40,
+        0x40,
+        "256-colour mode"
+    );
+    assert_eq!(
+        machine.rt.cpu.memory.read_byte(0xA0000 + 1234),
+        0x5A,
+        "frame buffer kept"
+    );
 }
 
 // ===========================================================================
@@ -1069,7 +1224,11 @@ fn int10_get_mode_preserves_bl() {
     ]);
     let registers = &machine.rt.cpu.registers;
     assert_eq!(registers.ax.word(), 0x5003, "80 columns, mode 3");
-    assert_eq!(registers.bx.word(), 0x0055, "BH = active page, BL untouched");
+    assert_eq!(
+        registers.bx.word(),
+        0x0055,
+        "BH = active page, BL untouched"
+    );
     assert_eq!(registers.cx.word(), 0x5678, "CX");
     assert_eq!(registers.dx.word(), 0x9ABC, "DX");
 }
@@ -1119,7 +1278,11 @@ fn selecting_a_page_shows_its_cursor() {
     ]);
     assert_eq!(machine.bda_word(0x4E), 0, "offset of the active page");
     assert_eq!(machine.display_start(), 0);
-    assert_eq!(machine.cursor_location(), 7 * 80 + 9, "the cursor page 0 had");
+    assert_eq!(
+        machine.cursor_location(),
+        7 * 80 + 9,
+        "the cursor page 0 had"
+    );
 }
 
 /// Regression: page numbers were not checked. AH=02h indexed past the eight
@@ -1152,7 +1315,10 @@ fn out_of_range_pages_are_ignored() {
         0xB8, 0x09, 0x05, // MOV AX,0509h
         0xCD, 0x10, // INT 10h   (show page 9)
     ]);
-    assert!(snapshot(&machine) == before, "memory outside the cursor table was written");
+    assert!(
+        snapshot(&machine) == before,
+        "memory outside the cursor table was written"
+    );
     assert_eq!(machine.bda_byte(0x62), 0, "active page");
     assert_eq!(machine.display_start(), 0);
 }
@@ -1177,8 +1343,16 @@ fn teletype_writes_to_the_active_page() {
         0xBB, 0x07, 0x00, // MOV BX,0007h
         0xCD, 0x10, // INT 10h   (teletype 'Z')
     ]);
-    assert_eq!(machine.text_cell(1, 3, 5) & 0x00FF, b'Z' as u16, "page 1, row 3, column 5");
-    assert_eq!(machine.text_cell(0, 10, 10), 0x0720, "page 0 at its own cursor");
+    assert_eq!(
+        machine.text_cell(1, 3, 5) & 0x00FF,
+        b'Z' as u16,
+        "page 1, row 3, column 5"
+    );
+    assert_eq!(
+        machine.text_cell(0, 10, 10),
+        0x0720,
+        "page 0 at its own cursor"
+    );
     assert_eq!(machine.bda_word(0x52), 0x0306, "page 1 cursor advanced");
     assert_eq!(machine.bda_word(0x50), 0x0A0A, "page 0 cursor untouched");
     assert_eq!(machine.cursor_location(), 2048 + 3 * 80 + 6);
@@ -1202,7 +1376,11 @@ fn teletype_scrolls_the_active_page() {
     ]);
     assert_eq!(machine.text_cell(1, 0, 0), 0x0741, "page 1 moved up a line");
     assert_eq!(machine.text_cell(0, 1, 0), 0x0742, "page 0 did not move");
-    assert_eq!(machine.bda_word(0x52), 0x1800, "cursor stays on the last row");
+    assert_eq!(
+        machine.bda_word(0x52),
+        0x1800,
+        "cursor stays on the last row"
+    );
 }
 
 /// Regression: the line scrolled in by teletype output was always grey on
@@ -1225,8 +1403,16 @@ fn teletype_scroll_keeps_the_screen_attribute() {
         0xCD, 0x10, // INT 10h   (teletype line feed)
     ]);
     assert_eq!(machine.text_cell(0, 23, 0), 0x1F20);
-    assert_eq!(machine.text_cell(0, 24, 0), 0x1F20, "first cell of the new line");
-    assert_eq!(machine.text_cell(0, 24, 79), 0x1F20, "last cell of the new line");
+    assert_eq!(
+        machine.text_cell(0, 24, 0),
+        0x1F20,
+        "first cell of the new line"
+    );
+    assert_eq!(
+        machine.text_cell(0, 24, 79),
+        0x1F20,
+        "last cell of the new line"
+    );
 }
 
 // ===========================================================================
@@ -1260,7 +1446,11 @@ fn write_string_moves_the_cursor_only_when_asked() {
     assert_eq!(machine.text_cell(0, 2, 3), 0x4E41);
     assert_eq!(machine.text_cell(0, 2, 4), 0x4E42);
     assert_eq!(machine.text_cell(0, 2, 5), 0x4E43);
-    assert_eq!(machine.bda_word(0x50), 0x0A0A, "cursor where it was before the call");
+    assert_eq!(
+        machine.bda_word(0x50),
+        0x0A0A,
+        "cursor where it was before the call"
+    );
     assert_eq!(machine.cursor_location(), 10 * 80 + 10);
     assert_eq!(machine.rt.cpu.registers.ax.word(), 0x1300, "AX preserved");
 
@@ -1295,7 +1485,11 @@ fn write_string_moves_the_cursor_only_when_asked() {
         0xBA, 0x0C, 0x0C, // MOV DX,0C0Ch
         0xCD, 0x10, // INT 10h
     ]);
-    assert_eq!(machine.bda_word(0x50), 0x0406, "an empty string does nothing");
+    assert_eq!(
+        machine.bda_word(0x50),
+        0x0406,
+        "an empty string does nothing"
+    );
 }
 
 /// Regression: the string was read with LODSB without clearing the
@@ -1345,9 +1539,21 @@ fn write_string_writes_to_the_requested_page() {
     ]);
     assert_eq!(machine.text_cell(1, 2, 3), 0x4E41);
     assert_eq!(machine.text_cell(1, 2, 5), 0x4E43);
-    assert_eq!(machine.text_cell(0, 2, 3) & 0x00FF, 0x20, "page 0 untouched");
-    assert_eq!(machine.bda_word(0x52), 0x0206, "page 1 cursor after the string");
-    assert_eq!(machine.bda_word(0x50), page_0_cursor, "page 0 cursor untouched");
+    assert_eq!(
+        machine.text_cell(0, 2, 3) & 0x00FF,
+        0x20,
+        "page 0 untouched"
+    );
+    assert_eq!(
+        machine.bda_word(0x52),
+        0x0206,
+        "page 1 cursor after the string"
+    );
+    assert_eq!(
+        machine.bda_word(0x50),
+        page_0_cursor,
+        "page 0 cursor untouched"
+    );
 }
 
 /// With AL bit 1 each character is followed by its attribute; CR, LF, BS and
@@ -1439,8 +1645,15 @@ fn scroll_window_is_clipped_to_the_screen() {
         0xBA, 0xFF, 0xFF, // MOV DX,0FFFFh
         0xCD, 0x10, // INT 10h   (clear from 0,0 to row 255, column 255)
     ]);
-    assert!(machine.text_page_is(0, 0x1F20), "the whole screen is cleared");
-    assert_eq!(machine.text_cell(0, 25, 0), 0x4E58, "nothing past the last row");
+    assert!(
+        machine.text_page_is(0, 0x1F20),
+        "the whole screen is cleared"
+    );
+    assert_eq!(
+        machine.text_cell(0, 25, 0),
+        0x4E58,
+        "nothing past the last row"
+    );
     assert!(machine.text_page_is(1, 0x4E58), "page 1 was written");
     assert_eq!(machine.rt.cpu.registers.dx.word(), 0xFFFF, "DX");
 }
@@ -1481,7 +1694,8 @@ fn dac_registers_can_be_set_and_read_through_the_bios() {
     machine.run_stub(&[
         0xEB, 0x0F, // JMP SHORT start
         // table:
-        0x0A, 0x0B, 0x0C, 0x14, 0x15, 0x16, 0x1E, 0x1F, 0x20, // DB 10,11,12, 20,21,22, 30,31,32
+        0x0A, 0x0B, 0x0C, 0x14, 0x15, 0x16, 0x1E, 0x1F,
+        0x20, // DB 10,11,12, 20,21,22, 30,31,32
         // buffer:
         0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, // DB 0EEh,0EEh,0EEh,0EEh,0EEh,0EEh
         // start:
@@ -1510,16 +1724,30 @@ fn dac_registers_can_be_set_and_read_through_the_bios() {
         0xBA, 0x55, 0x55, // MOV DX,5555h
         0xCD, 0x10, // INT 10h   (read DAC register 101 into DH,CH,CL)
     ]);
-    assert_eq!(machine.dac_register(100), [10, 11, 12], "AX=1012h, first register");
-    assert_eq!(machine.dac_register(102), [30, 31, 32], "AX=1012h, last register");
+    assert_eq!(
+        machine.dac_register(100),
+        [10, 11, 12],
+        "AX=1012h, first register"
+    );
+    assert_eq!(
+        machine.dac_register(102),
+        [30, 31, 32],
+        "AX=1012h, last register"
+    );
     assert_eq!(machine.dac_register(200), [1, 2, 3], "AX=1010h");
 
     let registers = &machine.rt.cpu.registers;
     assert_eq!(registers.dx.word() >> 8, 20, "AX=1015h: red in DH");
-    assert_eq!(registers.cx.word(), 21 << 8 | 22, "AX=1015h: green in CH, blue in CL");
+    assert_eq!(
+        registers.cx.word(),
+        21 << 8 | 22,
+        "AX=1015h: green in CH, blue in CL"
+    );
 
     let buffer = ((STUB_SEG as usize) << 4) + 0x000B;
-    let read_back: Vec<u8> = (0..6).map(|i| machine.rt.cpu.memory.read_byte(buffer + i)).collect();
+    let read_back: Vec<u8> = (0..6)
+        .map(|i| machine.rt.cpu.memory.read_byte(buffer + i))
+        .collect();
     assert_eq!(read_back, [20, 21, 22, 30, 31, 32], "AX=1017h");
 }
 
@@ -1535,16 +1763,32 @@ fn blink_and_bright_backgrounds_can_be_selected() {
         0xB3, 0x00, // MOV BL,00h
         0xCD, 0x10, // INT 10h   (bright backgrounds instead of blinking)
     ]);
-    assert_eq!(machine.attribute_register(0x10) & 0x08, 0, "attribute mode control: no blink");
-    assert_eq!(machine.bda_byte(0x65) & 0x20, 0, "copy of the mode control register");
+    assert_eq!(
+        machine.attribute_register(0x10) & 0x08,
+        0,
+        "attribute mode control: no blink"
+    );
+    assert_eq!(
+        machine.bda_byte(0x65) & 0x20,
+        0,
+        "copy of the mode control register"
+    );
 
     machine.run_stub(&[
         0xB8, 0x03, 0x10, // MOV AX,1003h
         0xB3, 0x01, // MOV BL,01h
         0xCD, 0x10, // INT 10h   (blinking)
     ]);
-    assert_eq!(machine.attribute_register(0x10) & 0x08, 0x08, "attribute mode control: blink");
-    assert_eq!(machine.bda_byte(0x65) & 0x20, 0x20, "copy of the mode control register");
+    assert_eq!(
+        machine.attribute_register(0x10) & 0x08,
+        0x08,
+        "attribute mode control: blink"
+    );
+    assert_eq!(
+        machine.bda_byte(0x65) & 0x20,
+        0x20,
+        "copy of the mode control register"
+    );
 
     // A mode set goes back to blinking.
     machine.run_stub(&[
@@ -1581,11 +1825,23 @@ fn pixels_can_be_written_and_read_in_mode_13h() {
         machine.rt.cpu.memory.read_byte(0xA0000 + y * 320 + x)
     };
     assert_eq!(frame_buffer(&machine, 10, 5), 0x0F, "pixel written");
-    assert_eq!(frame_buffer(&machine, 0, 6), 0x00, "column 320 is off screen");
-    assert_eq!(machine.rt.cpu.registers.ax.word() & 0x00FF, 0x0F, "pixel read back");
+    assert_eq!(
+        frame_buffer(&machine, 0, 6),
+        0x00,
+        "column 320 is off screen"
+    );
+    assert_eq!(
+        machine.rt.cpu.registers.ax.word() & 0x00FF,
+        0x0F,
+        "pixel read back"
+    );
 
     // In text mode there are no pixels: writes are ignored, reads return 0.
-    machine.rt.cpu.memory.write_byte(0xA0000 + 5 * 320 + 10, 0x33);
+    machine
+        .rt
+        .cpu
+        .memory
+        .write_byte(0xA0000 + 5 * 320 + 10, 0x33);
     machine.run_stub(&[
         0xB8, 0x03, 0x00, // MOV AX,0003h
         0xCD, 0x10, // INT 10h   (80x25 text)
@@ -1617,11 +1873,27 @@ fn post_sets_the_video_mode() {
     assert_eq!(machine.bda_word(0x63), 0x03D4, "CRTC base port");
     assert_eq!(machine.bda_byte(0x84), 24, "rows - 1");
     assert_eq!(machine.bda_word(0x85), 16, "character height");
-    assert_eq!(machine.bda_byte(0x65), 0x29, "copy of the mode control register");
-    assert_eq!(machine.bda_byte(0x66), 0x30, "copy of the colour select register");
+    assert_eq!(
+        machine.bda_byte(0x65),
+        0x29,
+        "copy of the mode control register"
+    );
+    assert_eq!(
+        machine.bda_byte(0x66),
+        0x30,
+        "copy of the colour select register"
+    );
     assert_eq!(machine.bda_word(0x60), 0x0607, "cursor shape");
-    assert_eq!(machine.indexed_register(0x3D4, 0x0A), 0x06, "CRTC cursor start line");
-    assert_eq!(machine.indexed_register(0x3D4, 0x0B), 0x07, "CRTC cursor end line");
+    assert_eq!(
+        machine.indexed_register(0x3D4, 0x0A),
+        0x06,
+        "CRTC cursor start line"
+    );
+    assert_eq!(
+        machine.indexed_register(0x3D4, 0x0B),
+        0x07,
+        "CRTC cursor end line"
+    );
     assert_eq!(machine.attribute_register(0x06), 0x14, "text palette");
 }
 
@@ -1644,7 +1916,11 @@ fn restart_returns_the_adapter_to_text_mode() {
     ]);
     machine.run_until(|rt| rt.cpu.halted); // POST again, then the wait for a key
 
-    assert_eq!(machine.indexed_register(0x3CE, 0x05) & 0x40, 0, "256-colour mode is off");
+    assert_eq!(
+        machine.indexed_register(0x3CE, 0x05) & 0x40,
+        0,
+        "256-colour mode is off"
+    );
     assert_eq!(machine.display_start(), 0, "CRTC display start");
     assert_eq!(machine.bda_byte(0x49), 0x03, "video mode");
     assert_eq!(machine.bda_word(0x85), 16, "character height");
@@ -1670,8 +1946,16 @@ fn equipment_word_counts_the_diskette_drives() {
         ]);
         let equipment = machine.rt.cpu.registers.ax.word();
         assert_eq!(equipment & 0x00C1, expected, "{units} diskette drives");
-        assert_eq!(equipment & 0x0030, 0x0020, "initial video mode: 80x25 colour");
-        assert_eq!(machine.bda_word(0x10), equipment, "INT 11h returns the BDA word");
+        assert_eq!(
+            equipment & 0x0030,
+            0x0020,
+            "initial video mode: 80x25 colour"
+        );
+        assert_eq!(
+            machine.bda_word(0x10),
+            equipment,
+            "INT 11h returns the BDA word"
+        );
     }
 }
 
@@ -1727,7 +2011,8 @@ fn blank_diskettes_are_skipped() {
 #[test]
 fn hard_disk_without_the_55aa_signature_is_not_booted() {
     let mut disk = DiskImage::new_in_memory_hard_disk(1);
-    disk.write_sectors(0, 0, 1, 1, &boot_sector_ending([0x00, 0x00])).unwrap();
+    disk.write_sectors(0, 0, 1, 1, &boot_sector_ending([0x00, 0x00]))
+        .unwrap();
     let machine = Machine::boot(disks(vec![(0x80, disk)]));
     assert_eq!(machine.booted_drive(), None);
     assert!(machine.screen_text().contains("No bootable disk"));
@@ -1763,8 +2048,16 @@ fn int16_status_lets_the_keyboard_in_when_called_with_interrupts_off() {
     ]);
     let registers = &machine.rt.cpu.registers;
     assert_eq!(registers.bx.word(), 0x1E61, "the keystroke AH=01h reported");
-    assert_ne!(registers.dx.word() & FLAG_INTERRUPT, 0, "AH=01h returns with IF set");
-    assert_eq!(machine.take_keystrokes(), [0x1E61], "AH=01h leaves the key in the buffer");
+    assert_ne!(
+        registers.dx.word() & FLAG_INTERRUPT,
+        0,
+        "AH=01h returns with IF set"
+    );
+    assert_eq!(
+        machine.take_keystrokes(),
+        [0x1E61],
+        "AH=01h leaves the key in the buffer"
+    );
 }
 
 /// Regression: AH=12h returned the byte at 40:18 as AH. The extended flags
@@ -1782,8 +2075,16 @@ fn int16_extended_shift_flags() {
         0xCD, 0x16, // INT 16h   (extended shift flags)
     ]);
     let registers = &machine.rt.cpu.registers;
-    assert_eq!(registers.bx.word() & 0x00FF, 0x8C, "AH=02h: Insert on, Alt, Ctrl");
-    assert_eq!(registers.ax.word(), 0x038C, "AH=12h: AL as AH=02h, AH = left Ctrl + left Alt");
+    assert_eq!(
+        registers.bx.word() & 0x00FF,
+        0x8C,
+        "AH=02h: Insert on, Alt, Ctrl"
+    );
+    assert_eq!(
+        registers.ax.word(),
+        0x038C,
+        "AH=12h: AL as AH=02h, AH = left Ctrl + left Alt"
+    );
 }
 
 // ===========================================================================
@@ -1816,10 +2117,22 @@ fn int15_unsupported_functions_return_ah_86h() {
     ]);
     let cpu = &machine.rt.cpu;
     let registers = &cpu.registers;
-    assert_eq!(registers.si.word(), 0x86A5, "unsupported: AH=86h, AL untouched");
+    assert_eq!(
+        registers.si.word(),
+        0x86A5,
+        "unsupported: AH=86h, AL untouched"
+    );
     assert_ne!(registers.cx.word() & FLAG_CARRY, 0, "unsupported: CF set");
-    assert_eq!(registers.di.word(), 0x4F1E, "keyboard intercept: AX untouched");
-    assert_ne!(registers.dx.word() & FLAG_CARRY, 0, "keyboard intercept: CF set");
+    assert_eq!(
+        registers.di.word(),
+        0x4F1E,
+        "keyboard intercept: AX untouched"
+    );
+    assert_ne!(
+        registers.dx.word() & FLAG_CARRY,
+        0,
+        "keyboard intercept: CF set"
+    );
     assert_eq!(registers.ax.word(), 0x0000, "no extended memory");
     assert!(!cpu.check_flag(CpuFlag::Carry), "AH=88h: CF clear");
     assert_eq!(registers.bx.word(), 0x1234, "BX is not touched");
@@ -1849,7 +2162,8 @@ fn timer_hook_is_not_re_entered_by_the_next_tick() {
         0x31, 0xC0, // XOR AX,AX
         0x8E, 0xC0, // MOV ES,AX
         0xFA, // CLI
-        0x26, 0xC7, 0x06, 0x70, 0x00, 0x21, 0x00, // MOV WORD [ES:0070h],hook   (INT 1Ch vector)
+        0x26, 0xC7, 0x06, 0x70, 0x00, 0x21,
+        0x00, // MOV WORD [ES:0070h],hook   (INT 1Ch vector)
         0x26, 0x8C, 0x0E, 0x72, 0x00, // MOV [ES:0072h],CS
         0xB0, 0x36, // MOV AL,36h
         0xE6, 0x43, // OUT 43h,AL   (timer channel 0: mode 3)
@@ -1896,7 +2210,10 @@ fn timer_hook_is_not_re_entered_by_the_next_tick() {
     let in_service = memory.read_byte(DATA + 2);
     let completed = memory.read_word(DATA + 4);
     assert_eq!(running, 0, "every hook has returned");
-    assert!(completed >= 2, "the hook keeps being called: {completed} calls");
+    assert!(
+        completed >= 2,
+        "the hook keeps being called: {completed} calls"
+    );
     assert_eq!(
         (in_service & 0x01, most_at_once),
         (0x01, 1),

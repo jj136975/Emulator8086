@@ -1,7 +1,10 @@
 use std::ops::{BitAnd, BitOr, BitXor};
 
 #[inline]
-pub fn div_rem<T: std::ops::Div<Output=T> + std::ops::Rem<Output=T> + Copy>(x: T, y: T) -> (T, T) {
+pub fn div_rem<T: std::ops::Div<Output = T> + std::ops::Rem<Output = T> + Copy>(
+    x: T,
+    y: T,
+) -> (T, T) {
     let quot = x / y;
     let rem = x % y;
     (quot, rem)
@@ -154,7 +157,7 @@ macro_rules! special_uint_impl {
                 ((rotated as $SelfT), (rotated >> Self::BITS) & 1 != 0)
             }
         }
-    }
+    };
 }
 
 special_uint_impl! {

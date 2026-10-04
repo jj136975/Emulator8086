@@ -1,11 +1,11 @@
-use std::ops::Not;
-use crate::utils::number::{extend_sign, SpecialOps};
+use super::control::div_zero;
+use super::{update_arithmetic_flags, update_logical_flags, update_result_flags};
+use crate::utils::number::{SpecialOps, extend_sign};
 use crate::vm::modrm::ModRM;
 use crate::vm::registers::OperandRef;
-use crate::vm::runtime::Runtime;
 use crate::vm::runtime::CpuFlag::*;
-use super::{update_arithmetic_flags, update_logical_flags, update_result_flags};
-use super::control::div_zero;
+use crate::vm::runtime::Runtime;
+use std::ops::Not;
 
 // The eight two-operand ALU operations, numbered as in bits 3-5 of opcodes
 // 00h-3Fh and in the reg field of group 80h-83h.
@@ -75,7 +75,8 @@ pub(super) fn inc_dec<T: SpecialOps>(vm: &mut Runtime, dest: &impl OperandRef<T>
     };
     vm.cpu.update_flag(Overflow, overflow);
     update_result_flags(vm, res);
-    vm.cpu.update_flag(AuxCarry, auxiliary_carry(prev, T::ONE, res));
+    vm.cpu
+        .update_flag(AuxCarry, auxiliary_carry(prev, T::ONE, res));
     dest.set(res);
 }
 
@@ -147,33 +148,38 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             0b_000 | 0b_001 => {
                 let word = vm.cpu.fetch_word();
                 update_logical_flags(vm, modrm.word() & word);
-            },
+            }
             // NOT - no flags modified
             0b_010 => {
                 let res = modrm.word().not();
                 modrm.set(res);
-            },
+            }
             // NEG: 0 - operand
             0b_011 => {
                 let res = alu(vm, SUB, 0, modrm.word());
                 modrm.set(res);
-            },
+            }
             // MUL - only CF/OF defined
             0b_100 => {
                 let mut res: u32 = (vm.cpu.registers.ax.word() as u32) * (modrm.word() as u32);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
-                if vm.prefixes.rep.is_some() { res = (res as i32).wrapping_neg() as u32; }
+                if vm.prefixes.rep.is_some() {
+                    res = (res as i32).wrapping_neg() as u32;
+                }
                 let dx: u16 = (res >> 16) as u16;
                 vm.cpu.registers.dx.set(dx);
                 vm.cpu.registers.ax.set(res as u16);
                 vm.cpu.update_flag(Carry, dx != 0);
                 vm.cpu.update_flag(Overflow, dx != 0);
-            },
+            }
             // IMUL - sign-extend operands, only CF/OF defined
             0b_101 => {
-                let mut res: i32 = (vm.cpu.registers.ax.word() as i16 as i32) * (modrm.word() as i16 as i32);
+                let mut res: i32 =
+                    (vm.cpu.registers.ax.word() as i16 as i32) * (modrm.word() as i16 as i32);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
-                if vm.prefixes.rep.is_some() { res = res.wrapping_neg(); }
+                if vm.prefixes.rep.is_some() {
+                    res = res.wrapping_neg();
+                }
                 let dx: u16 = ((res as u32) >> 16) as u16;
                 vm.cpu.registers.dx.set(dx);
                 vm.cpu.registers.ax.set(res as u16);
@@ -181,10 +187,11 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                 let sign_ext_check = (res as i16 as i32) != res;
                 vm.cpu.update_flag(Carry, sign_ext_check);
                 vm.cpu.update_flag(Overflow, sign_ext_check);
-            },
+            }
             // DIV - no flags defined
             0b_110 => {
-                let numerator: u32 = (vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32);
+                let numerator: u32 =
+                    (vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32);
                 let denum = modrm.word() as u32;
 
                 // A REP prefix has no effect here: the 8086 only consults
@@ -197,12 +204,14 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     // Division by zero, or a quotient that does not fit in AX
                     _ => div_zero(vm),
                 }
-            },
+            }
             // IDIV - sign-extend divisor, truncated division, no flags defined
             0b_111 => {
                 // Computed in i64 so that 8000:0000h / -1 fails the range
                 // check below instead of overflowing the host's division.
-                let numerator = (((vm.cpu.registers.dx.word() as u32) << 16 | (vm.cpu.registers.ax.word() as u32)) as i32) as i64;
+                let numerator = (((vm.cpu.registers.dx.word() as u32) << 16
+                    | (vm.cpu.registers.ax.word() as u32)) as i32)
+                    as i64;
                 let denum = modrm.word() as i16 as i64;
 
                 if denum == 0 {
@@ -213,7 +222,9 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     // 8086 undocumented: REPZ prefix sets internal F1 flag,
                     // which the multiply/divide microcode uses for sign tracking.
                     // This causes an extra negation of the quotient.
-                    if vm.prefixes.rep.is_some() { quot = -quot; }
+                    if vm.prefixes.rep.is_some() {
+                        quot = -quot;
+                    }
                     // 8086 checks unsigned quotient > 0x7FFF before sign application
                     if !(-32767..=32767).contains(&quot) {
                         div_zero(vm);
@@ -222,7 +233,7 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                         vm.cpu.registers.dx.set(rem as u16);
                     }
                 }
-            },
+            }
             _ => unreachable!(),
         };
     } else {
@@ -233,38 +244,43 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
             0b_000 | 0b_001 => {
                 let byte = vm.cpu.fetch_byte();
                 update_logical_flags(vm, modrm.byte() & byte);
-            },
+            }
             // NOT - no flags modified
             0b_010 => {
                 let res = modrm.byte().not();
                 modrm.set(res);
-            },
+            }
             // NEG: 0 - operand
             0b_011 => {
                 let res = alu(vm, SUB, 0, modrm.byte());
                 modrm.set(res);
-            },
+            }
             // MUL - only CF/OF defined
             0b_100 => {
                 let mut res: u16 = (vm.cpu.registers.ax.low() as u16) * (modrm.byte() as u16);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
-                if vm.prefixes.rep.is_some() { res = (res as i16).wrapping_neg() as u16; }
+                if vm.prefixes.rep.is_some() {
+                    res = (res as i16).wrapping_neg() as u16;
+                }
                 vm.cpu.registers.ax.set(res);
                 let high_nonzero = res >> 8 != 0;
                 vm.cpu.update_flag(Carry, high_nonzero);
                 vm.cpu.update_flag(Overflow, high_nonzero);
-            },
+            }
             // IMUL - only CF/OF defined
             0b_101 => {
-                let mut res: i16 = (vm.cpu.registers.ax.low() as i8 as i16) * (modrm.byte() as i8 as i16);
+                let mut res: i16 =
+                    (vm.cpu.registers.ax.low() as i8 as i16) * (modrm.byte() as i8 as i16);
                 // 8086 undocumented: REPZ prefix negates result (F1 flag)
-                if vm.prefixes.rep.is_some() { res = res.wrapping_neg(); }
+                if vm.prefixes.rep.is_some() {
+                    res = res.wrapping_neg();
+                }
                 vm.cpu.registers.ax.set(res as u16);
                 // CF/OF set if sign extension of AL != AX
                 let sign_ext_check = (res as i8 as i16) != res;
                 vm.cpu.update_flag(Carry, sign_ext_check);
                 vm.cpu.update_flag(Overflow, sign_ext_check);
-            },
+            }
             // DIV - no flags defined
             0b_110 => {
                 let numerator: u16 = vm.cpu.registers.ax.word();
@@ -279,7 +295,7 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     // Division by zero, or a quotient that does not fit in AL
                     _ => div_zero(vm),
                 }
-            },
+            }
             // IDIV - truncated division, no flags defined
             0b_111 => {
                 // Computed in i32 so that 8000h / -1 fails the range check
@@ -293,7 +309,9 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                     let mut quot = numerator / denum;
                     let rem = numerator % denum;
                     // 8086 undocumented: REPZ prefix negates quotient (F1 flag)
-                    if vm.prefixes.rep.is_some() { quot = -quot; }
+                    if vm.prefixes.rep.is_some() {
+                        quot = -quot;
+                    }
                     // 8086 checks unsigned quotient > 0x7F before sign application
                     if !(-127..=127).contains(&quot) {
                         div_zero(vm);
@@ -302,7 +320,7 @@ pub(super) fn group_f6_f7(vm: &mut Runtime, is_word: bool) {
                         vm.cpu.registers.ax.set_high(rem as u8);
                     }
                 }
-            },
+            }
             _ => unreachable!(),
         };
     }

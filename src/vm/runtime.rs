@@ -1,14 +1,15 @@
 use crate::io::bus::IoBus;
 use crate::io::console::DebugConsole;
-use crate::io::disk::{DiskController, DiskSpec, BOOT_ORDER_PORT, DISK_TRAP_PORT};
+use crate::io::disk::{BOOT_ORDER_PORT, DISK_TRAP_PORT, DiskController, DiskSpec};
 use crate::io::disk_spec::open_drives;
 use crate::io::dma::{DmaController, DmaPageRegisters};
 use crate::io::fdc::FdcStub;
 use crate::io::hdc::HdcStub;
 use crate::io::keyboard::KeyboardController;
 use crate::io::pic::{Pic, PicDevice};
+use crate::io::pit::Pit;
 use crate::io::vga::VgaDevice;
-use crate::vm::cli::{enter_monitor, MonitorAction};
+use crate::vm::cli::{MonitorAction, enter_monitor};
 use crate::vm::cpu::Cpu;
 use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
@@ -21,7 +22,6 @@ use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use crate::io::pit::Pit;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -204,7 +204,11 @@ impl Runtime {
         io_bus.register(0x40, 0x43, Box::new(Rc::clone(&pit)));
         io_bus.register(0x60, 0x63, Box::new(Rc::clone(&keyboard)));
         io_bus.register(0x81, 0x87, Box::new(DmaPageRegisters::new()));
-        io_bus.register(DISK_TRAP_PORT, BOOT_ORDER_PORT, Box::new(Rc::clone(&disk_ctrl)));
+        io_bus.register(
+            DISK_TRAP_PORT,
+            BOOT_ORDER_PORT,
+            Box::new(Rc::clone(&disk_ctrl)),
+        );
         io_bus.register(0xE9, 0xE9, Box::new(DebugConsole::new()));
         io_bus.register(0x320, 0x323, Box::new(HdcStub::new()));
         io_bus.register(0x3C0, 0x3DA, Box::new(Rc::clone(&vga)));
@@ -242,7 +246,10 @@ impl Runtime {
     #[cfg(test)]
     pub fn new_test_machine(
         disk_ctrl: DiskController,
-    ) -> (Self, std::sync::mpsc::Sender<crate::io::keyboard::EmulatorEvent>) {
+    ) -> (
+        Self,
+        std::sync::mpsc::Sender<crate::io::keyboard::EmulatorEvent>,
+    ) {
         let (tx, rx) = std::sync::mpsc::channel();
         let vm = Self::with_devices(disk_ctrl, KeyboardController::with_receiver(rx));
         (vm, tx)
@@ -316,28 +323,28 @@ impl Runtime {
 
             // Keyboard polling
             let mut reset_requested = false;
-            if self.instruction_count.is_multiple_of(1000) || self.cpu.halted {
-                if let Some(kb) = &self.keyboard {
-                    match kb.borrow_mut().poll(&mut self.cpu.pic) {
-                        Some(crate::io::keyboard::EmulatorEvent::Quit) => {
-                            self.running = false;
-                            return false;
-                        }
-                        Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
-                            let action = enter_monitor(&mut self.disks.borrow_mut());
-                            reset_requested = action == MonitorAction::Reset;
-                            if let Some(vga) = &self.vga {
-                                vga.borrow_mut().queue_full_redraw();
-                            }
-                            self.last_clock_sample = Instant::now();
-                        }
-                        Some(crate::io::keyboard::EmulatorEvent::DumpVga) => {
-                            if let Some(vga) = &self.vga {
-                                vga.borrow().dump(&self.cpu.memory, "vga_dump.txt");
-                            }
-                        }
-                        _ => {}
+            if (self.instruction_count.is_multiple_of(1000) || self.cpu.halted)
+                && let Some(kb) = &self.keyboard
+            {
+                match kb.borrow_mut().poll(&mut self.cpu.pic) {
+                    Some(crate::io::keyboard::EmulatorEvent::Quit) => {
+                        self.running = false;
+                        return false;
                     }
+                    Some(crate::io::keyboard::EmulatorEvent::EnterCLI) => {
+                        let action = enter_monitor(&mut self.disks.borrow_mut());
+                        reset_requested = action == MonitorAction::Reset;
+                        if let Some(vga) = &self.vga {
+                            vga.borrow_mut().queue_full_redraw();
+                        }
+                        self.last_clock_sample = Instant::now();
+                    }
+                    Some(crate::io::keyboard::EmulatorEvent::DumpVga) => {
+                        if let Some(vga) = &self.vga {
+                            vga.borrow().dump(&self.cpu.memory, "vga_dump.txt");
+                        }
+                    }
+                    _ => {}
                 }
             }
             if reset_requested {
@@ -442,7 +449,8 @@ impl Runtime {
             };
             let advance = self.pit.borrow_mut().advance(budget as u32);
             self.pit_debt -= advance.clocks as u64;
-            self.video_clock.set(self.video_clock.get() + advance.clocks as u64);
+            self.video_clock
+                .set(self.video_clock.get() + advance.clocks as u64);
             if advance.ch0_rising_edge {
                 self.cpu.pic.request_interrupt(0);
             }
@@ -496,7 +504,10 @@ impl Runtime {
         let _ = writeln!(std::io::stdout(), "\x1B[0m\x1B[?25h");
         let _ = std::io::stdout().flush();
 
-        debug!("Emulator exited after {} instructions", self.instruction_count);
+        debug!(
+            "Emulator exited after {} instructions",
+            self.instruction_count
+        );
     }
 
     pub fn port_in_byte(&mut self, port: u16) -> u8 {
@@ -605,7 +616,13 @@ impl Debug for Runtime {
             pc,
             self.cpu.registers.cs.read_byte(pc),
             self.cpu.registers.cs.read_byte(pc.wrapping_add(1)),
-            if self.cpu.halted { "Halted" } else if self.running { "Running" } else { "Stopped" }
+            if self.cpu.halted {
+                "Halted"
+            } else if self.running {
+                "Running"
+            } else {
+                "Stopped"
+            }
         )?;
         Ok(())
     }
@@ -701,7 +718,11 @@ mod tests {
 
         assert_eq!(rt.cpu.memory.read_byte(0xFFFF0), 0xEA);
         assert_eq!(rt.cpu.memory.read_byte(0xFE000), 0x90);
-        assert_eq!(rt.cpu.memory.read_byte(0xFDFFF), 0x00, "nothing below the image");
+        assert_eq!(
+            rt.cpu.memory.read_byte(0xFDFFF),
+            0x00,
+            "nothing below the image"
+        );
     }
 
     #[test]

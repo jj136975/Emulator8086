@@ -1,5 +1,5 @@
 use crate::io::disk::{
-    DiskController, DiskImage, DiskSource, SaveOutcome, FLOPPY_144_SIZE, HD_DEFAULT_SIZE_MB,
+    DiskController, DiskImage, DiskSource, FLOPPY_144_SIZE, HD_DEFAULT_SIZE_MB, SaveOutcome,
 };
 use crate::io::disk_spec::{drive_label, parse_drive, parse_hd_source, parse_source};
 use std::io::{BufRead, Write};
@@ -35,8 +35,14 @@ fn warn_if_hard_disk(drive: u8, out: &mut dyn Write) {
             "Warning: {} was changed behind the guest's back. DOS does not notice changes",
             drive_label(drive)
         );
-        say!(out, "         to a hard disk while it runs and overwrites them from its buffers.");
-        say!(out, "         Reboot the guest (type 'reset') before the drive is used.");
+        say!(
+            out,
+            "         to a hard disk while it runs and overwrites them from its buffers."
+        );
+        say!(
+            out,
+            "         Reboot the guest (type 'reset') before the drive is used."
+        );
     }
 }
 
@@ -115,7 +121,11 @@ fn show_drives(disk_ctrl: &mut DiskController, out: &mut dyn Write) {
         }
     }
 
-    let hd_count = disk_ctrl.drives.iter().filter(|(id, _)| *id >= 0x80).count();
+    let hd_count = disk_ctrl
+        .drives
+        .iter()
+        .filter(|(id, _)| *id >= 0x80)
+        .count();
     if hd_count > 0 {
         say!(out, "Hard Disks:");
         for i in 0..4u8 {
@@ -126,7 +136,12 @@ fn show_drives(disk_ctrl: &mut DiskController, out: &mut dyn Write) {
                 say!(
                     out,
                     "  HD{}: [loaded] ({}MB, C/H/S={}/{}/{}){}",
-                    i, size_mb, d.cylinders, d.heads, d.sectors_per_track, ro
+                    i,
+                    size_mb,
+                    d.cylinders,
+                    d.heads,
+                    d.sectors_per_track,
+                    ro
                 );
             }
         }
@@ -138,26 +153,71 @@ fn show_drives(disk_ctrl: &mut DiskController, out: &mut dyn Write) {
 
 fn show_help(out: &mut dyn Write) {
     say!(out, "Commands:");
-    say!(out, "  swap <drive> <image>[:ro]  Insert an existing disk image (e.g. swap a disk2.img)");
-    say!(out, "  swap <drive> memory[:KB]   Insert an empty disk held in memory (floppy: formatted,");
-    say!(out, "                             KB one of 160 180 320 360 720 1200 1440 2880, default");
-    say!(out, "                             1440; hard disk: blank 32MB)");
-    say!(out, "  new <drive> <path>         Create an image file and insert it");
-    say!(out, "                             (floppy: formatted 1.44M, hard disk: blank 32MB)");
-    say!(out, "  move <from> <to>           Move disk between drives (e.g. move b a)");
-    say!(out, "  save <drive> <path>        Save disk contents to file");
+    say!(
+        out,
+        "  swap <drive> <image>[:ro]  Insert an existing disk image (e.g. swap a disk2.img)"
+    );
+    say!(
+        out,
+        "  swap <drive> memory[:KB]   Insert an empty disk held in memory (floppy: formatted,"
+    );
+    say!(
+        out,
+        "                             KB one of 160 180 320 360 720 1200 1440 2880, default"
+    );
+    say!(
+        out,
+        "                             1440; hard disk: blank 32MB)"
+    );
+    say!(
+        out,
+        "  new <drive> <path>         Create an image file and insert it"
+    );
+    say!(
+        out,
+        "                             (floppy: formatted 1.44M, hard disk: blank 32MB)"
+    );
+    say!(
+        out,
+        "  move <from> <to>           Move disk between drives (e.g. move b a)"
+    );
+    say!(
+        out,
+        "  save <drive> <path>        Save disk contents to file"
+    );
     say!(out, "  eject <drive>              Eject disk from drive");
-    say!(out, "  put <file> <drive> [name]  Copy host file to FAT disk");
-    say!(out, "  put <dir> <drive>          Copy host directory to FAT disk recursively");
+    say!(
+        out,
+        "  put <file> <drive> [name]  Copy host file to FAT disk"
+    );
+    say!(
+        out,
+        "  put <dir> <drive>          Copy host directory to FAT disk recursively"
+    );
     say!(out, "  reset                      Reboot the guest");
-    say!(out, "  resume                     Resume emulation (or just press Enter)");
+    say!(
+        out,
+        "  resume                     Resume emulation (or just press Enter)"
+    );
     say!(out);
-    say!(out, "Drives are a-d and hd0, hd1, ... A path that contains blanks goes in double");
+    say!(
+        out,
+        "Drives are a-d and hd0, hd1, ... A path that contains blanks goes in double"
+    );
     say!(out, "quotes.");
     say!(out);
-    say!(out, "DOS does not notice changes to a hard disk while it runs: after put, swap,");
-    say!(out, "eject or move on hdN, reboot the guest with 'reset'. To copy files without");
-    say!(out, "a reboot, go through a floppy: swap a memory, put <file> a, resume, then");
+    say!(
+        out,
+        "DOS does not notice changes to a hard disk while it runs: after put, swap,"
+    );
+    say!(
+        out,
+        "eject or move on hdN, reboot the guest with 'reset'. To copy files without"
+    );
+    say!(
+        out,
+        "a reboot, go through a floppy: swap a memory, put <file> a, resume, then"
+    );
     say!(out, "COPY A:<file> C: in DOS.");
     say!(out);
 }
@@ -210,16 +270,19 @@ fn require_existing(path: &Path) -> Result<(), String> {
     }
 }
 
-fn swap(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> Result<(), String> {
+fn swap(
+    disk_ctrl: &mut DiskController,
+    arguments: &str,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let args = split_args(arguments, 2)?;
     let [drive, source] = args.as_slice() else {
         return Err("usage: swap <drive> <image>[:ro] | memory[:KB]".to_string());
     };
     let drive = parse_drive(drive)?;
     let label = drive_label(drive);
-    let cannot_open = |path: &Path, error: std::io::Error| {
-        format!("cannot open '{}': {}", path.display(), error)
-    };
+    let cannot_open =
+        |path: &Path, error: std::io::Error| format!("cannot open '{}': {}", path.display(), error);
 
     if drive >= 0x80 {
         let (source, readonly) = parse_hd_source(source)?;
@@ -231,7 +294,8 @@ fn swap(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) ->
                 say!(
                     out,
                     "{} now holds a blank {}MB in-memory hard disk",
-                    label, HD_DEFAULT_SIZE_MB
+                    label,
+                    HD_DEFAULT_SIZE_MB
                 );
             }
             DiskSource::FilePath(path) => {
@@ -265,8 +329,8 @@ fn swap(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) ->
             }
             DiskSource::FilePath(path) => {
                 require_existing(&path)?;
-                let image = DiskImage::open(&path, readonly)
-                    .map_err(|error| cannot_open(&path, error))?;
+                let image =
+                    DiskImage::open(&path, readonly).map_err(|error| cannot_open(&path, error))?;
                 disk_ctrl.attach(drive, image);
                 say!(out, "{} now holds {}", label, path.display());
             }
@@ -279,7 +343,11 @@ fn swap(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) ->
 /// `new <drive> <path>`: creates an image file and inserts it. A floppy
 /// image is a formatted 1.44M disk, a hard disk image a blank disk of the
 /// default size. An existing file is not touched.
-fn create(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> Result<(), String> {
+fn create(
+    disk_ctrl: &mut DiskController,
+    arguments: &str,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let args = split_args(arguments, 2)?;
     let [drive, path] = args.as_slice() else {
         return Err("usage: new <drive> <path>".to_string());
@@ -316,7 +384,11 @@ fn create(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) 
     Ok(())
 }
 
-fn move_disk(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> Result<(), String> {
+fn move_disk(
+    disk_ctrl: &mut DiskController,
+    arguments: &str,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let args = split_args(arguments, 2)?;
     let [from, to] = args.as_slice() else {
         return Err("usage: move <from> <to>".to_string());
@@ -334,7 +406,11 @@ fn move_disk(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Writ
     Ok(())
 }
 
-fn save(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> Result<(), String> {
+fn save(
+    disk_ctrl: &mut DiskController,
+    arguments: &str,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let args = split_args(arguments, 2)?;
     let [drive, target] = args.as_slice() else {
         return Err("usage: save <drive> <path>".to_string());
@@ -343,19 +419,22 @@ fn save(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) ->
     let label = drive_label(drive);
     let target = Path::new(target);
 
-    if let Some(other) = disk_ctrl.drive_backed_by(target) {
-        if other != drive {
-            return Err(format!(
-                "{} is the image file of {}; eject that drive first",
-                target.display(),
-                drive_label(other)
-            ));
-        }
+    if let Some(other) = disk_ctrl.drive_backed_by(target)
+        && other != drive
+    {
+        return Err(format!(
+            "{} is the image file of {}; eject that drive first",
+            target.display(),
+            drive_label(other)
+        ));
     }
     let disk = disk_ctrl
         .find_drive(drive)
         .ok_or_else(|| format!("{} is empty", label))?;
-    match disk.save_to_file(target).map_err(|error| error.to_string())? {
+    match disk
+        .save_to_file(target)
+        .map_err(|error| error.to_string())?
+    {
         SaveOutcome::Written => say!(out, "{} saved to {}", label, target.display()),
         SaveOutcome::AlreadyBacking => say!(
             out,
@@ -367,7 +446,11 @@ fn save(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) ->
     Ok(())
 }
 
-fn eject(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> Result<(), String> {
+fn eject(
+    disk_ctrl: &mut DiskController,
+    arguments: &str,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let args = split_args(arguments, 1)?;
     let [drive] = args.as_slice() else {
         return Err("usage: eject <drive>".to_string());
@@ -418,7 +501,13 @@ fn put(disk_ctrl: &mut DiskController, arguments: &str, out: &mut dyn Write) -> 
         // The reply shows the name the file has in DOS, which is a generated
         // one if `name` is not a valid 8.3 name.
         disk_ctrl.put_file(drive, &data, &name).map(|stored| {
-            format!("Copied '{}' -> {}\\{} ({} bytes)", host_path, label, stored, data.len())
+            format!(
+                "Copied '{}' -> {}\\{} ({} bytes)",
+                host_path,
+                label,
+                stored,
+                data.len()
+            )
         })
     };
 
@@ -474,8 +563,11 @@ mod tests {
 
     impl HostFile {
         fn missing(name: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("emu8086-monitor-{}-{}", std::process::id(), name));
+            let path = std::env::temp_dir().join(format!(
+                "emu8086-monitor-{}-{}",
+                std::process::id(),
+                name
+            ));
             let _ = std::fs::remove_file(&path);
             Self(path)
         }
@@ -529,8 +621,14 @@ mod tests {
     /// and `save`, and still does.
     #[test]
     fn the_last_argument_takes_the_rest_of_the_line() {
-        assert_eq!(words("a C:\\My Images\\disk 2.img", 2), ["a", "C:\\My Images\\disk 2.img"]);
-        assert_eq!(words("file.txt a MY NAME.TXT", 3), ["file.txt", "a", "MY NAME.TXT"]);
+        assert_eq!(
+            words("a C:\\My Images\\disk 2.img", 2),
+            ["a", "C:\\My Images\\disk 2.img"]
+        );
+        assert_eq!(
+            words("file.txt a MY NAME.TXT", 3),
+            ["file.txt", "a", "MY NAME.TXT"]
+        );
         assert_eq!(words("a b c d", 2), ["a", "b c d"]);
         assert_eq!(words("  hd0  ", 1), ["hd0"]);
     }
@@ -542,13 +640,20 @@ mod tests {
         let mut disk_ctrl = machine_with_floppy_and_hard_disk();
 
         let mut out = Vec::new();
-        run_monitor(&mut disk_ctrl, &mut "resume\neject a\n".as_bytes(), &mut out);
+        run_monitor(
+            &mut disk_ctrl,
+            &mut "resume\neject a\n".as_bytes(),
+            &mut out,
+        );
         let text = String::from_utf8(out).unwrap();
 
         assert!(text.contains("  A: [loaded] (1440KB)"), "{}", text);
         assert!(text.contains("  B: [empty]"), "{}", text);
         assert!(text.contains("  HD0: [loaded]"), "{}", text);
-        assert!(disk_ctrl.find_drive(0x00).is_some(), "commands after `resume` are not read");
+        assert!(
+            disk_ctrl.find_drive(0x00).is_some(),
+            "commands after `resume` are not read"
+        );
     }
 
     #[test]
@@ -556,7 +661,10 @@ mod tests {
         let mut disk_ctrl = DiskController::new();
         disk_ctrl.attach(0x00, formatted_floppy());
 
-        let replies = monitor(&mut disk_ctrl, "move a b\neject b\neject b\neject x\nfrobnicate\n");
+        let replies = monitor(
+            &mut disk_ctrl,
+            "move a b\neject b\neject b\neject x\nfrobnicate\n",
+        );
 
         assert!(replies.contains("Moved A: -> B:"), "{}", replies);
         assert!(replies.contains("B: ejected"), "{}", replies);
@@ -569,11 +677,23 @@ mod tests {
     #[test]
     fn commands_with_missing_arguments_show_their_usage() {
         let mut disk_ctrl = DiskController::new();
-        let replies = monitor(&mut disk_ctrl, "swap\nswap a\nnew a\nmove a\nsave a\neject\nput x\n");
+        let replies = monitor(
+            &mut disk_ctrl,
+            "swap\nswap a\nnew a\nmove a\nsave a\neject\nput x\n",
+        );
         for command in ["swap", "new", "move", "save", "eject", "put"] {
-            assert!(replies.contains(&format!("Error: usage: {}", command)), "{}", replies);
+            assert!(
+                replies.contains(&format!("Error: usage: {}", command)),
+                "{}",
+                replies
+            );
         }
-        assert_eq!(replies.matches("Error: usage: swap").count(), 2, "{}", replies);
+        assert_eq!(
+            replies.matches("Error: usage: swap").count(),
+            2,
+            "{}",
+            replies
+        );
     }
 
     /// A mistyped path must neither create a blank image under that name
@@ -585,11 +705,20 @@ mod tests {
 
         let replies = monitor(
             &mut disk_ctrl,
-            &format!("swap a {}\nswap hd0 {}\n", missing.quoted(), missing.quoted()),
+            &format!(
+                "swap a {}\nswap hd0 {}\n",
+                missing.quoted(),
+                missing.quoted()
+            ),
         );
 
         assert!(!missing.0.exists(), "no file may be created");
-        assert_eq!(replies.matches("not found (use 'new'").count(), 2, "{}", replies);
+        assert_eq!(
+            replies.matches("not found (use 'new'").count(),
+            2,
+            "{}",
+            replies
+        );
         for drive in [0x00, 0x80] {
             let disk = disk_ctrl.find_drive(drive).expect("the old disk stays");
             assert!(disk.backing_path().is_none());
@@ -625,8 +754,8 @@ mod tests {
         let small = HostFile::new("small.vhd", &vec![0u8; 4 * 16 * 63 * 512]);
         // 1030 cylinders. The file is only given its size, nothing is
         // written to it; without room for it there is nothing to test.
-        let sized = std::fs::File::create(&large.0)
-            .and_then(|file| file.set_len(1030 * 16 * 63 * 512));
+        let sized =
+            std::fs::File::create(&large.0).and_then(|file| file.set_len(1030 * 16 * 63 * 512));
         if let Err(error) = sized {
             eprintln!("skipped: cannot make a scratch file of 506 MB: {}", error);
             return;
@@ -639,8 +768,18 @@ mod tests {
         );
 
         assert_eq!(replies.matches("1024 cylinders").count(), 1, "{}", replies);
-        assert!(replies.contains("506 MB") && replies.contains("504 MB"), "{}", replies);
-        assert_eq!(disk_ctrl.find_drive(0x80).expect("still inserted").cylinders, 1024);
+        assert!(
+            replies.contains("506 MB") && replies.contains("504 MB"),
+            "{}",
+            replies
+        );
+        assert_eq!(
+            disk_ctrl
+                .find_drive(0x80)
+                .expect("still inserted")
+                .cylinders,
+            1024
+        );
         assert_eq!(disk_ctrl.find_drive(0x81).expect("inserted").cylinders, 4);
     }
 
@@ -656,11 +795,22 @@ mod tests {
         );
         assert!(disk_ctrl.drives.is_empty(), "{}", replies);
         assert!(replies.contains("'memoryx' not found"), "{}", replies);
-        assert!(replies.contains("unsupported floppy size '1000'"), "{}", replies);
+        assert!(
+            replies.contains("unsupported floppy size '1000'"),
+            "{}",
+            replies
+        );
         assert!(replies.contains("fixed size"), "{}", replies);
 
-        let replies = monitor(&mut disk_ctrl, "swap a memory:720\nswap b MEMORY:ro\nswap hd0 memory\n");
-        assert!(replies.contains("A: now holds a formatted 720KB in-memory floppy"), "{}", replies);
+        let replies = monitor(
+            &mut disk_ctrl,
+            "swap a memory:720\nswap b MEMORY:ro\nswap hd0 memory\n",
+        );
+        assert!(
+            replies.contains("A: now holds a formatted 720KB in-memory floppy"),
+            "{}",
+            replies
+        );
         assert_eq!(disk_ctrl.find_drive(0x00).unwrap().total_bytes(), 737_280);
         assert_eq!(disk_ctrl.find_drive(0x01).unwrap().total_bytes(), 1_474_560);
         assert!(disk_ctrl.find_drive(0x01).unwrap().readonly);
@@ -675,17 +825,39 @@ mod tests {
 
         let replies = monitor(
             &mut disk_ctrl,
-            &format!("new a {}\nnew hd0 {}\n", floppy.quoted(), hard_disk.quoted()),
+            &format!(
+                "new a {}\nnew hd0 {}\n",
+                floppy.quoted(),
+                hard_disk.quoted()
+            ),
         );
-        assert!(replies.contains("A: now holds the new formatted 1440KB image"), "{}", replies);
-        assert!(replies.contains("HD0 now holds the new blank 32MB image"), "{}", replies);
+        assert!(
+            replies.contains("A: now holds the new formatted 1440KB image"),
+            "{}",
+            replies
+        );
+        assert!(
+            replies.contains("HD0 now holds the new blank 32MB image"),
+            "{}",
+            replies
+        );
         assert_eq!(std::fs::metadata(&floppy.0).unwrap().len(), FLOPPY_144_SIZE);
-        assert_eq!(std::fs::metadata(&hard_disk.0).unwrap().len(), 65 * 16 * 63 * 512);
+        assert_eq!(
+            std::fs::metadata(&hard_disk.0).unwrap().len(),
+            65 * 16 * 63 * 512
+        );
 
         // The new floppy is formatted: a file can be put on it right away.
         let host_file = HostFile::new("hello.txt", b"hello");
-        let replies = monitor(&mut disk_ctrl, &format!("put {} a HELLO.TXT\n", host_file.quoted()));
-        assert!(replies.contains("-> A:\\HELLO.TXT (5 bytes)"), "{}", replies);
+        let replies = monitor(
+            &mut disk_ctrl,
+            &format!("put {} a HELLO.TXT\n", host_file.quoted()),
+        );
+        assert!(
+            replies.contains("-> A:\\HELLO.TXT (5 bytes)"),
+            "{}",
+            replies
+        );
 
         // An existing file is left alone.
         disk_ctrl.detach(0x00);
@@ -705,7 +877,10 @@ mod tests {
 
         let replies = monitor(&mut disk_ctrl, "eject hd128\neject hd200\nmove a hd999\n");
 
-        assert!(disk_ctrl.find_drive(0x00).is_some(), "A: must not be touched");
+        assert!(
+            disk_ctrl.find_drive(0x00).is_some(),
+            "A: must not be touched"
+        );
         assert_eq!(replies.matches("invalid drive").count(), 3, "{}", replies);
     }
 
@@ -721,7 +896,12 @@ mod tests {
 
         let replies = monitor(
             &mut disk_ctrl,
-            &format!("swap b {}\nsave b {}\nsave a {}\n", target.quoted(), target.quoted(), target.quoted()),
+            &format!(
+                "swap b {}\nsave b {}\nsave a {}\n",
+                target.quoted(),
+                target.quoted(),
+                target.quoted()
+            ),
         );
         assert!(replies.contains("B: already lives in"), "{}", replies);
         assert!(replies.contains("is the image file of B:"), "{}", replies);
@@ -734,11 +914,22 @@ mod tests {
         let mut disk_ctrl = DiskController::new();
         disk_ctrl.attach(0x00, formatted_floppy());
 
-        let replies = monitor(&mut disk_ctrl, &format!("put {} a HELLO.TXT\n", host_file.quoted()));
-        assert!(replies.contains("-> A:\\HELLO.TXT (5 bytes)"), "{}", replies);
+        let replies = monitor(
+            &mut disk_ctrl,
+            &format!("put {} a HELLO.TXT\n", host_file.quoted()),
+        );
+        assert!(
+            replies.contains("-> A:\\HELLO.TXT (5 bytes)"),
+            "{}",
+            replies
+        );
 
         let replies = monitor(&mut disk_ctrl, "put \"no such file.txt\" a\nput . b\n");
-        assert!(replies.contains("Error: 'no such file.txt' not found"), "{}", replies);
+        assert!(
+            replies.contains("Error: 'no such file.txt' not found"),
+            "{}",
+            replies
+        );
         assert!(replies.contains("Error: B: is empty"), "{}", replies);
     }
 
@@ -750,14 +941,32 @@ mod tests {
 
         // The host name is not a valid 8.3 name, so DOS sees a generated one.
         let replies = monitor(&mut disk_ctrl, &format!("put {} a\n", host_file.quoted()));
-        assert!(replies.contains("-> A:\\EMU808~1.TXT (5 bytes)"), "{}", replies);
+        assert!(
+            replies.contains("-> A:\\EMU808~1.TXT (5 bytes)"),
+            "{}",
+            replies
+        );
 
-        let replies = monitor(&mut disk_ctrl, &format!("put {} a hello.txt\n", host_file.quoted()));
-        assert!(replies.contains("-> A:\\HELLO.TXT (5 bytes)"), "{}", replies);
+        let replies = monitor(
+            &mut disk_ctrl,
+            &format!("put {} a hello.txt\n", host_file.quoted()),
+        );
+        assert!(
+            replies.contains("-> A:\\HELLO.TXT (5 bytes)"),
+            "{}",
+            replies
+        );
 
         disk_ctrl.find_drive(0x00).unwrap().readonly = true;
-        let replies = monitor(&mut disk_ctrl, &format!("put {} a other.txt\n", host_file.quoted()));
-        assert!(replies.contains("Error: disk is write-protected"), "{}", replies);
+        let replies = monitor(
+            &mut disk_ctrl,
+            &format!("put {} a other.txt\n", host_file.quoted()),
+        );
+        assert!(
+            replies.contains("Error: disk is write-protected"),
+            "{}",
+            replies
+        );
     }
 
     /// DOS never re-reads a fixed disk: whatever the monitor changes on one
@@ -800,7 +1009,12 @@ mod tests {
         ] {
             let mut disk_ctrl = machine_with_floppy_and_hard_disk();
             let replies = monitor(&mut disk_ctrl, &format!("{}\n", command));
-            assert!(!replies.contains("Warning"), "`{}` printed:\n{}", command, replies);
+            assert!(
+                !replies.contains("Warning"),
+                "`{}` printed:\n{}",
+                command,
+                replies
+            );
         }
 
         // A write-protected hard disk is not changed by a refused `put`.
@@ -828,7 +1042,10 @@ mod tests {
             let action = run_monitor(&mut disk_ctrl, &mut commands.as_bytes(), &mut out);
             assert_eq!(action, expected, "commands {:?}", commands);
         }
-        assert!(disk_ctrl.find_drive(0x00).is_some(), "nothing is read after `reset`");
+        assert!(
+            disk_ctrl.find_drive(0x00).is_some(),
+            "nothing is read after `reset`"
+        );
     }
 
     #[test]

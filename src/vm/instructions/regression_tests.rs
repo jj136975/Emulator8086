@@ -60,9 +60,17 @@ fn idiv_word_min_by_minus_one_raises_int0() {
     rt.cpu.registers.ax.set(0x0000);
     rt.cpu.registers.cx.set(0xFFFF);
     process(&mut rt);
-    assert_eq!(cs_ip(&rt), (0x5000, 0x0010), "divide error must vector through INT 0");
+    assert_eq!(
+        cs_ip(&rt),
+        (0x5000, 0x0010),
+        "divide error must vector through INT 0"
+    );
     assert_eq!(rt.cpu.registers.sp.word(), 0x0FFA, "FLAGS, CS, IP pushed");
-    assert_eq!(rt.cpu.memory.read_word(0x20FFA), 0x0102, "8086 pushes the address of the next instruction");
+    assert_eq!(
+        rt.cpu.memory.read_word(0x20FFA),
+        0x0102,
+        "8086 pushes the address of the next instruction"
+    );
 }
 
 #[test]
@@ -140,8 +148,16 @@ fn call_far_pointer_at_fffd() {
     poke(&mut rt, 0x30000, &[0x56]);
     process(&mut rt);
     assert_eq!(cs_ip(&rt), (0x5678, 0x1234));
-    assert_eq!(rt.cpu.memory.read_word(0x20FFE), 0x1000, "old CS pushed first");
-    assert_eq!(rt.cpu.memory.read_word(0x20FFC), 0x0104, "then the return IP");
+    assert_eq!(
+        rt.cpu.memory.read_word(0x20FFE),
+        0x1000,
+        "old CS pushed first"
+    );
+    assert_eq!(
+        rt.cpu.memory.read_word(0x20FFC),
+        0x0104,
+        "then the return IP"
+    );
 }
 
 // ───── word operands at offset FFFFh are written back ─────
@@ -150,7 +166,11 @@ fn call_far_pointer_at_fffd() {
 fn word_writes_through_modrm_at_offset_ffff() {
     let cases: Vec<(&str, Vec<u8>, u16)> = vec![
         ("MOV [FFFF],AX", vec![0x89, 0x06, 0xFF, 0xFF], 0x1234),
-        ("MOV W[FFFF],5678", vec![0xC7, 0x06, 0xFF, 0xFF, 0x78, 0x56], 0x5678),
+        (
+            "MOV W[FFFF],5678",
+            vec![0xC7, 0x06, 0xFF, 0xFF, 0x78, 0x56],
+            0x5678,
+        ),
         ("INC W[FFFF]", vec![0xFF, 0x06, 0xFF, 0xFF], 0xAAAB),
         ("ADD [FFFF],AX", vec![0x01, 0x06, 0xFF, 0xFF], 0xBCDE),
         ("XCHG [FFFF],AX", vec![0x87, 0x06, 0xFF, 0xFF], 0x1234),
@@ -169,10 +189,17 @@ fn word_writes_through_modrm_at_offset_ffff() {
         process(&mut rt);
         let got = u16::from_le_bytes([peek(&rt, 0x3FFFF), peek(&rt, 0x30000)]);
         if got != expect {
-            failures.push(format!("{}: expected {:04X}, memory holds {:04X}", label, expect, got));
+            failures.push(format!(
+                "{}: expected {:04X}, memory holds {:04X}",
+                label, expect, got
+            ));
         }
     }
-    assert!(failures.is_empty(), "word writes lost at DS:FFFF: {:#?}", failures);
+    assert!(
+        failures.is_empty(),
+        "word writes lost at DS:FFFF: {:#?}",
+        failures
+    );
 }
 
 #[test]
@@ -205,11 +232,26 @@ fn trap_flag_single_steps() {
     poke(&mut rt, 0x00600, &[0xBB, 0xEF, 0xBE, 0xF4]); // MOV BX,BEEF ; HLT
     rt.step_frame();
     assert_eq!(rt.cpu.registers.bx.word(), 0xBEEF, "INT 1 handler must run");
-    assert_eq!(rt.cpu.registers.cx.word(), 1, "exactly one instruction runs after POPF sets TF");
-    assert!(!rt.cpu.check_flag(CpuFlag::Trap), "TF is cleared on entry to the handler");
+    assert_eq!(
+        rt.cpu.registers.cx.word(),
+        1,
+        "exactly one instruction runs after POPF sets TF"
+    );
+    assert!(
+        !rt.cpu.check_flag(CpuFlag::Trap),
+        "TF is cleared on entry to the handler"
+    );
     let sp = rt.cpu.registers.sp.word() as usize;
-    assert_eq!(rt.cpu.memory.read_word(0x20000 + sp), 0x0106, "return IP = instruction after the first INC");
-    assert_eq!(rt.cpu.memory.read_word(0x20000 + sp + 4) & 0x0100, 0x0100, "stacked FLAGS keep TF set");
+    assert_eq!(
+        rt.cpu.memory.read_word(0x20000 + sp),
+        0x0106,
+        "return IP = instruction after the first INC"
+    );
+    assert_eq!(
+        rt.cpu.memory.read_word(0x20000 + sp + 4) & 0x0100,
+        0x0100,
+        "stacked FLAGS keep TF set"
+    );
 }
 
 #[test]
@@ -229,7 +271,11 @@ fn trap_handler_iret_keeps_stepping() {
     assert!(rt.cpu.halted, "program should reach its HLT");
     assert_eq!(cs_ip(&rt), (0x1000, 0x010E));
     assert_eq!(rt.cpu.registers.cx.word(), 3);
-    assert_eq!(rt.cpu.registers.bx.word(), 6, "one INT 1 per instruction that started with TF=1");
+    assert_eq!(
+        rt.cpu.registers.bx.word(),
+        6,
+        "one INT 1 per instruction that started with TF=1"
+    );
 }
 
 #[test]
@@ -279,19 +325,34 @@ fn irq_return_ip(code: &[u8]) -> Option<u16> {
 #[test]
 fn irq_is_recognised_right_after_a_prefixed_instruction() {
     // STI ; MOV ES:[BX],AL ; NOP ; NOP ; HLT
-    assert_eq!(irq_return_ip(&[0xFB, 0x26, 0x88, 0x07, 0x90, 0x90, 0xF4]), Some(0x0104));
+    assert_eq!(
+        irq_return_ip(&[0xFB, 0x26, 0x88, 0x07, 0x90, 0x90, 0xF4]),
+        Some(0x0104)
+    );
     // STI ; LOCK MOV [BX],AL ; NOP ; NOP ; HLT
-    assert_eq!(irq_return_ip(&[0xFB, 0xF0, 0x88, 0x07, 0x90, 0x90, 0xF4]), Some(0x0104));
+    assert_eq!(
+        irq_return_ip(&[0xFB, 0xF0, 0x88, 0x07, 0x90, 0x90, 0xF4]),
+        Some(0x0104)
+    );
     // STI ; ES: MOVSB ; NOP ; NOP ; HLT
-    assert_eq!(irq_return_ip(&[0xFB, 0x26, 0xA4, 0x90, 0x90, 0xF4]), Some(0x0103));
+    assert_eq!(
+        irq_return_ip(&[0xFB, 0x26, 0xA4, 0x90, 0x90, 0xF4]),
+        Some(0x0103)
+    );
 }
 
 #[test]
 fn sti_window_around_a_prefixed_instruction_lets_the_irq_in() {
     // STI ; MOV ES:[BX],AL ; CLI ; HLT
-    assert_eq!(irq_return_ip(&[0xFB, 0x26, 0x88, 0x07, 0xFA, 0xF4]), Some(0x0104));
+    assert_eq!(
+        irq_return_ip(&[0xFB, 0x26, 0x88, 0x07, 0xFA, 0xF4]),
+        Some(0x0104)
+    );
     // STI ; MOV AL,CS:[0200] ; CLI ; HLT
-    assert_eq!(irq_return_ip(&[0xFB, 0x2E, 0xA0, 0x00, 0x02, 0xFA, 0xF4]), Some(0x0105));
+    assert_eq!(
+        irq_return_ip(&[0xFB, 0x2E, 0xA0, 0x00, 0x02, 0xFA, 0xF4]),
+        Some(0x0105)
+    );
 }
 
 #[test]
@@ -299,12 +360,19 @@ fn no_irq_between_prefix_and_opcode_and_inhibits_still_work() {
     // STI ; NOP ; ...            -> shadow covers the NOP
     assert_eq!(irq_return_ip(&[0xFB, 0x90, 0x90, 0x90, 0xF4]), Some(0x0102));
     // STI ; ES: REP NOP ; ...    -> never between prefixes and opcode
-    assert_eq!(irq_return_ip(&[0xFB, 0x26, 0xF3, 0x90, 0x90, 0xF4]), Some(0x0104));
+    assert_eq!(
+        irq_return_ip(&[0xFB, 0x26, 0xF3, 0x90, 0x90, 0xF4]),
+        Some(0x0104)
+    );
 }
 
 #[test]
 fn prefixed_hlt_wakes_on_irq() {
-    for code in [vec![0xFBu8, 0xF3, 0xF4, 0x90, 0xF4], vec![0xFB, 0x2E, 0xF4, 0x90, 0xF4], vec![0xFB, 0xF0, 0xF4, 0x90, 0xF4]] {
+    for code in [
+        vec![0xFBu8, 0xF3, 0xF4, 0x90, 0xF4],
+        vec![0xFB, 0x2E, 0xF4, 0x90, 0xF4],
+        vec![0xFB, 0xF0, 0xF4, 0x90, 0xF4],
+    ] {
         let mut rt = new_rt(&code);
         init_pic(&mut rt, 0x01);
         set_ivt(&mut rt, 0x0B, 0x0000, 0x0500);
@@ -313,7 +381,12 @@ fn prefixed_hlt_wakes_on_irq() {
         assert!(rt.cpu.halted);
         rt.cpu.pic.request_interrupt(3);
         rt.step_frame();
-        assert_eq!(rt.cpu.registers.bx.word(), 0xBEEF, "IRQ must wake a prefixed HLT ({:02X?})", code);
+        assert_eq!(
+            rt.cpu.registers.bx.word(),
+            0xBEEF,
+            "IRQ must wake a prefixed HLT ({:02X?})",
+            code
+        );
     }
 }
 
@@ -350,7 +423,13 @@ fn rep_survives_any_prefix_order() {
         let dest: Vec<u8> = (0..5usize).map(|i| peek(&rt, 0x40400 + i)).collect();
         let want: Vec<u8> = (0..5u8).map(|i| marker + i).collect();
         if dest != want || rt.cpu.registers.cx.word() != 0 {
-            failures.push(format!("{:02X?}: dest={:02X?} CX={} (want {:02X?}, CX=0)", code, dest, rt.cpu.registers.cx.word(), want));
+            failures.push(format!(
+                "{:02X?}: dest={:02X?} CX={} (want {:02X?}, CX=0)",
+                code,
+                dest,
+                rt.cpu.registers.cx.word(),
+                want
+            ));
         }
     }
     assert!(failures.is_empty(), "REP dropped: {:#?}", failures);
@@ -381,7 +460,12 @@ fn override_does_not_leak_into_the_next_instruction() {
 fn interrupted_rep_resumes_with_all_prefixes() {
     // Handler: INC BX ; MOV AL,20h ; OUT 20h,AL ; IRET
     let handler = [0x43u8, 0xB0, 0x20, 0xE6, 0x20, 0xCF];
-    for code in [vec![0xF3u8, 0xA4, 0xF4], vec![0x26, 0xF3, 0xA4, 0xF4], vec![0xF3, 0x26, 0xA4, 0xF4], vec![0xF3, 0xF0, 0x26, 0xA4, 0xF4]] {
+    for code in [
+        vec![0xF3u8, 0xA4, 0xF4],
+        vec![0x26, 0xF3, 0xA4, 0xF4],
+        vec![0xF3, 0x26, 0xA4, 0xF4],
+        vec![0xF3, 0xF0, 0x26, 0xA4, 0xF4],
+    ] {
         let from_es = code.contains(&0x26);
         let mut rt = new_rt(&code);
         init_pic(&mut rt, 0x01);
@@ -401,8 +485,18 @@ fn interrupted_rep_resumes_with_all_prefixes() {
         let dest: Vec<u8> = (0..8usize).map(|i| peek(&rt, 0x40400 + i)).collect();
         let base = if from_es { 0x60 } else { 0xD0 };
         let want: Vec<u8> = (0..8u8).map(|i| base + i).collect();
-        assert_eq!(rt.cpu.registers.bx.word(), 1, "handler ran once ({:02X?})", code);
-        assert_eq!(rt.cpu.registers.cx.word(), 0, "REP completed after the IRQ ({:02X?})", code);
+        assert_eq!(
+            rt.cpu.registers.bx.word(),
+            1,
+            "handler ran once ({:02X?})",
+            code
+        );
+        assert_eq!(
+            rt.cpu.registers.cx.word(),
+            0,
+            "REP completed after the IRQ ({:02X?})",
+            code
+        );
         assert_eq!(dest, want, "{:02X?}", code);
     }
 }
@@ -411,7 +505,11 @@ fn interrupted_rep_resumes_with_all_prefixes() {
 
 #[test]
 fn rep_div_is_plain_div() {
-    for (code, steps) in [(vec![0xF3u8, 0xF7, 0xF3], 2), (vec![0xF2, 0xF7, 0xF3], 2), (vec![0xF3, 0xF6, 0xF3], 2)] {
+    for (code, steps) in [
+        (vec![0xF3u8, 0xF7, 0xF3], 2),
+        (vec![0xF2, 0xF7, 0xF3], 2),
+        (vec![0xF3, 0xF6, 0xF3], 2),
+    ] {
         let mut rt = new_rt(&code);
         set_ivt(&mut rt, 0, 0x5000, 0x0010);
         rt.cpu.registers.dx.set(0);
@@ -420,11 +518,22 @@ fn rep_div_is_plain_div() {
         for _ in 0..steps {
             process(&mut rt);
         }
-        assert_eq!(cs_ip(&rt), (0x1000, 0x0103), "no divide error ({:02X?})", code);
+        assert_eq!(
+            cs_ip(&rt),
+            (0x1000, 0x0103),
+            "no divide error ({:02X?})",
+            code
+        );
         if code[1] == 0xF7 {
-            assert_eq!((rt.cpu.registers.ax.word(), rt.cpu.registers.dx.word()), (14, 2));
+            assert_eq!(
+                (rt.cpu.registers.ax.word(), rt.cpu.registers.dx.word()),
+                (14, 2)
+            );
         } else {
-            assert_eq!((rt.cpu.registers.ax.low(), rt.cpu.registers.ax.high()), (14, 2));
+            assert_eq!(
+                (rt.cpu.registers.ax.low(), rt.cpu.registers.ax.high()),
+                (14, 2)
+            );
         }
     }
 }
@@ -432,14 +541,23 @@ fn rep_div_is_plain_div() {
 #[test]
 fn rep_still_negates_mul_imul_idiv() {
     // REP MUL BX / REP IMUL BX : 100 * 7 -> -700 ; REP IDIV BX : 100 / 7 -> -14 rem 2
-    for (code, ax, dx) in [(vec![0xF3u8, 0xF7, 0xE3], 0xFD44u16, 0xFFFFu16), (vec![0xF3, 0xF7, 0xEB], 0xFD44, 0xFFFF), (vec![0xF3, 0xF7, 0xFB], 0xFFF2, 0x0002)] {
+    for (code, ax, dx) in [
+        (vec![0xF3u8, 0xF7, 0xE3], 0xFD44u16, 0xFFFFu16),
+        (vec![0xF3, 0xF7, 0xEB], 0xFD44, 0xFFFF),
+        (vec![0xF3, 0xF7, 0xFB], 0xFFF2, 0x0002),
+    ] {
         let mut rt = new_rt(&code);
         rt.cpu.registers.dx.set(0);
         rt.cpu.registers.ax.set(100);
         rt.cpu.registers.bx.set(7);
         process(&mut rt);
         process(&mut rt);
-        assert_eq!((rt.cpu.registers.ax.word(), rt.cpu.registers.dx.word()), (ax, dx), "{:02X?}", code);
+        assert_eq!(
+            (rt.cpu.registers.ax.word(), rt.cpu.registers.dx.word()),
+            (ax, dx),
+            "{:02X?}",
+            code
+        );
     }
 }
 
@@ -472,7 +590,12 @@ fn stores_through_modrm_operands_do_not_modify_rom() {
         let mut rt = new_rt_with_rom(&code);
         rt.cpu.registers.ax.set(0x1234);
         process(&mut rt);
-        assert_eq!(rt.cpu.memory.read_word(0xF0100), 0x5A5A, "{} changed ROM", label);
+        assert_eq!(
+            rt.cpu.memory.read_word(0xF0100),
+            0x5A5A,
+            "{} changed ROM",
+            label
+        );
     }
 }
 

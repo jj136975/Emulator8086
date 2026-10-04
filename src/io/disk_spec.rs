@@ -3,7 +3,7 @@
 //! share these functions, so both accept the same spellings.
 
 use crate::io::disk::{
-    DiskController, DiskImage, DiskSource, DiskSpec, BOOT_ORDER_END, FLOPPY_144_SIZE,
+    BOOT_ORDER_END, DiskController, DiskImage, DiskSource, DiskSpec, FLOPPY_144_SIZE,
     HD_DEFAULT_SIZE_MB,
 };
 use std::path::PathBuf;
@@ -72,7 +72,7 @@ pub fn parse_source(text: &str) -> Result<(DiskSource, bool), String> {
                     "unsupported floppy size '{}' (sizes in KB: 160, 180, 320, 360, 720, 1200, \
                      1440, 2880)",
                     size
-                ))
+                ));
             }
         }
     } else if body.is_empty() {
@@ -153,7 +153,9 @@ pub fn parse_disk_specs(values: &[String]) -> Result<Vec<DiskSpec>, String> {
 /// Parses a `--boot` value such as `hd0,a` into BIOS drive numbers.
 pub fn parse_boot_order(spec: &str) -> Result<Vec<u8>, String> {
     spec.split(',')
-        .map(|name| parse_drive(name).map_err(|error| format!("{} in boot order '{}'", error, spec)))
+        .map(|name| {
+            parse_drive(name).map_err(|error| format!("{} in boot order '{}'", error, spec))
+        })
         .collect()
 }
 
@@ -165,7 +167,10 @@ pub fn parse_boot_order(spec: &str) -> Result<Vec<u8>, String> {
 /// drive or for a hard disk is created when its file does not exist. That,
 /// and a hard disk image too large to be used in full, is reported on
 /// stderr.
-pub fn open_drives(disk_specs: Vec<DiskSpec>, hd_specs: &[String]) -> Result<DiskController, String> {
+pub fn open_drives(
+    disk_specs: Vec<DiskSpec>,
+    hd_specs: &[String],
+) -> Result<DiskController, String> {
     let mut controller = DiskController::new();
 
     for spec in disk_specs {
@@ -180,15 +185,29 @@ pub fn open_drives(disk_specs: Vec<DiskSpec>, hd_specs: &[String]) -> Result<Dis
             }
             DiskSource::FilePath(path) if spec.drive == 0x00 || path.exists() => {
                 DiskImage::open(&path, spec.readonly).map_err(|error| {
-                    format!("cannot open disk image '{}' for drive {}: {}", path.display(), label, error)
+                    format!(
+                        "cannot open disk image '{}' for drive {}: {}",
+                        path.display(),
+                        label,
+                        error
+                    )
                 })?
             }
             DiskSource::FilePath(path) => {
                 let mut image = DiskImage::create(&path, FLOPPY_144_SIZE).map_err(|error| {
-                    format!("cannot create disk image '{}' for drive {}: {}", path.display(), label, error)
+                    format!(
+                        "cannot create disk image '{}' for drive {}: {}",
+                        path.display(),
+                        label,
+                        error
+                    )
                 })?;
                 image.readonly = spec.readonly;
-                eprintln!("{} new blank 1.44M image created: {}", label, path.display());
+                eprintln!(
+                    "{} new blank 1.44M image created: {}",
+                    label,
+                    path.display()
+                );
                 image
             }
         };
@@ -205,7 +224,12 @@ pub fn open_drives(disk_specs: Vec<DiskSpec>, hd_specs: &[String]) -> Result<Dis
             DiskSource::Memory(_) => DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB),
             DiskSource::FilePath(path) if path.exists() => {
                 let image = DiskImage::open_hard_disk(&path, readonly).map_err(|error| {
-                    format!("cannot open hard disk image '{}' for {}: {}", path.display(), label, error)
+                    format!(
+                        "cannot open hard disk image '{}' for {}: {}",
+                        path.display(),
+                        label,
+                        error
+                    )
                 })?;
                 if let Some(note) = image.capacity_note() {
                     eprintln!("Warning: {} ({}): {}", label, path.display(), note);
@@ -213,9 +237,15 @@ pub fn open_drives(disk_specs: Vec<DiskSpec>, hd_specs: &[String]) -> Result<Dis
                 image
             }
             DiskSource::FilePath(path) => {
-                let image = DiskImage::create_hard_disk(&path, HD_DEFAULT_SIZE_MB).map_err(|error| {
-                    format!("cannot create hard disk image '{}' for {}: {}", path.display(), label, error)
-                })?;
+                let image =
+                    DiskImage::create_hard_disk(&path, HD_DEFAULT_SIZE_MB).map_err(|error| {
+                        format!(
+                            "cannot create hard disk image '{}' for {}: {}",
+                            path.display(),
+                            label,
+                            error
+                        )
+                    })?;
                 eprintln!(
                     "{}: new blank {} MB image created: {}",
                     label,
@@ -252,7 +282,10 @@ mod tests {
         assert_eq!(parse_drive("hd0"), Ok(0x80));
         assert_eq!(parse_drive("HD3"), Ok(0x83));
         assert_eq!(parse_drive("hd126"), Ok(0xFE));
-        for bad in ["", "e", "z", "hd", "hdx", "hd-1", "hd+1", "hd 1", "hd127", "hd128", "hd200", "hd256", "ab"] {
+        for bad in [
+            "", "e", "z", "hd", "hdx", "hd-1", "hd+1", "hd 1", "hd127", "hd128", "hd200", "hd256",
+            "ab",
+        ] {
             assert!(parse_drive(bad).is_err(), "'{}' is not a drive", bad);
         }
         assert_eq!(
@@ -275,15 +308,40 @@ mod tests {
         assert_eq!(parse_source("disk.img:ro"), Ok((file("disk.img"), true)));
         assert_eq!(parse_source("DISK.IMG:RO"), Ok((file("DISK.IMG"), true)));
         assert_eq!(parse_source("disk.img:rw"), Ok((file("disk.img"), false)));
-        assert_eq!(parse_source("C:\\imgs\\a b.img:Ro"), Ok((file("C:\\imgs\\a b.img"), true)));
-        assert_eq!(parse_source("memory"), Ok((DiskSource::Memory(1_474_560), false)));
-        assert_eq!(parse_source("MEMORY:RO"), Ok((DiskSource::Memory(1_474_560), true)));
-        assert_eq!(parse_source("memory:720"), Ok((DiskSource::Memory(737_280), false)));
-        assert_eq!(parse_source("Memory:360:ro"), Ok((DiskSource::Memory(368_640), true)));
+        assert_eq!(
+            parse_source("C:\\imgs\\a b.img:Ro"),
+            Ok((file("C:\\imgs\\a b.img"), true))
+        );
+        assert_eq!(
+            parse_source("memory"),
+            Ok((DiskSource::Memory(1_474_560), false))
+        );
+        assert_eq!(
+            parse_source("MEMORY:RO"),
+            Ok((DiskSource::Memory(1_474_560), true))
+        );
+        assert_eq!(
+            parse_source("memory:720"),
+            Ok((DiskSource::Memory(737_280), false))
+        );
+        assert_eq!(
+            parse_source("Memory:360:ro"),
+            Ok((DiskSource::Memory(368_640), true))
+        );
         // Only the exact keyword means an in-memory disk.
-        assert_eq!(parse_source("memory_card.img"), Ok((file("memory_card.img"), false)));
+        assert_eq!(
+            parse_source("memory_card.img"),
+            Ok((file("memory_card.img"), false))
+        );
         assert_eq!(parse_source("memory.img"), Ok((file("memory.img"), false)));
-        for bad in ["memory:1000", "memory:abc", "memory:", "memory:0", "", ":ro"] {
+        for bad in [
+            "memory:1000",
+            "memory:abc",
+            "memory:",
+            "memory:0",
+            "",
+            ":ro",
+        ] {
             assert!(parse_source(bad).is_err(), "'{}' must be rejected", bad);
         }
     }
@@ -305,10 +363,19 @@ mod tests {
         assert_eq!(describe("a:boot.img"), Ok((0, file("boot.img"), false)));
         assert_eq!(describe("boot.img"), Ok((0, file("boot.img"), false)));
         assert_eq!(describe("B:data.img:ro"), Ok((1, file("data.img"), true)));
-        assert_eq!(describe("d:memory:720"), Ok((3, DiskSource::Memory(737_280), false)));
+        assert_eq!(
+            describe("d:memory:720"),
+            Ok((3, DiskSource::Memory(737_280), false))
+        );
         // A drive letter followed by a path separator is a Windows path.
-        assert_eq!(describe("C:\\imgs\\dos.img"), Ok((0, file("C:\\imgs\\dos.img"), false)));
-        assert_eq!(describe("C:/imgs/dos.img"), Ok((0, file("C:/imgs/dos.img"), false)));
+        assert_eq!(
+            describe("C:\\imgs\\dos.img"),
+            Ok((0, file("C:\\imgs\\dos.img"), false))
+        );
+        assert_eq!(
+            describe("C:/imgs/dos.img"),
+            Ok((0, file("C:/imgs/dos.img"), false))
+        );
         assert_eq!(
             describe("b:C:\\imgs\\dos.img:ro"),
             Ok((1, file("C:\\imgs\\dos.img"), true))
@@ -319,15 +386,30 @@ mod tests {
     /// boundary in these names.
     #[test]
     fn disk_specs_with_non_ascii_paths() {
-        assert_eq!(describe("a:discosñ.img"), Ok((0, file("discosñ.img"), false)));
-        assert_eq!(describe("a:дискета.img"), Ok((0, file("дискета.img"), false)));
-        assert_eq!(describe("b:文件夹/dos.img:ro"), Ok((1, file("文件夹/dos.img"), true)));
+        assert_eq!(
+            describe("a:discosñ.img"),
+            Ok((0, file("discosñ.img"), false))
+        );
+        assert_eq!(
+            describe("a:дискета.img"),
+            Ok((0, file("дискета.img"), false))
+        );
+        assert_eq!(
+            describe("b:文件夹/dos.img:ro"),
+            Ok((1, file("文件夹/dos.img"), true))
+        );
         assert_eq!(describe("ñ.img"), Ok((0, file("ñ.img"), false)));
     }
 
     #[test]
     fn disk_specs_that_are_rejected() {
-        for bad in ["e:foo.img", "z:memory", "b:", "a:memory:1000", "a:memory:abc"] {
+        for bad in [
+            "e:foo.img",
+            "z:memory",
+            "b:",
+            "a:memory:1000",
+            "a:memory:abc",
+        ] {
             assert!(parse_disk_spec(bad).is_err(), "'{}' must be rejected", bad);
         }
         let error = parse_disk_spec("e:foo.img").unwrap_err();
@@ -341,7 +423,11 @@ mod tests {
         };
         assert_eq!(specs(&["a:one.img", "b:two.img"]).unwrap().len(), 2);
         let error = specs(&["a:one.img", "b:two.img", "two.img"]).unwrap_err();
-        assert!(error.contains("A:") && error.contains("two.img"), "{}", error);
+        assert!(
+            error.contains("A:") && error.contains("two.img"),
+            "{}",
+            error
+        );
     }
 
     #[test]
@@ -358,8 +444,8 @@ mod tests {
 
     impl ScratchDir {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("emu8086-spec-{}-{}", std::process::id(), name));
+            let path =
+                std::env::temp_dir().join(format!("emu8086-spec-{}-{}", std::process::id(), name));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             Self(path)
@@ -383,27 +469,46 @@ mod tests {
     #[test]
     fn missing_boot_floppy_is_an_error_that_names_the_file() {
         let dir = ScratchDir::new("missing-a");
-        let error = open_drives(vec![dir.spec("a", "nothere.img")], &[]).err().unwrap();
-        assert!(error.contains("nothere.img") && error.contains("A:"), "{}", error);
-        assert!(!dir.path("nothere.img").exists(), "nothing is created for A:");
+        let error = open_drives(vec![dir.spec("a", "nothere.img")], &[])
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("nothere.img") && error.contains("A:"),
+            "{}",
+            error
+        );
+        assert!(
+            !dir.path("nothere.img").exists(),
+            "nothing is created for A:"
+        );
     }
 
     #[test]
     fn images_for_other_drives_are_created_when_missing() {
         let dir = ScratchDir::new("create");
         let hd = dir.path("new.vhd").display().to_string();
-        let specs = vec![dir.spec("b", "new.img"), parse_disk_spec("a:memory").unwrap()];
+        let specs = vec![
+            dir.spec("b", "new.img"),
+            parse_disk_spec("a:memory").unwrap(),
+        ];
         let mut controller = open_drives(specs, std::slice::from_ref(&hd)).unwrap();
 
-        assert_eq!(std::fs::metadata(dir.path("new.img")).unwrap().len(), FLOPPY_144_SIZE);
-        assert_eq!(std::fs::metadata(dir.path("new.vhd")).unwrap().len(), 65 * 16 * 63 * 512);
+        assert_eq!(
+            std::fs::metadata(dir.path("new.img")).unwrap().len(),
+            FLOPPY_144_SIZE
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path("new.vhd")).unwrap().len(),
+            65 * 16 * 63 * 512
+        );
         assert!(controller.find_drive(0x00).is_some());
         assert!(controller.find_drive(0x01).is_some());
         assert!(controller.find_drive(0x80).is_some());
 
         // The second time the files exist and are opened as they are.
         std::fs::write(dir.path("new.img"), vec![0x5Au8; 737_280]).unwrap();
-        let mut controller = open_drives(vec![dir.spec("b", "new.img:ro")], &[format!("{}:ro", hd)]).unwrap();
+        let mut controller =
+            open_drives(vec![dir.spec("b", "new.img:ro")], &[format!("{}:ro", hd)]).unwrap();
         let floppy = controller.find_drive(0x01).unwrap();
         assert!(floppy.readonly);
         assert_eq!((floppy.cylinders, floppy.sectors_per_track), (80, 9));
@@ -413,7 +518,9 @@ mod tests {
     #[test]
     fn a_directory_given_as_an_image_is_an_error_not_a_panic() {
         let dir = ScratchDir::new("dir-as-image");
-        let error = open_drives(Vec::new(), &[dir.0.display().to_string()]).err().unwrap();
+        let error = open_drives(Vec::new(), &[dir.0.display().to_string()])
+            .err()
+            .unwrap();
         assert!(error.contains("HD0"), "{}", error);
     }
 }

@@ -1,14 +1,14 @@
+use crate::vm::cpu::Cpu;
+use log::debug;
 use std::cell::RefCell;
 use std::rc::Rc;
-use log::debug;
-use crate::vm::cpu::Cpu;
 
 pub trait IoDevice {
     fn port_in_byte(&mut self, port: u16, cpu: &mut Cpu) -> u8;
     fn port_out_byte(&mut self, port: u16, value: u8, cpu: &mut Cpu);
 }
 
-impl <T: IoDevice> IoDevice for Rc<RefCell<T>> {
+impl<T: IoDevice> IoDevice for Rc<RefCell<T>> {
     fn port_in_byte(&mut self, port: u16, cpu: &mut Cpu) -> u8 {
         self.borrow_mut().port_in_byte(port, cpu)
     }
@@ -104,7 +104,9 @@ mod inspection_tests {
 
     struct DummyDevice;
     impl IoDevice for DummyDevice {
-        fn port_in_byte(&mut self, _port: u16, _cpu: &mut Cpu) -> u8 { 0 }
+        fn port_in_byte(&mut self, _port: u16, _cpu: &mut Cpu) -> u8 {
+            0
+        }
         fn port_out_byte(&mut self, _port: u16, _value: u8, _cpu: &mut Cpu) {}
     }
 
@@ -165,9 +167,30 @@ mod inspection_tests {
         let mut rt = crate::vm::runtime::Runtime::new_test();
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut bus = IoBus::new();
-        bus.register(0x20, 0x21, Box::new(Probe { id: 0xA1, log: Rc::clone(&log) }));
-        bus.register(0x22, 0x22, Box::new(Probe { id: 0xB2, log: Rc::clone(&log) }));
-        bus.register(0x40, 0x41, Box::new(Probe { id: 0xC3, log: Rc::clone(&log) }));
+        bus.register(
+            0x20,
+            0x21,
+            Box::new(Probe {
+                id: 0xA1,
+                log: Rc::clone(&log),
+            }),
+        );
+        bus.register(
+            0x22,
+            0x22,
+            Box::new(Probe {
+                id: 0xB2,
+                log: Rc::clone(&log),
+            }),
+        );
+        bus.register(
+            0x40,
+            0x41,
+            Box::new(Probe {
+                id: 0xC3,
+                log: Rc::clone(&log),
+            }),
+        );
 
         // Both bytes inside one device, low byte first.
         bus.port_out_word(0x20, 0x1234, &mut rt.cpu);
@@ -191,8 +214,16 @@ mod inspection_tests {
 
         assert_eq!(bus.port_in_word(0x20, &mut rt.cpu), 0xA1A1);
         assert_eq!(bus.port_in_word(0x21, &mut rt.cpu), 0xB2A1);
-        assert_eq!(bus.port_in_word(0x41, &mut rt.cpu), 0xFFC3, "unmapped high byte reads FFh");
-        assert_eq!(bus.port_in_word(0x3F, &mut rt.cpu), 0xC3FF, "unmapped low byte reads FFh");
+        assert_eq!(
+            bus.port_in_word(0x41, &mut rt.cpu),
+            0xFFC3,
+            "unmapped high byte reads FFh"
+        );
+        assert_eq!(
+            bus.port_in_word(0x3F, &mut rt.cpu),
+            0xC3FF,
+            "unmapped low byte reads FFh"
+        );
         assert_eq!(bus.port_in_word(0x30, &mut rt.cpu), 0xFFFF);
     }
 }

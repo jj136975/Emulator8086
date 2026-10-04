@@ -2,7 +2,6 @@ use crate::vm::registers::{ByteWrapper, Register, WordWrapper};
 
 pub const MEMORY_SIZE: usize = 1 << 20; // 1MB address space
 
-
 pub struct Memory {
     // A fixed-size array rather than a slice: every index is masked to 20
     // bits, so with the length known at compile time no bounds checks remain.
@@ -34,7 +33,7 @@ impl Memory {
 
 impl Memory {
     pub fn copy_data(memory: &mut Memory, offset: usize, data: &[u8]) {
-        memory.mem[offset..offset+data.len()].copy_from_slice(data);
+        memory.mem[offset..offset + data.len()].copy_from_slice(data);
     }
 
     /// The byte an operand reference to `addr` reads and writes. A ROM byte is copied to scratch slot `slot` first,
@@ -82,7 +81,9 @@ impl Memory {
     #[inline]
     pub fn write_byte(&mut self, address: usize, byte: u8) {
         let addr = address & 0xFFFFF;
-        if addr >= self.rom_start { return; }
+        if addr >= self.rom_start {
+            return;
+        }
         self.mem[addr] = byte;
     }
 
@@ -92,8 +93,12 @@ impl Memory {
         let bytes = word.to_le_bytes();
         let lo = address & 0xFFFFF;
         let hi = (address + 1) & 0xFFFFF;
-        if lo < self.rom_start { self.mem[lo] = bytes[0]; }
-        if hi < self.rom_start { self.mem[hi] = bytes[1]; }
+        if lo < self.rom_start {
+            self.mem[lo] = bytes[0];
+        }
+        if hi < self.rom_start {
+            self.mem[hi] = bytes[1];
+        }
     }
 
     /// Write a byte without ROM protection checks.
@@ -106,14 +111,14 @@ impl Memory {
 
 pub struct Segment {
     offset: Register,
-    mem: *mut Memory
+    mem: *mut Memory,
 }
 
 impl Segment {
     pub fn new(offset: u16, memory: *mut Memory) -> Self {
         Self {
             offset: Register::new(offset),
-            mem: memory
+            mem: memory,
         }
     }
 
@@ -153,7 +158,9 @@ impl Segment {
     #[inline]
     pub fn write_byte(&mut self, address: u16, byte: u8) {
         let address = self.phys_address(address);
-        unsafe { (*self.mem).write_byte(address, byte); }
+        unsafe {
+            (*self.mem).write_byte(address, byte);
+        }
     }
 
     #[inline]

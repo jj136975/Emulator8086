@@ -236,13 +236,13 @@ impl Registers {
             dx: Register::default(),
             si: Register::default(),
             di: Register::default(),
-            sp: Register::default(),        // BIOS sets up stack
+            sp: Register::default(), // BIOS sets up stack
             bp: Register::default(),
             cs: Segment::new(0xFFFF, memory), // reset vector segment
             ds: Segment::new(0x0000, memory),
             es: Segment::new(0x0000, memory),
             ss: Segment::new(0x0000, memory),
-            pc: Register::default(),          // IP = 0x0000
+            pc: Register::default(), // IP = 0x0000
             op_start_pc: 0,
         }
     }

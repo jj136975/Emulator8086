@@ -35,7 +35,9 @@ impl DebugConsole {
 }
 
 impl IoDevice for DebugConsole {
-    fn port_in_byte(&mut self, _port: u16, _cpu: &mut Cpu) -> u8 { 0xFF }
+    fn port_in_byte(&mut self, _port: u16, _cpu: &mut Cpu) -> u8 {
+        0xFF
+    }
     fn port_out_byte(&mut self, _port: u16, value: u8, _cpu: &mut Cpu) {
         if let Some(line) = self.push(value) {
             debug!("port E9h: {}", line);
@@ -48,7 +50,10 @@ mod tests {
     use super::*;
 
     fn feed(console: &mut DebugConsole, bytes: &[u8]) -> Vec<String> {
-        bytes.iter().filter_map(|byte| console.push(*byte)).collect()
+        bytes
+            .iter()
+            .filter_map(|byte| console.push(*byte))
+            .collect()
     }
 
     /// Regression: every byte went straight to stderr, one write per
@@ -67,7 +72,10 @@ mod tests {
     #[test]
     fn control_characters_are_not_passed_on() {
         let mut console = DebugConsole::new();
-        assert_eq!(feed(&mut console, b"a\x07\x08\x1Bb\n"), vec!["a...b".to_string()]);
+        assert_eq!(
+            feed(&mut console, b"a\x07\x08\x1Bb\n"),
+            vec!["a...b".to_string()]
+        );
     }
 
     #[test]

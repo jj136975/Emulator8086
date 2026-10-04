@@ -42,9 +42,9 @@ struct PitChannel {
     bcd: bool,
 
     // Counter state
-    count_register: u16,    // Value written by software (reload value)
-    counting_element: u16,  // The actual decrementing counter
-    odd_count: bool,        // Mode 3 is running an odd count (see tick_mode3)
+    count_register: u16,   // Value written by software (reload value)
+    counting_element: u16, // The actual decrementing counter
+    odd_count: bool,       // Mode 3 is running an odd count (see tick_mode3)
 
     // Output
     output: bool,           // Output pin state
@@ -52,12 +52,12 @@ struct PitChannel {
     count_is_latched: bool, // Latch frozen?
 
     // Gate
-    gate: bool,             // Gate input (true=high, false=low)
+    gate: bool, // Gate input (true=high, false=low)
 
     // State
     enabled: bool,
-    newly_loaded: bool,     // Just programmed, counter=0 means max
-    armed: bool,            // For one-shot modes (4, 5)
+    newly_loaded: bool, // Just programmed, counter=0 means max
+    armed: bool,        // For one-shot modes (4, 5)
 
     // Read/write sequencing
     write_state: RWState,
@@ -114,7 +114,11 @@ impl PitChannel {
         let max_count = if self.bcd { 10000u32 } else { 0x10000u32 };
         if self.bcd {
             let bin = Self::bcd_to_binary(self.counting_element);
-            if self.newly_loaded && bin == 0 { max_count } else { bin }
+            if self.newly_loaded && bin == 0 {
+                max_count
+            } else {
+                bin
+            }
         } else if self.newly_loaded && self.counting_element == 0 {
             max_count
         } else {
@@ -258,21 +262,19 @@ impl PitChannel {
                 }
                 (value >> 8) as u8
             }
-            AccessMode::LowThenHigh => {
-                match self.read_state {
-                    RWState::LoByte => {
-                        self.read_state = RWState::HiByte;
-                        value as u8
-                    }
-                    RWState::HiByte => {
-                        self.read_state = RWState::LoByte;
-                        if self.count_is_latched {
-                            self.count_is_latched = false;
-                        }
-                        (value >> 8) as u8
-                    }
+            AccessMode::LowThenHigh => match self.read_state {
+                RWState::LoByte => {
+                    self.read_state = RWState::HiByte;
+                    value as u8
                 }
-            }
+                RWState::HiByte => {
+                    self.read_state = RWState::LoByte;
+                    if self.count_is_latched {
+                        self.count_is_latched = false;
+                    }
+                    (value >> 8) as u8
+                }
+            },
         }
     }
 
@@ -458,10 +460,16 @@ impl Pit {
             self.channels[2].tick_one();
             clocks += 1;
             if ch0_rising_edge {
-                return PitAdvance { clocks, ch0_rising_edge: true };
+                return PitAdvance {
+                    clocks,
+                    ch0_rising_edge: true,
+                };
             }
         }
-        PitAdvance { clocks, ch0_rising_edge: false }
+        PitAdvance {
+            clocks,
+            ch0_rising_edge: false,
+        }
     }
 
     /// Get channel 2 output state (used by port 0x61 bit 5).
@@ -578,7 +586,10 @@ mod tests {
 
     impl Bench {
         fn new() -> Self {
-            Self { pit: Pit::new(), rt: Runtime::new_test() }
+            Self {
+                pit: Pit::new(),
+                rt: Runtime::new_test(),
+            }
         }
 
         fn out(&mut self, port: u16, value: u8) {
@@ -706,7 +717,11 @@ mod tests {
         bench.pit.advance(0x100);
         let hi = bench.inp(0x40) as u16;
         assert_eq!(lo | (hi << 8), 0x0FF0);
-        assert_eq!(bench.latched_count(0), 0x0EE0, "the next latch sees the running count");
+        assert_eq!(
+            bench.latched_count(0),
+            0x0EE0,
+            "the next latch sees the running count"
+        );
     }
 
     #[test]
@@ -725,14 +740,25 @@ mod tests {
         let mut bench = Bench::new();
         bench.program(0xB6, 16); // channel 2, mode 3; its gate starts low
         bench.pit.advance(40);
-        assert_eq!(bench.latched_count(2), 16, "no counting while the gate is low");
-        assert!(bench.pit.channel2_output(), "output is held high while the gate is low");
+        assert_eq!(
+            bench.latched_count(2),
+            16,
+            "no counting while the gate is low"
+        );
+        assert!(
+            bench.pit.channel2_output(),
+            "output is held high while the gate is low"
+        );
 
         bench.pit.set_gate(2, true);
         let mut levels = String::new();
         for _ in 0..24 {
             bench.pit.advance(1);
-            levels.push(if bench.pit.channel2_output() { 'H' } else { 'L' });
+            levels.push(if bench.pit.channel2_output() {
+                'H'
+            } else {
+                'L'
+            });
         }
         assert_eq!(levels, "HHHHHHHLLLLLLLLHHHHHHHHL");
 
@@ -755,7 +781,10 @@ mod tests {
         bench.pit.advance(0x3F);
         assert!(!bench.pit.channel2_output());
         bench.pit.advance(1);
-        assert!(bench.pit.channel2_output(), "terminal count after 40h clocks");
+        assert!(
+            bench.pit.channel2_output(),
+            "terminal count after 40h clocks"
+        );
 
         // High byte only: the low byte is zero.
         let mut bench = Bench::new();
@@ -799,9 +828,15 @@ mod tests {
         assert!(bench.pit.channel2_output());
 
         bench.out(0x42, 10); // first byte only
-        assert!(!bench.pit.channel2_output(), "the output falls with the first byte");
+        assert!(
+            !bench.pit.channel2_output(),
+            "the output falls with the first byte"
+        );
         bench.pit.advance(500);
-        assert!(!bench.pit.channel2_output(), "no counting until the second byte");
+        assert!(
+            !bench.pit.channel2_output(),
+            "no counting until the second byte"
+        );
         bench.out(0x42, 0);
         bench.pit.advance(9);
         assert!(!bench.pit.channel2_output());
@@ -840,7 +875,11 @@ mod tests {
         let mut counts = Vec::new();
         for _ in 0..10 {
             bench.pit.advance(1);
-            levels.push(if bench.pit.channel2_output() { 'H' } else { 'L' });
+            levels.push(if bench.pit.channel2_output() {
+                'H'
+            } else {
+                'L'
+            });
             counts.push(bench.latched_count(2));
         }
         // The count is loaded as soon as the gate rises, without the load
@@ -861,7 +900,11 @@ mod tests {
                 bench.pit.advance(1);
                 counts.push(bench.latched_count(0));
             }
-            assert_eq!(counts, [2, 1, 0, 0xFFFF, 0xFFFE, 0xFFFD], "control word {control:02X}h");
+            assert_eq!(
+                counts,
+                [2, 1, 0, 0xFFFF, 0xFFFE, 0xFFFD],
+                "control word {control:02X}h"
+            );
         }
 
         // A BCD counter wraps to 9999.
@@ -898,7 +941,11 @@ mod tests {
         let mut levels = String::new();
         for _ in 0..6 {
             bench.pit.advance(1);
-            levels.push(if bench.pit.channel2_output() { 'H' } else { 'L' });
+            levels.push(if bench.pit.channel2_output() {
+                'H'
+            } else {
+                'L'
+            });
         }
         assert_eq!(levels, "HHHLHH");
     }

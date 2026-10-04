@@ -1,5 +1,5 @@
 use super::alu::inc_dec;
-use crate::vm::modrm::{decode_rm, reg_field, ModRM, RmOperand};
+use crate::vm::modrm::{ModRM, RmOperand, decode_rm, reg_field};
 use crate::vm::runtime::Runtime;
 
 /// Opcodes FE and FF: INC, DEC, CALL, JMP or PUSH of the r/m operand,

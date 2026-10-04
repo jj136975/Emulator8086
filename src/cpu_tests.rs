@@ -118,13 +118,16 @@ fn get_flags_mask(opcode_str: &str) -> u16 {
     let base_upper = parts[0].to_uppercase();
 
     // Metadata keys may be uppercase (e.g. "0A") — try both
-    if let Some(info) = meta.opcodes.get(&base_lower).or_else(|| meta.opcodes.get(&base_upper)) {
-        if let Some(reg_str) = parts.get(1) {
-            if let Some(ref reg_map) = info.reg {
-                if let Some(reg_info) = reg_map.get(*reg_str) {
-                    return reg_info.flags_mask.unwrap_or(0xFFFF);
-                }
-            }
+    if let Some(info) = meta
+        .opcodes
+        .get(&base_lower)
+        .or_else(|| meta.opcodes.get(&base_upper))
+    {
+        if let Some(reg_str) = parts.get(1)
+            && let Some(ref reg_map) = info.reg
+            && let Some(reg_info) = reg_map.get(*reg_str)
+        {
+            return reg_info.flags_mask.unwrap_or(0xFFFF);
         }
         return info.flags_mask.unwrap_or(0xFFFF);
     }
@@ -243,7 +246,11 @@ fn run_single_test(test: &TestCase, flags_mask: u16) -> Result<(), String> {
     let mut vm = setup_vm(&test.initial);
 
     // Execute: one process() call per prefix byte, plus one for the instruction
-    let num_prefixes = test.bytes.iter().take_while(|&&b| is_prefix_byte(b)).count();
+    let num_prefixes = test
+        .bytes
+        .iter()
+        .take_while(|&&b| is_prefix_byte(b))
+        .count();
     for _ in 0..=num_prefixes {
         process(&mut vm);
     }

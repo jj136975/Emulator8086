@@ -1,10 +1,10 @@
 use crate::io::bus::IoDevice;
 use crate::vm::cpu::Cpu;
 use crate::vm::runtime::CpuFlag::Carry;
+use log::debug;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use log::debug;
 
 const SECTOR_SIZE: usize = 512;
 pub const FLOPPY_144_SIZE: u64 = 1_474_560; // 80 * 2 * 18 * 512
@@ -13,7 +13,10 @@ pub const FLOPPY_144_SIZE: u64 = 1_474_560; // 80 * 2 * 18 * 512
 enum DiskStorage {
     /// An image file on the host. `path` is its canonical path, kept so the
     /// image can tell when it is asked to save onto itself.
-    FileBacked { file: File, path: PathBuf },
+    FileBacked {
+        file: File,
+        path: PathBuf,
+    },
     InMemory(Vec<u8>),
 }
 
@@ -93,7 +96,9 @@ impl DiskImage {
             Some(geometry) => geometry,
             None => {
                 let mut boot_sector = Vec::with_capacity(SECTOR_SIZE);
-                (&mut file).take(SECTOR_SIZE as u64).read_to_end(&mut boot_sector)?;
+                (&mut file)
+                    .take(SECTOR_SIZE as u64)
+                    .read_to_end(&mut boot_sector)?;
                 geometry_from_boot_sector(&boot_sector)
                     .unwrap_or_else(|| hd_geometry_from_size(size))
             }
@@ -123,7 +128,12 @@ impl DiskImage {
     pub fn open_hard_disk(path: &Path, readonly: bool) -> std::io::Result<Self> {
         let file = OpenOptions::new().read(true).write(!readonly).open(path)?;
         let size = file.metadata()?.len();
-        Ok(Self::on_file(file, path, hd_geometry_from_size(size), readonly))
+        Ok(Self::on_file(
+            file,
+            path,
+            hd_geometry_from_size(size),
+            readonly,
+        ))
     }
 
     /// Create a new hard disk image of the given size in MB. An existing
@@ -408,8 +418,7 @@ impl DiskImage {
     pub fn copy_dir_to_fat(&mut self, host_dir: &Path) -> std::io::Result<usize> {
         self.require_writable()?;
         let volume = self.fat_volume()?;
-        let copied = put_dir(&volume.root_dir(), host_dir);
-        copied
+        put_dir(&volume.root_dir(), host_dir)
     }
 
     fn require_writable(&self) -> std::io::Result<()> {
@@ -426,7 +435,10 @@ impl DiskImage {
     fn fat_volume(&mut self) -> std::io::Result<FatVolume<'_>> {
         let (start, length) = self.fat_volume_extent()?;
         let io = self.image_io();
-        fatfs::FileSystem::new(PartitionSlice::new(io, start, length)?, fatfs::FsOptions::new())
+        fatfs::FileSystem::new(
+            PartitionSlice::new(io, start, length)?,
+            fatfs::FsOptions::new(),
+        )
     }
 }
 
@@ -575,8 +587,7 @@ impl DiskImage {
     ) -> std::io::Result<String> {
         self.require_writable()?;
         let volume = self.fat_volume()?;
-        let stored = put_path(&volume.root_dir(), dos_path, host_data);
-        stored
+        put_path(&volume.root_dir(), dos_path, host_data)
     }
 }
 
@@ -693,7 +704,10 @@ const DOS_DEVICE_NAMES: [&str; 12] = [
 
 fn reject_device_name(name: &str) -> std::io::Result<()> {
     let base = name.split('.').next().unwrap_or("").trim_end();
-    if DOS_DEVICE_NAMES.iter().any(|device| device.eq_ignore_ascii_case(base)) {
+    if DOS_DEVICE_NAMES
+        .iter()
+        .any(|device| device.eq_ignore_ascii_case(base))
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("'{}' is the name of a DOS device", name),
@@ -731,7 +745,9 @@ fn put_file<T: Read + Write + Seek>(
     file.flush()?;
     drop(file);
 
-    let created = short_names(dir)?.into_iter().find(|short| !before.contains(short));
+    let created = short_names(dir)?
+        .into_iter()
+        .find(|short| !before.contains(short));
     Ok(created.unwrap_or_else(|| name.to_ascii_uppercase()))
 }
 
@@ -742,7 +758,10 @@ fn put_path<T: Read + Write + Seek>(
     dos_path: &str,
     data: &[u8],
 ) -> std::io::Result<String> {
-    let components: Vec<&str> = dos_path.split(['\\', '/']).filter(|c| !c.is_empty()).collect();
+    let components: Vec<&str> = dos_path
+        .split(['\\', '/'])
+        .filter(|c| !c.is_empty())
+        .collect();
     let Some((name, directories)) = components.split_last() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -973,12 +992,7 @@ impl DiskController {
 
     /// Copies a host file into the FAT volume on the disk in `drive` and
     /// returns the path under which DOS sees it.
-    pub fn put_file(
-        &mut self,
-        drive: u8,
-        data: &[u8],
-        dos_path: &str,
-    ) -> std::io::Result<String> {
+    pub fn put_file(&mut self, drive: u8, data: &[u8], dos_path: &str) -> std::io::Result<String> {
         let result = self.disk_in(drive)?.copy_file_to_fat(data, dos_path);
         self.mark_changed(drive);
         result
@@ -1008,7 +1022,10 @@ impl DiskController {
     }
 
     fn floppy_drive_count(&self) -> u8 {
-        self.floppy_installed.iter().filter(|installed| **installed).count() as u8
+        self.floppy_installed
+            .iter()
+            .filter(|installed| **installed)
+            .count() as u8
     }
 
     pub(crate) fn find_drive(&mut self, drive: u8) -> Option<&mut DiskImage> {
@@ -1107,7 +1124,10 @@ impl DiskController {
     }
 
     fn hard_disk_count(&self) -> u8 {
-        self.drives.iter().filter(|(drive, _)| *drive >= 0x80).count() as u8
+        self.drives
+            .iter()
+            .filter(|(drive, _)| *drive >= 0x80)
+            .count() as u8
     }
 
     /// Whether `drive` is a floppy drive that exists or a hard disk with an
@@ -1122,7 +1142,8 @@ impl DiskController {
         let drive = cpu.registers.dx.low();
 
         // Update the BDA hard disk count dynamically
-        cpu.memory.write_byte(BDA_HARD_DISK_COUNT, self.hard_disk_count());
+        cpu.memory
+            .write_byte(BDA_HARD_DISK_COUNT, self.hard_disk_count());
 
         let status = match function {
             // AH=00: Reset
@@ -1210,7 +1231,12 @@ impl DiskController {
 
         let mut address = Self::buffer_address(cpu);
         let mut done: u16 = 0;
-        let runs = track_runs(disk.heads, disk.sectors_per_track, (cylinder, head, sector), count);
+        let runs = track_runs(
+            disk.heads,
+            disk.sectors_per_track,
+            (cylinder, head, sector),
+            count,
+        );
         for run in runs {
             match disk.read_sectors(run.cylinder, run.head, run.sector, run.count) {
                 Ok(data) => address = Self::write_guest(cpu, address, &data),
@@ -1244,7 +1270,12 @@ impl DiskController {
 
         let mut address = Self::buffer_address(cpu);
         let mut done: u16 = 0;
-        let runs = track_runs(disk.heads, disk.sectors_per_track, (cylinder, head, sector), count);
+        let runs = track_runs(
+            disk.heads,
+            disk.sectors_per_track,
+            (cylinder, head, sector),
+            count,
+        );
         for run in runs {
             let length = run.count as usize * SECTOR_SIZE;
             let data = Self::read_guest(cpu, address, length);
@@ -1317,7 +1348,9 @@ impl DiskController {
 
         cpu.registers.ax.set_low(0x00);
         cpu.registers.cx.set_high((max_cylinder & 0xFF) as u8);
-        cpu.registers.cx.set_low((sectors & 0x3F) | (((max_cylinder >> 8) as u8) << 6));
+        cpu.registers
+            .cx
+            .set_low((sectors & 0x3F) | (((max_cylinder >> 8) as u8) << 6));
         cpu.registers.dx.set_high(max_head);
         if drive < 0x80 {
             cpu.registers.bx.set(drive_type as u16);
@@ -1338,7 +1371,11 @@ impl DiskController {
     /// rely on AH=16h.
     fn disk_type(&mut self, cpu: &mut Cpu, drive: u8) -> u8 {
         if drive < 0x80 {
-            return if self.is_installed_floppy(drive) { 0x02 } else { 0x00 };
+            return if self.is_installed_floppy(drive) {
+                0x02
+            } else {
+                0x00
+            };
         }
         match self.find_drive(drive) {
             Some(disk) => {
@@ -1627,11 +1664,7 @@ mod inspection_tests {
         assert_eq!(max_cyl, 79, "max_cyl for 80-cylinder floppy should be 79");
         assert_eq!(spt, 18, "SPT=18 for 1.44M floppy");
         assert_eq!(dh, 1, "max_head for 2-head floppy should be 1");
-        assert_eq!(
-            rt.cpu.registers.ax.high(),
-            0x00,
-            "AH=0 on success"
-        );
+        assert_eq!(rt.cpu.registers.ax.high(), 0x00, "AH=0 on success");
     }
 
     /// A write to a read-only disk fails with CF set and AH=0x03 (write
@@ -1709,8 +1742,8 @@ mod inspection_tests {
 
     impl ScratchFile {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("emu8086-test-{}-{}", std::process::id(), name));
+            let path =
+                std::env::temp_dir().join(format!("emu8086-test-{}-{}", std::process::id(), name));
             let _ = std::fs::remove_file(&path);
             Self(path)
         }
@@ -1729,7 +1762,9 @@ mod inspection_tests {
     /// Floppy-sized content in which every sector is filled with its own
     /// number, so a read shows which sector it really came from.
     fn numbered_sectors() -> Vec<u8> {
-        (0..FLOPPY_144_SIZE as usize).map(|i| (i / SECTOR_SIZE) as u8).collect()
+        (0..FLOPPY_144_SIZE as usize)
+            .map(|i| (i / SECTOR_SIZE) as u8)
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -1766,7 +1801,10 @@ mod inspection_tests {
             img.save_to_file(own.path()).unwrap(),
             SaveOutcome::AlreadyBacking
         );
-        assert_eq!(img.save_to_file(other.path()).unwrap(), SaveOutcome::Written);
+        assert_eq!(
+            img.save_to_file(other.path()).unwrap(),
+            SaveOutcome::Written
+        );
         assert_eq!(std::fs::read(other.path()).unwrap(), numbered_sectors());
     }
 
@@ -1778,21 +1816,34 @@ mod inspection_tests {
         std::fs::write(target.path(), vec![0xEEu8; 3 * FLOPPY_144_SIZE as usize]).unwrap();
 
         let mut img = DiskImage::new_in_memory_sized(FLOPPY_144_SIZE, false);
-        img.write_sectors(0, 0, 1, 1, &[0x5Au8; SECTOR_SIZE]).unwrap();
-        assert_eq!(img.save_to_file(target.path()).unwrap(), SaveOutcome::Written);
+        img.write_sectors(0, 0, 1, 1, &[0x5Au8; SECTOR_SIZE])
+            .unwrap();
+        assert_eq!(
+            img.save_to_file(target.path()).unwrap(),
+            SaveOutcome::Written
+        );
 
         let saved = std::fs::read(target.path()).unwrap();
         assert_eq!(saved.len() as u64, FLOPPY_144_SIZE);
         assert_eq!(saved[..SECTOR_SIZE], [0x5Au8; SECTOR_SIZE]);
         assert!(saved[SECTOR_SIZE..].iter().all(|b| *b == 0));
 
-        let target_name = target.path().file_name().unwrap().to_string_lossy().into_owned();
+        let target_name = target
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let leftovers: Vec<String> = std::fs::read_dir(target.path().parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|name| name.starts_with(&target_name) && *name != target_name)
             .collect();
-        assert!(leftovers.is_empty(), "temporary files left behind: {:?}", leftovers);
+        assert!(
+            leftovers.is_empty(),
+            "temporary files left behind: {:?}",
+            leftovers
+        );
     }
 
     #[test]
@@ -1861,7 +1912,11 @@ mod inspection_tests {
             assert!(!carry(&rt), "AH=08h must succeed for drive {:02X}", drive);
             assert_eq!(rt.cpu.registers.ax.word(), 0x0000);
             assert_eq!(rt.cpu.registers.bx.word(), 0x0004, "drive type 1.44M");
-            assert_eq!(rt.cpu.registers.cx.word(), 0x4F12, "79 cylinders max, 18 sectors");
+            assert_eq!(
+                rt.cpu.registers.cx.word(),
+                0x4F12,
+                "79 cylinders max, 18 sectors"
+            );
             assert_eq!(rt.cpu.registers.dx.word(), 0x0102, "head 1 max, two drives");
             assert_eq!(rt.cpu.registers.es.reg().word(), 0xF000);
             assert_eq!(rt.cpu.registers.di.word(), 0xEFC7);
@@ -1884,7 +1939,11 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x1500, 0, 0x0002);
         assert_eq!(rt.cpu.registers.ax.high(), 0x02);
         int13(&mut disk_ctrl, &mut rt, 0x0800, 0, 0x0000);
-        assert_eq!(rt.cpu.registers.dx.low(), 3, "A:, B: and the configured unit 2");
+        assert_eq!(
+            rt.cpu.registers.dx.low(),
+            3,
+            "A:, B: and the configured unit 2"
+        );
 
         // The unit stays installed after its disk is ejected.
         disk_ctrl.detach(0x02);
@@ -1925,7 +1984,11 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x1600, 0, 0x0000);
         assert!(carry(&rt));
         assert_eq!(rt.cpu.registers.ax.high(), 0x06);
-        assert_eq!(rt.cpu.memory.read_byte(0x0441), 0x06, "status byte at 40:41");
+        assert_eq!(
+            rt.cpu.memory.read_byte(0x0441),
+            0x06,
+            "status byte at 40:41"
+        );
 
         for _ in 0..2 {
             int13(&mut disk_ctrl, &mut rt, 0x1600, 0, 0x0000);
@@ -1963,7 +2026,11 @@ mod inspection_tests {
 
         int13(&mut disk_ctrl, &mut rt, 0x1600, 0, 0x0080);
         assert!(carry(&rt));
-        assert_eq!(rt.cpu.registers.ax.high(), 0x01, "invalid function for a hard disk");
+        assert_eq!(
+            rt.cpu.registers.ax.high(),
+            0x01,
+            "invalid function for a hard disk"
+        );
 
         // Ejecting counts as a change of the (now empty) drive, not of the
         // next disk: inserting one raises the line again.
@@ -1985,7 +2052,13 @@ mod inspection_tests {
         rt.cpu.registers.bx.set(0);
 
         for function in [0x02u16, 0x03, 0x04, 0x05] {
-            int13(&mut disk_ctrl, &mut rt, function << 8 | 0x01, 0x0001, 0x0000);
+            int13(
+                &mut disk_ctrl,
+                &mut rt,
+                function << 8 | 0x01,
+                0x0001,
+                0x0000,
+            );
             assert!(carry(&rt));
             assert_eq!(rt.cpu.registers.ax.high(), 0x80, "AH={:02X}h", function);
         }
@@ -2025,7 +2098,10 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x1600, 0, 0x0000);
         assert_eq!(rt.cpu.registers.ax.high(), 0x00);
 
-        assert!(disk_ctrl.put_file(0x01, b"hello", "HELLO.TXT").is_err(), "B: is empty");
+        assert!(
+            disk_ctrl.put_file(0x01, b"hello", "HELLO.TXT").is_err(),
+            "B: is empty"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2037,7 +2113,11 @@ mod inspection_tests {
         let mut image = floppy(FLOPPY_144_SIZE);
         image.format_fat().unwrap();
         (0..160u16)
-            .flat_map(|track| image.read_sectors(track / 2, (track % 2) as u8, 1, 18).unwrap())
+            .flat_map(|track| {
+                image
+                    .read_sectors(track / 2, (track % 2) as u8, 1, 18)
+                    .unwrap()
+            })
             .collect()
     }
 
@@ -2087,7 +2167,11 @@ mod inspection_tests {
         assert_eq!(geometry_of(scratch.path()), (80, 2, 18));
 
         // No boot sector at all.
-        std::fs::write(scratch.path(), vec![0u8; FLOPPY_144_SIZE as usize + SECTOR_SIZE]).unwrap();
+        std::fs::write(
+            scratch.path(),
+            vec![0u8; FLOPPY_144_SIZE as usize + SECTOR_SIZE],
+        )
+        .unwrap();
         assert_eq!(geometry_of(scratch.path()), (2, 16, 63));
 
         // Boot sectors whose parameter block cannot be right.
@@ -2136,7 +2220,11 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x08EE, 0xCCCC, 0xDD00);
         assert!(!carry(&rt));
         assert_eq!(rt.cpu.registers.ax.word(), 0x0000, "AX");
-        assert_eq!(rt.cpu.registers.bx.word(), 0x0004, "BH = 0, BL = drive type");
+        assert_eq!(
+            rt.cpu.registers.bx.word(),
+            0x0004,
+            "BH = 0, BL = drive type"
+        );
         assert_eq!(rt.cpu.registers.cx.word(), 0x4F12);
         assert_eq!(rt.cpu.registers.dx.word(), 0x0102);
 
@@ -2144,9 +2232,21 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x08EE, 0xCCCC, 0xDD80);
         assert!(!carry(&rt));
         assert_eq!(rt.cpu.registers.ax.word(), 0x0000, "AX");
-        assert_eq!(rt.cpu.registers.bx.word(), 0xBBBB, "BX is not used for a hard disk");
-        assert_eq!(rt.cpu.registers.cx.word(), 0x403F, "cylinder 64 max, 63 sectors");
-        assert_eq!(rt.cpu.registers.dx.word(), 0x0F01, "head 15 max, one hard disk");
+        assert_eq!(
+            rt.cpu.registers.bx.word(),
+            0xBBBB,
+            "BX is not used for a hard disk"
+        );
+        assert_eq!(
+            rt.cpu.registers.cx.word(),
+            0x403F,
+            "cylinder 64 max, 63 sectors"
+        );
+        assert_eq!(
+            rt.cpu.registers.dx.word(),
+            0x0F01,
+            "head 15 max, one hard disk"
+        );
     }
 
     /// The 40-track formats (160K, 180K, 320K and 360K) belong to a 360K
@@ -2201,8 +2301,16 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x1800, 0, 0x0080);
         assert!(carry(&rt));
         assert_eq!(rt.cpu.registers.ax.high(), 0x01);
-        assert_eq!(rt.cpu.memory.read_byte(0x0474), 0x01, "hard disk status at 40:74");
-        assert_eq!(rt.cpu.memory.read_byte(0x0441), 0x00, "diskette status at 40:41");
+        assert_eq!(
+            rt.cpu.memory.read_byte(0x0474),
+            0x01,
+            "hard disk status at 40:74"
+        );
+        assert_eq!(
+            rt.cpu.memory.read_byte(0x0441),
+            0x00,
+            "diskette status at 40:41"
+        );
         int13(&mut disk_ctrl, &mut rt, 0x1800, 0, 0x0000);
         assert_eq!(rt.cpu.memory.read_byte(0x0441), 0x01);
 
@@ -2211,7 +2319,12 @@ mod inspection_tests {
             rt.cpu.memory.write_byte(0x0474, 0x04);
             int13(&mut disk_ctrl, &mut rt, function << 8, 0x0001, 0x0080);
             assert!(!carry(&rt), "AH={:02X}h", function);
-            assert_eq!(rt.cpu.memory.read_byte(0x0474), 0x00, "AH={:02X}h", function);
+            assert_eq!(
+                rt.cpu.memory.read_byte(0x0474),
+                0x00,
+                "AH={:02X}h",
+                function
+            );
         }
     }
 
@@ -2229,13 +2342,21 @@ mod inspection_tests {
             assert_eq!(rt.cpu.registers.ax.high(), 0x00);
 
             int13(&mut disk_ctrl, &mut rt, function << 8, 0x0001, 0x0081);
-            assert!(carry(&rt), "AH={:02X}h on a hard disk that does not exist", function);
+            assert!(
+                carry(&rt),
+                "AH={:02X}h on a hard disk that does not exist",
+                function
+            );
             assert_eq!(rt.cpu.registers.ax.high(), 0x01);
 
             int13(&mut disk_ctrl, &mut rt, function << 8, 0x0001, 0x0000);
             assert!(!carry(&rt), "AH={:02X}h on drive A:", function);
             int13(&mut disk_ctrl, &mut rt, function << 8, 0x0001, 0x0003);
-            assert!(carry(&rt), "AH={:02X}h on a floppy drive that does not exist", function);
+            assert!(
+                carry(&rt),
+                "AH={:02X}h on a floppy drive that does not exist",
+                function
+            );
         }
     }
 
@@ -2249,7 +2370,13 @@ mod inspection_tests {
         disk_ctrl.attach(0x80, DiskImage::new_in_memory_hard_disk(1));
 
         for function in [0x0Au16, 0x0B] {
-            int13(&mut disk_ctrl, &mut rt, function << 8 | 0x01, 0x0001, 0x0080);
+            int13(
+                &mut disk_ctrl,
+                &mut rt,
+                function << 8 | 0x01,
+                0x0001,
+                0x0080,
+            );
             assert!(carry(&rt), "AH={:02X}h", function);
             assert_eq!(rt.cpu.registers.ax.high(), 0x01);
         }
@@ -2291,11 +2418,20 @@ mod inspection_tests {
         rt.cpu.registers.bx.set(0);
 
         for (cylinder, head) in [(80u16, 0u16), (100, 0), (1023, 1)] {
-            int13(&mut disk_ctrl, &mut rt, 0x0301, chs_cx(cylinder, 1), head << 8);
+            int13(
+                &mut disk_ctrl,
+                &mut rt,
+                0x0301,
+                chs_cx(cylinder, 1),
+                head << 8,
+            );
             assert!(carry(&rt), "write at C={} H={}", cylinder, head);
             assert_eq!(rt.cpu.registers.ax.high(), 0x04);
         }
-        assert_eq!(std::fs::metadata(scratch.path()).unwrap().len(), FLOPPY_144_SIZE);
+        assert_eq!(
+            std::fs::metadata(scratch.path()).unwrap().len(),
+            FLOPPY_144_SIZE
+        );
     }
 
     #[test]
@@ -2307,7 +2443,10 @@ mod inspection_tests {
         disk_ctrl.attach(0x00, DiskImage::open(scratch.path(), false).unwrap());
 
         int13(&mut disk_ctrl, &mut rt, 0x0509, chs_cx(39, 1), 0x0100);
-        assert!(!carry(&rt), "the last track of a 360K disk can be formatted");
+        assert!(
+            !carry(&rt),
+            "the last track of a 360K disk can be formatted"
+        );
         int13(&mut disk_ctrl, &mut rt, 0x0509, chs_cx(40, 1), 0x0000);
         assert!(carry(&rt), "cylinder 40 does not exist");
         assert_eq!(rt.cpu.registers.ax.high(), 0x04);
@@ -2331,13 +2470,21 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x0201, chs_cx(0, 1), 0x0200);
         assert!(carry(&rt), "read from head 2 of a two-sided disk");
         assert_eq!(rt.cpu.registers.ax.high(), 0x04);
-        assert_eq!(rt.cpu.memory.read_byte(0x10000), 0xEE, "nothing was transferred");
+        assert_eq!(
+            rt.cpu.memory.read_byte(0x10000),
+            0xEE,
+            "nothing was transferred"
+        );
 
         int13(&mut disk_ctrl, &mut rt, 0x0301, chs_cx(0, 1), 0x0500);
         assert!(carry(&rt), "write to head 5");
         assert_eq!(rt.cpu.registers.ax.high(), 0x04);
         let image = disk_ctrl.find_drive(0x00).unwrap();
-        assert_eq!(image.read_sectors(2, 1, 1, 1).unwrap()[0], 90, "sector 90 is untouched");
+        assert_eq!(
+            image.read_sectors(2, 1, 1, 1).unwrap()[0],
+            90,
+            "sector 90 is untouched"
+        );
     }
 
     /// DH=FFh with a transfer that continues on the next track overflowed
@@ -2363,9 +2510,15 @@ mod inspection_tests {
         std::fs::write(scratch.path(), numbered_sectors()).unwrap();
         let sector = [0x5Au8; SECTOR_SIZE];
 
-        for mut image in [DiskImage::open(scratch.path(), false).unwrap(), numbered_floppy()] {
+        for mut image in [
+            DiskImage::open(scratch.path(), false).unwrap(),
+            numbered_floppy(),
+        ] {
             assert!(image.read_sectors(79, 1, 18, 1).is_ok(), "the last sector");
-            assert!(image.read_sectors(79, 1, 18, 2).is_err(), "one past the last sector");
+            assert!(
+                image.read_sectors(79, 1, 18, 2).is_err(),
+                "one past the last sector"
+            );
             assert!(image.read_sectors(80, 0, 1, 1).is_err(), "cylinder 80");
             assert!(image.read_sectors(0, 2, 1, 1).is_err(), "head 2");
             assert!(image.read_sectors(0, 0, 19, 1).is_err(), "sector 19");
@@ -2375,7 +2528,10 @@ mod inspection_tests {
             assert!(image.format_track(80, 0).is_err());
             assert!(image.format_track(0, 2).is_err());
         }
-        assert_eq!(std::fs::metadata(scratch.path()).unwrap().len(), FLOPPY_144_SIZE);
+        assert_eq!(
+            std::fs::metadata(scratch.path()).unwrap().len(),
+            FLOPPY_144_SIZE
+        );
     }
 
     /// A transfer that starts on the disk and runs off its end stops there
@@ -2391,9 +2547,16 @@ mod inspection_tests {
         // 20 sectors from C=79 H=1 S=10: only 9 are left on the disk.
         int13(&mut disk_ctrl, &mut rt, 0x0214, chs_cx(79, 10), 0x0100);
         assert!(carry(&rt));
-        assert_eq!(rt.cpu.registers.ax.word(), 0x0409, "sector not found after 9 sectors");
+        assert_eq!(
+            rt.cpu.registers.ax.word(),
+            0x0409,
+            "sector not found after 9 sectors"
+        );
         assert_eq!(rt.cpu.memory.read_byte(0x10000), (2871 % 256) as u8);
-        assert_eq!(rt.cpu.memory.read_byte(0x10000 + 8 * SECTOR_SIZE), (2879 % 256) as u8);
+        assert_eq!(
+            rt.cpu.memory.read_byte(0x10000 + 8 * SECTOR_SIZE),
+            (2879 % 256) as u8
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2411,11 +2574,18 @@ mod inspection_tests {
     /// A hard disk on which every sector starts with its own number.
     fn numbered_hard_disk() -> DiskImage {
         let mut image = DiskImage::new_in_memory_hard_disk(1);
-        assert_eq!((image.cylinders, image.heads, image.sectors_per_track), (2, 16, 63));
+        assert_eq!(
+            (image.cylinders, image.heads, image.sectors_per_track),
+            (2, 16, 63)
+        );
         for lba in 0..HARD_DISK_SECTORS {
             let mut sector = [0u8; SECTOR_SIZE];
             sector[..8].copy_from_slice(&lba.to_le_bytes());
-            let (c, h, s) = ((lba / 1008) as u16, (lba / 63 % 16) as u8, (lba % 63) as u8 + 1);
+            let (c, h, s) = (
+                (lba / 1008) as u16,
+                (lba / 63 % 16) as u8,
+                (lba % 63) as u8 + 1,
+            );
             image.write_sectors(c, h, s, 1, &sector).unwrap();
         }
         image
@@ -2457,7 +2627,9 @@ mod inspection_tests {
     /// The sector number at the start of the `index`th sector in the buffer.
     fn sector_in_buffer(rt: &Runtime, index: usize) -> u64 {
         let at = BUFFER + index * SECTOR_SIZE;
-        (0..8).fold(0, |number, i| number | (rt.cpu.memory.read_byte(at + i) as u64) << (8 * i))
+        (0..8).fold(0, |number, i| {
+            number | (rt.cpu.memory.read_byte(at + i) as u64) << (8 * i)
+        })
     }
 
     #[test]
@@ -2468,7 +2640,11 @@ mod inspection_tests {
         assert!(!carry(&rt));
         assert_eq!(rt.cpu.registers.ax.high(), 0x00);
         assert_eq!(
-            [sector_in_buffer(&rt, 0), sector_in_buffer(&rt, 1), sector_in_buffer(&rt, 2)],
+            [
+                sector_in_buffer(&rt, 0),
+                sector_in_buffer(&rt, 1),
+                sector_in_buffer(&rt, 2)
+            ],
             [1000, 1001, 1002]
         );
         assert_eq!(rt.cpu.memory.read_byte(BUFFER + 3 * SECTOR_SIZE), 0xEE);
@@ -2477,12 +2653,31 @@ mod inspection_tests {
         int13_packet(&mut disk_ctrl, &mut rt, 0x43, 0x80, 1500, 2);
         assert!(!carry(&rt));
         let image = disk_ctrl.find_drive(0x80).unwrap();
-        assert_eq!(image.read_sectors(1, 7, 52, 1).unwrap()[..2], [0xE8, 0x03], "sector 1500");
-        assert_eq!(image.read_sectors(1, 7, 53, 1).unwrap()[..2], [0xE9, 0x03], "sector 1501");
-        assert_eq!(image.read_sectors(1, 7, 54, 1).unwrap()[..2], [0xDE, 0x05], "sector 1502");
+        assert_eq!(
+            image.read_sectors(1, 7, 52, 1).unwrap()[..2],
+            [0xE8, 0x03],
+            "sector 1500"
+        );
+        assert_eq!(
+            image.read_sectors(1, 7, 53, 1).unwrap()[..2],
+            [0xE9, 0x03],
+            "sector 1501"
+        );
+        assert_eq!(
+            image.read_sectors(1, 7, 54, 1).unwrap()[..2],
+            [0xDE, 0x05],
+            "sector 1502"
+        );
 
         // The last sector of the disk.
-        int13_packet(&mut disk_ctrl, &mut rt, 0x42, 0x80, HARD_DISK_SECTORS - 1, 1);
+        int13_packet(
+            &mut disk_ctrl,
+            &mut rt,
+            0x42,
+            0x80,
+            HARD_DISK_SECTORS - 1,
+            1,
+        );
         assert!(!carry(&rt));
         assert_eq!(sector_in_buffer(&rt, 0), HARD_DISK_SECTORS - 1);
     }
@@ -2504,7 +2699,11 @@ mod inspection_tests {
         assert!(!carry(&rt));
         assert_eq!(rt.cpu.registers.bx.word(), 0xAA55);
         assert_eq!(rt.cpu.registers.ax.high(), 0x01, "version 1.x");
-        assert_eq!(rt.cpu.registers.cx.word(), 0x0001, "extended disk access functions");
+        assert_eq!(
+            rt.cpu.registers.cx.word(),
+            0x0001,
+            "extended disk access functions"
+        );
 
         for drive in [0x0081u16, 0x0000] {
             rt.cpu.registers.bx.set(0x55AA);
@@ -2530,10 +2729,19 @@ mod inspection_tests {
             int13_packet(&mut disk_ctrl, &mut rt, 0x42, 0x80, lba, 2);
             assert!(carry(&rt), "block {:#x}", lba);
             assert_eq!(rt.cpu.registers.ax.high(), 0x04, "block {:#x}", lba);
-            assert_eq!(rt.cpu.memory.read_byte(BUFFER), 0xEE, "block {:#x}: nothing is read", lba);
+            assert_eq!(
+                rt.cpu.memory.read_byte(BUFFER),
+                0xEE,
+                "block {:#x}: nothing is read",
+                lba
+            );
             assert_eq!(rt.cpu.memory.read_word(PACKET + 2), 0, "blocks transferred");
         }
-        assert_eq!(rt.cpu.memory.read_byte(0x0474), 0x04, "hard disk status at 40:74");
+        assert_eq!(
+            rt.cpu.memory.read_byte(0x0474),
+            0x04,
+            "hard disk status at 40:74"
+        );
     }
 
     /// A transfer that starts on the disk and runs off its end stops there
@@ -2542,7 +2750,14 @@ mod inspection_tests {
     fn lba_read_running_off_the_end_reports_the_blocks_done() {
         let (mut rt, mut disk_ctrl) = machine_with_numbered_hard_disk();
 
-        int13_packet(&mut disk_ctrl, &mut rt, 0x42, 0x80, HARD_DISK_SECTORS - 6, 10);
+        int13_packet(
+            &mut disk_ctrl,
+            &mut rt,
+            0x42,
+            0x80,
+            HARD_DISK_SECTORS - 6,
+            10,
+        );
         assert!(carry(&rt));
         assert_eq!(rt.cpu.registers.ax.high(), 0x04);
         assert_eq!(rt.cpu.memory.read_word(PACKET + 2), 6);
@@ -2562,7 +2777,11 @@ mod inspection_tests {
             assert_eq!(rt.cpu.registers.ax.high(), 0x04, "block {:#x}", lba);
         }
         let image = disk_ctrl.find_drive(0x80).unwrap();
-        assert_eq!(image.read_sectors(0, 0, 1, 1).unwrap()[..2], [0x00, 0x00], "sector 0");
+        assert_eq!(
+            image.read_sectors(0, 0, 1, 1).unwrap()[..2],
+            [0x00, 0x00],
+            "sector 0"
+        );
 
         disk_ctrl.find_drive(0x80).unwrap().readonly = true;
         int13_packet(&mut disk_ctrl, &mut rt, 0x43, 0x80, 0, 1);
@@ -2580,14 +2799,31 @@ mod inspection_tests {
         assert!(carry(&rt), "drive 83h does not exist");
         assert_eq!(rt.cpu.registers.ax.high(), 0x80);
 
-        int13_packet(&mut disk_ctrl, &mut rt, 0x44, 0x80, 0, HARD_DISK_SECTORS as u16);
+        int13_packet(
+            &mut disk_ctrl,
+            &mut rt,
+            0x44,
+            0x80,
+            0,
+            HARD_DISK_SECTORS as u16,
+        );
         assert!(!carry(&rt), "the whole disk");
         assert_eq!(rt.cpu.registers.ax.high(), 0x00);
 
-        int13_packet(&mut disk_ctrl, &mut rt, 0x44, 0x80, 1, HARD_DISK_SECTORS as u16);
+        int13_packet(
+            &mut disk_ctrl,
+            &mut rt,
+            0x44,
+            0x80,
+            1,
+            HARD_DISK_SECTORS as u16,
+        );
         assert!(carry(&rt), "one block past the end");
         assert_eq!(rt.cpu.registers.ax.high(), 0x04);
-        assert_eq!(rt.cpu.memory.read_word(PACKET + 2), HARD_DISK_SECTORS as u16 - 1);
+        assert_eq!(
+            rt.cpu.memory.read_word(PACKET + 2),
+            HARD_DISK_SECTORS as u16 - 1
+        );
 
         int13_packet(&mut disk_ctrl, &mut rt, 0x44, 0x80, 0x7FFF_FFFF, 1);
         assert!(carry(&rt));
@@ -2605,7 +2841,14 @@ mod inspection_tests {
     fn extended_seek_checks_the_block_number() {
         let (mut rt, mut disk_ctrl) = machine_with_numbered_hard_disk();
 
-        int13_packet(&mut disk_ctrl, &mut rt, 0x47, 0x80, HARD_DISK_SECTORS - 1, 0);
+        int13_packet(
+            &mut disk_ctrl,
+            &mut rt,
+            0x47,
+            0x80,
+            HARD_DISK_SECTORS - 1,
+            0,
+        );
         assert!(!carry(&rt));
         assert_eq!(rt.cpu.registers.ax.high(), 0x00);
 
@@ -2638,14 +2881,27 @@ mod inspection_tests {
         assert_eq!(word(&rt, 0x02), 0x0002, "flags: the CHS values are valid");
         assert_eq!([word(&rt, 0x04), word(&rt, 0x06)], [2, 0], "cylinders");
         assert_eq!([word(&rt, 0x08), word(&rt, 0x0A)], [16, 0], "heads");
-        assert_eq!([word(&rt, 0x0C), word(&rt, 0x0E)], [63, 0], "sectors per track");
         assert_eq!(
-            [word(&rt, 0x10), word(&rt, 0x12), word(&rt, 0x14), word(&rt, 0x16)],
+            [word(&rt, 0x0C), word(&rt, 0x0E)],
+            [63, 0],
+            "sectors per track"
+        );
+        assert_eq!(
+            [
+                word(&rt, 0x10),
+                word(&rt, 0x12),
+                word(&rt, 0x14),
+                word(&rt, 0x16)
+            ],
             [HARD_DISK_SECTORS as u16, 0, 0, 0],
             "total sectors"
         );
         assert_eq!(word(&rt, 0x18), 512, "bytes per sector");
-        assert_eq!(rt.cpu.memory.read_byte(PACKET + 0x1A), 0xEE, "nothing beyond 26 bytes");
+        assert_eq!(
+            rt.cpu.memory.read_byte(PACKET + 0x1A),
+            0xEE,
+            "nothing beyond 26 bytes"
+        );
 
         // A buffer that cannot hold the 26 bytes.
         rt.cpu.memory.write_word(PACKET, 0x0010);
@@ -2664,7 +2920,10 @@ mod inspection_tests {
         int13(&mut disk_ctrl, &mut rt, 0x4800, 0, 0x0000);
         assert!(!carry(&rt));
         assert_eq!(word(&rt, 0x02), 0x0016, "flags");
-        assert_eq!([word(&rt, 0x04), word(&rt, 0x08), word(&rt, 0x0C)], [80, 2, 18]);
+        assert_eq!(
+            [word(&rt, 0x04), word(&rt, 0x08), word(&rt, 0x0C)],
+            [80, 2, 18]
+        );
         assert_eq!(word(&rt, 0x10), 2880, "total sectors");
     }
 
@@ -2716,8 +2975,14 @@ mod inspection_tests {
                     (_, 0x0F) => long_names += 1,
                     _ => {
                         let base = String::from_utf8_lossy(&entry[..8]).trim_end().to_string();
-                        let ext = String::from_utf8_lossy(&entry[8..11]).trim_end().to_string();
-                        names.push(if ext.is_empty() { base } else { format!("{}.{}", base, ext) });
+                        let ext = String::from_utf8_lossy(&entry[8..11])
+                            .trim_end()
+                            .to_string();
+                        names.push(if ext.is_empty() {
+                            base
+                        } else {
+                            format!("{}.{}", base, ext)
+                        });
                     }
                 }
             }
@@ -2730,7 +2995,12 @@ mod inspection_tests {
     #[test]
     fn put_over_an_existing_file_replaces_it() {
         let mut image = formatted_floppy();
-        let old: Vec<u8> = b"ECHO OLD LINE\r\n".iter().cycle().take(600).copied().collect();
+        let old: Vec<u8> = b"ECHO OLD LINE\r\n"
+            .iter()
+            .cycle()
+            .take(600)
+            .copied()
+            .collect();
         let new = b"@ECHO NEW\r\n".to_vec();
 
         image.copy_file_to_fat(&old, "AUTOEXEC.BAT").unwrap();
@@ -2751,7 +3021,9 @@ mod inspection_tests {
         let mut image = formatted_floppy();
         image.copy_file_to_fat(b"hello", "GAME.EXE").unwrap();
         image.copy_file_to_fat(b"hello", "readme.txt").unwrap();
-        image.copy_file_to_fat(b"hello", "My Document.final.txt").unwrap();
+        image
+            .copy_file_to_fat(b"hello", "My Document.final.txt")
+            .unwrap();
 
         let (long_names, names) = root_directory(&mut image);
         assert_eq!(long_names, 0);
@@ -2774,30 +3046,53 @@ mod inspection_tests {
     #[test]
     fn put_refuses_dos_device_names() {
         let mut image = formatted_floppy();
-        for name in ["CON", "nul", "NUL.TXT", "prn.log", "AUX", "COM1", "lpt3.dat", "CLOCK$"] {
-            assert!(image.copy_file_to_fat(b"x", name).is_err(), "{} is a device", name);
+        for name in [
+            "CON", "nul", "NUL.TXT", "prn.log", "AUX", "COM1", "lpt3.dat", "CLOCK$",
+        ] {
+            assert!(
+                image.copy_file_to_fat(b"x", name).is_err(),
+                "{} is a device",
+                name
+            );
         }
         for name in ["CONSOLE.TXT", "COM5", "NULL", "LPT.TXT"] {
-            assert!(image.copy_file_to_fat(b"x", name).is_ok(), "{} is a plain file name", name);
+            assert!(
+                image.copy_file_to_fat(b"x", name).is_ok(),
+                "{} is a plain file name",
+                name
+            );
         }
-        assert_eq!(root_directory(&mut image).1, ["CONSOLE.TXT", "COM5", "NULL", "LPT.TXT"]);
+        assert_eq!(
+            root_directory(&mut image).1,
+            ["CONSOLE.TXT", "COM5", "NULL", "LPT.TXT"]
+        );
     }
 
     #[test]
     fn put_reports_the_name_the_file_has_in_dos() {
         let mut image = formatted_floppy();
 
-        assert_eq!(image.copy_file_to_fat(b"1", "game.exe").unwrap(), "GAME.EXE");
-        assert_eq!(image.copy_file_to_fat(b"2", "\\GAME.EXE").unwrap(), "GAME.EXE");
         assert_eq!(
-            image.copy_file_to_fat(b"3", "My Document.final.txt").unwrap(),
+            image.copy_file_to_fat(b"1", "game.exe").unwrap(),
+            "GAME.EXE"
+        );
+        assert_eq!(
+            image.copy_file_to_fat(b"2", "\\GAME.EXE").unwrap(),
+            "GAME.EXE"
+        );
+        assert_eq!(
+            image
+                .copy_file_to_fat(b"3", "My Document.final.txt")
+                .unwrap(),
             "MYDOCU~1.TXT"
         );
         // A long name cannot be matched against the entry it was stored
         // under, so putting it again makes a second file rather than
         // overwriting one that merely shares the generated name.
         assert_eq!(
-            image.copy_file_to_fat(b"4", "My Document.final.txt").unwrap(),
+            image
+                .copy_file_to_fat(b"4", "My Document.final.txt")
+                .unwrap(),
             "MYDOCU~2.TXT"
         );
         assert_eq!(fat_file(&mut image, "GAME.EXE"), Some(b"2".to_vec()));
@@ -2814,8 +3109,8 @@ mod inspection_tests {
 
     impl ScratchDir {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("emu8086-test-{}-{}", std::process::id(), name));
+            let path =
+                std::env::temp_dir().join(format!("emu8086-test-{}-{}", std::process::id(), name));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             Self(path)
@@ -2844,7 +3139,10 @@ mod inspection_tests {
         let mut image = formatted_floppy();
         assert_eq!(image.copy_dir_to_fat(&host.0).unwrap(), 3);
         assert_eq!(fat_file(&mut image, "README.TXT"), Some(vec![b'r'; 3000]));
-        assert_eq!(fat_file(&mut image, "DATA/LEVEL1.DAT"), Some(b"level one".to_vec()));
+        assert_eq!(
+            fat_file(&mut image, "DATA/LEVEL1.DAT"),
+            Some(b"level one".to_vec())
+        );
         assert_eq!(
             fat_file(&mut image, "DATA/DEEP/LEVEL2.DAT"),
             Some(b"level two".to_vec())
@@ -2856,14 +3154,22 @@ mod inspection_tests {
         assert_eq!(fat_file(&mut image, "README.TXT"), Some(b"short".to_vec()));
         let (long_names, mut names) = root_directory(&mut image);
         names.sort();
-        assert_eq!((long_names, names), (0, vec!["DATA".to_string(), "README.TXT".to_string()]));
+        assert_eq!(
+            (long_names, names),
+            (0, vec!["DATA".to_string(), "README.TXT".to_string()])
+        );
 
         // A file can also be put into one of the copied directories.
         assert_eq!(
-            image.copy_file_to_fat(b"new", "data\\deep\\level3.dat").unwrap(),
+            image
+                .copy_file_to_fat(b"new", "data\\deep\\level3.dat")
+                .unwrap(),
             "DATA\\DEEP\\LEVEL3.DAT"
         );
-        assert_eq!(fat_file(&mut image, "DATA/DEEP/LEVEL3.DAT"), Some(b"new".to_vec()));
+        assert_eq!(
+            fat_file(&mut image, "DATA/DEEP/LEVEL3.DAT"),
+            Some(b"new".to_vec())
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2887,7 +3193,11 @@ mod inspection_tests {
         assert_eq!(two, [15, 16]);
         assert_eq!(slice.stream_position().unwrap(), 7);
         assert_eq!(slice.seek(SeekFrom::Current(-4)).unwrap(), 3);
-        assert_eq!(slice.seek(SeekFrom::End(0)).unwrap(), 30, "the end of the partition");
+        assert_eq!(
+            slice.seek(SeekFrom::End(0)).unwrap(),
+            30,
+            "the end of the partition"
+        );
         assert_eq!(slice.seek(SeekFrom::End(-2)).unwrap(), 28);
         slice.read_exact(&mut two).unwrap();
         assert_eq!(two, [38, 39]);
@@ -2900,15 +3210,29 @@ mod inspection_tests {
         let mut slice = partition_slice();
         let mut buffer = [0u8; 8];
 
-        assert!(slice.seek(SeekFrom::Current(-4)).is_err(), "in front of the partition");
-        assert!(slice.seek(SeekFrom::Start(31)).is_err(), "behind the partition");
+        assert!(
+            slice.seek(SeekFrom::Current(-4)).is_err(),
+            "in front of the partition"
+        );
+        assert!(
+            slice.seek(SeekFrom::Start(31)).is_err(),
+            "behind the partition"
+        );
         assert!(slice.seek(SeekFrom::End(1)).is_err());
-        assert_eq!(slice.stream_position().unwrap(), 0, "a failed seek does not move");
+        assert_eq!(
+            slice.stream_position().unwrap(),
+            0,
+            "a failed seek does not move"
+        );
         slice.read_exact(&mut buffer[..1]).unwrap();
         assert_eq!(buffer[0], 10);
 
         slice.seek(SeekFrom::Start(28)).unwrap();
-        assert_eq!(slice.read(&mut buffer).unwrap(), 2, "a read stops at the end");
+        assert_eq!(
+            slice.read(&mut buffer).unwrap(),
+            2,
+            "a read stops at the end"
+        );
         assert_eq!(buffer[..2], [38, 39]);
         assert_eq!(slice.read(&mut buffer).unwrap(), 0);
 
@@ -2949,12 +3273,20 @@ mod inspection_tests {
     }
 
     fn write_block(image: &mut DiskImage, lba: u64, data: &[u8]) {
-        let (c, h, s) = ((lba / 1008) as u16, (lba / 63 % 16) as u8, (lba % 63) as u8 + 1);
+        let (c, h, s) = (
+            (lba / 1008) as u16,
+            (lba / 63 % 16) as u8,
+            (lba % 63) as u8 + 1,
+        );
         image.write_sectors(c, h, s, 1, data).unwrap();
     }
 
     fn read_block(image: &mut DiskImage, lba: u64) -> Vec<u8> {
-        let (c, h, s) = ((lba / 1008) as u16, (lba / 63 % 16) as u8, (lba % 63) as u8 + 1);
+        let (c, h, s) = (
+            (lba / 1008) as u16,
+            (lba / 63 % 16) as u8,
+            (lba % 63) as u8 + 1,
+        );
         image.read_sectors(c, h, s, 1).unwrap()
     }
 
@@ -2963,7 +3295,10 @@ mod inspection_tests {
         let boot = read_block(image, VOLUME_START);
         let reserved = u16::from_le_bytes([boot[14], boot[15]]) as u64;
         let sectors_per_fat = u16::from_le_bytes([boot[22], boot[23]]) as u64;
-        read_block(image, VOLUME_START + reserved + boot[16] as u64 * sectors_per_fat)
+        read_block(
+            image,
+            VOLUME_START + reserved + boot[16] as u64 * sectors_per_fat,
+        )
     }
 
     /// The FAT partition may be described by any of the four entries of
@@ -2975,11 +3310,21 @@ mod inspection_tests {
             vec![(0x06u8, 63u32, 2880u32)],
             vec![(0x00, 0, 0), (0x06, 63, 2880)],
             vec![(0x05, 4000, 2000), (0x01, 63, 2880)],
-            vec![(0x83, 4000, 2000), (0x00, 0, 0), (0x00, 0, 0), (0x04, 63, 2880)],
+            vec![
+                (0x83, 4000, 2000),
+                (0x00, 0, 0),
+                (0x00, 0, 0),
+                (0x04, 63, 2880),
+            ],
         ] {
             let mut image = hard_disk_with_a_fat_volume(&master_boot_record(&partitions));
             let stored = image.copy_file_to_fat(b"hello", "HELLO.TXT");
-            assert_eq!(stored.ok().as_deref(), Some("HELLO.TXT"), "{:?}", partitions);
+            assert_eq!(
+                stored.ok().as_deref(),
+                Some("HELLO.TXT"),
+                "{:?}",
+                partitions
+            );
             let root = root_directory_of_the_volume(&mut image);
             assert_eq!(&root[..11], b"HELLO   TXT", "{:?}", partitions);
         }

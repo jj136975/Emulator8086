@@ -209,9 +209,9 @@ fn push_pop_reg() {
     // MOV AX,0x4321; PUSH AX; MOV AX,0; POP BX
     let mut vm = setup(&[
         0xB8, 0x21, 0x43, // MOV AX,0x4321
-        0x50,             // PUSH AX
+        0x50, // PUSH AX
         0xB8, 0x00, 0x00, // MOV AX,0
-        0x5B,             // POP BX
+        0x5B, // POP BX
     ]);
     exec_n(&mut vm, 4);
     assert_eq!(vm.cpu.registers.bx.word(), 0x4321);
@@ -636,7 +636,7 @@ fn div_byte() {
     vm.cpu.registers.ax.set(17);
     vm.cpu.registers.cx.set_low(5);
     exec(&mut vm);
-    assert_eq!(vm.cpu.registers.ax.low(), 3);  // 17/5 = 3
+    assert_eq!(vm.cpu.registers.ax.low(), 3); // 17/5 = 3
     assert_eq!(vm.cpu.registers.ax.high(), 2); // 17%5 = 2
 }
 
@@ -650,7 +650,7 @@ fn div_word() {
     vm.cpu.registers.bx.set(7);
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.ax.word(), 14); // 100/7 = 14
-    assert_eq!(vm.cpu.registers.dx.word(), 2);  // 100%7 = 2
+    assert_eq!(vm.cpu.registers.dx.word(), 2); // 100%7 = 2
 }
 
 #[test]
@@ -1412,8 +1412,8 @@ fn loop_basic() {
     // MOV CX,3; INC AX; LOOP -3
     let mut vm = setup(&[
         0xB9, 0x03, 0x00, // MOV CX,3
-        0x40,             // INC AX (offset 3)
-        0xE2, 0xFD,       // LOOP -3 (offset 4)
+        0x40, // INC AX (offset 3)
+        0xE2, 0xFD, // LOOP -3 (offset 4)
     ]);
     // LOOP at offset 4: fetch disp at offset 5 -> PC=6, disp=0xFD=-3 -> 6+(-3)=3
     exec_n(&mut vm, 1 + 3 * 2); // MOV CX + 3 iterations of (INC + LOOP)
@@ -1428,7 +1428,7 @@ fn loopz_basic() {
     let mut vm = setup(&[
         0xB9, 0x03, 0x00, // MOV CX,3
         0x3D, 0x00, 0x00, // CMP AX,0 -> ZF=1 (AX starts at 0) (offset 3)
-        0xE1, 0xFB,       // LOOPZ -5 -> offset 8+(-5)=3 (offset 6)
+        0xE1, 0xFB, // LOOPZ -5 -> offset 8+(-5)=3 (offset 6)
     ]);
     exec_n(&mut vm, 1 + 3 * 2);
     assert_eq!(vm.cpu.registers.cx.word(), 0);
@@ -1440,7 +1440,7 @@ fn loopnz_basic() {
     let mut vm = setup(&[
         0xB9, 0x03, 0x00, // MOV CX,3
         0x3D, 0x01, 0x00, // CMP AX,1 -> ZF=0 (AX=0) (offset 3)
-        0xE0, 0xFB,       // LOOPNZ -5 (offset 6)
+        0xE0, 0xFB, // LOOPNZ -5 (offset 6)
     ]);
     exec_n(&mut vm, 1 + 3 * 2);
     assert_eq!(vm.cpu.registers.cx.word(), 0);
@@ -1471,10 +1471,10 @@ fn call_near_ret() {
     // Then after RET, we should be at offset 3
     let mut vm = setup(&[
         0xE8, 0x03, 0x00, // CALL +3 (offset 0, pushes return addr=3)
-        0xB0, 0x99,       // MOV AL,0x99 (offset 3 - return point)
-        0x90,             // NOP (offset 5)
-        0xB0, 0x42,       // MOV AL,0x42 (offset 6 - call target)
-        0xC3,             // RET (offset 8)
+        0xB0, 0x99, // MOV AL,0x99 (offset 3 - return point)
+        0x90, // NOP (offset 5)
+        0xB0, 0x42, // MOV AL,0x42 (offset 6 - call target)
+        0xC3, // RET (offset 8)
     ]);
     exec(&mut vm); // CALL -> jumps to offset 6
     exec(&mut vm); // MOV AL,0x42
@@ -1613,7 +1613,10 @@ fn push_rm_word() {
     let old_sp = vm.cpu.registers.sp.word();
     exec(&mut vm);
     assert_eq!(vm.cpu.registers.sp.word(), old_sp - 2);
-    assert_eq!(vm.cpu.registers.ss.read_word(vm.cpu.registers.sp.word()), 0xBEEF);
+    assert_eq!(
+        vm.cpu.registers.ss.read_word(vm.cpu.registers.sp.word()),
+        0xBEEF
+    );
 }
 
 #[test]
@@ -1734,7 +1737,10 @@ fn rep_movsb_should_break_on_pending_interrupt() {
 
     // Place source data at DS:0x200
     for i in 0..100u16 {
-        vm.cpu.registers.ds.write_byte(0x200 + i, (i as u8).wrapping_add(1));
+        vm.cpu
+            .registers
+            .ds
+            .write_byte(0x200 + i, (i as u8).wrapping_add(1));
     }
 
     vm.cpu.registers.cx.set(100);

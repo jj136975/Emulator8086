@@ -66,7 +66,10 @@ fn rom_sources(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut sources = Vec::new();
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
-        if matches!(path.extension().and_then(|e| e.to_str()), Some("asm" | "inc")) {
+        if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("asm" | "inc")
+        ) {
             sources.push(path);
         }
     }
@@ -210,10 +213,7 @@ fn patch_checksum(path: &Path) -> std::io::Result<Option<(u8, u8)>> {
     if data.len() != ROM_SIZE {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "bios.bin must be exactly 64KB, got {} bytes",
-                data.len()
-            ),
+            format!("bios.bin must be exactly 64KB, got {} bytes", data.len()),
         ));
     }
 
@@ -248,8 +248,8 @@ mod tests {
 
     impl RomDir {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("emu8086-build-{}-{}", std::process::id(), name));
+            let dir =
+                std::env::temp_dir().join(format!("emu8086-build-{}-{}", std::process::id(), name));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             let rom = Self {
@@ -270,8 +270,17 @@ mod tests {
             file.set_modified(SystemTime::now() - age).unwrap();
         }
 
-        fn rebuild(&self, assemble: impl FnOnce(&Path, &Path) -> Assembly) -> Result<Rebuild, String> {
-            rebuild_rom(std::slice::from_ref(&self.asm), &self.asm, &self.bin, &self.scratch, assemble)
+        fn rebuild(
+            &self,
+            assemble: impl FnOnce(&Path, &Path) -> Assembly,
+        ) -> Result<Rebuild, String> {
+            rebuild_rom(
+                std::slice::from_ref(&self.asm),
+                &self.asm,
+                &self.bin,
+                &self.scratch,
+                assemble,
+            )
         }
 
         fn image_is_the_old_one(&self) -> bool {
@@ -309,7 +318,11 @@ mod tests {
         let error = rom.rebuild(failing_assembler).unwrap_err();
 
         assert!(error.contains("did not assemble"), "{}", error);
-        assert!(error.contains("bios.asm") && error.contains("exit code: 1"), "{}", error);
+        assert!(
+            error.contains("bios.asm") && error.contains("exit code: 1"),
+            "{}",
+            error
+        );
         assert!(rom.image_is_the_old_one());
         assert_eq!(rom.file_names(), ["bios.asm", "bios.bin"]);
     }
@@ -354,7 +367,9 @@ mod tests {
         let rom = RomDir::new("no-nasm");
         assert_eq!(
             rom.rebuild(unavailable),
-            Ok(Rebuild::Skipped("failed to run nasm: not found".to_string()))
+            Ok(Rebuild::Skipped(
+                "failed to run nasm: not found".to_string()
+            ))
         );
         assert!(rom.image_is_the_old_one());
 
@@ -369,7 +384,8 @@ mod tests {
     fn up_to_date_image_is_not_reassembled() {
         let rom = RomDir::new("fresh");
         let file = fs::File::options().write(true).open(&rom.bin).unwrap();
-        file.set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(3600))
+            .unwrap();
         drop(file);
 
         let result = rom.rebuild(|_, _| panic!("the assembler must not run"));
@@ -396,7 +412,10 @@ mod tests {
     fn checksum_patch_makes_the_image_sum_to_zero() {
         let rom = RomDir::new("checksum");
         let sum = |path: &Path| {
-            fs::read(path).unwrap().iter().fold(0u8, |acc, &b| acc.wrapping_add(b))
+            fs::read(path)
+                .unwrap()
+                .iter()
+                .fold(0u8, |acc, &b| acc.wrapping_add(b))
         };
 
         // 0xFFFF bytes of 0xAA sum to 0x56, so the last byte has to be 0xAA.
