@@ -143,10 +143,18 @@ impl<T: Passes> Driver<T> {
         &self.screen
     }
 
+    /// The input of the next frame, with `events`, for a test that runs
+    /// that frame on the target itself. The clock moves on as for `frame`.
+    pub fn next_input(&mut self, events: Vec<Event>) -> RawInput {
+        let input = input(self.time, events);
+        self.time += FRAME_SECONDS;
+        input
+    }
+
     /// Runs one frame with `events`.
     pub fn frame(&mut self, events: Vec<Event>) -> &Screen {
-        let output = self.target.pass(input(self.time, events));
-        self.time += FRAME_SECONDS;
+        let input = self.next_input(events);
+        let output = self.target.pass(input);
         self.screen = Screen::of(&output);
         &self.screen
     }

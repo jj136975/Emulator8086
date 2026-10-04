@@ -79,10 +79,15 @@ impl Session {
         self.keys.release_all();
     }
 
-    /// One frame: a slice of the guest's time, then a pass of the overlay
-    /// if it has anything to show. `input` is asked for only then. Returns
-    /// whether there was a pass: something to paint, and wishes of egui for
-    /// the window to heed.
+    /// Whether the guest is held still (Machine > Pause).
+    pub fn paused(&self) -> bool {
+        self.pacer.paused()
+    }
+
+    /// One frame: a slice of the guest's time, which a paused guest lets go
+    /// by, then a pass of the overlay if it has anything to show. `input`
+    /// is asked for only then. Returns whether there was a pass: something
+    /// to paint, and wishes of egui for the window to heed.
     pub fn frame(&mut self, input: impl FnOnce() -> egui::RawInput) -> bool {
         self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
         let draws = self.overlay.draws();
@@ -96,7 +101,7 @@ impl Session {
     /// commands it asked for are carried out, and the keyboard is given up
     /// if the pass took it.
     fn run_overlay(&mut self, input: egui::RawInput) {
-        for command in self.overlay.run(input) {
+        for command in self.overlay.run(input, self.pacer.paused()) {
             self.execute(command);
         }
         self.yield_keyboard();
@@ -110,9 +115,12 @@ impl Session {
     }
 
     /// Carries out what a tool of the overlay asked for, and says in the
-    /// overlay what came of it.
+    /// overlay what came of it. A pause needs no message: the overlay marks
+    /// a paused machine for as long as it is one.
     fn execute(&mut self, command: Command) {
         match command {
+            Command::Pause => self.pacer.set_paused(true),
+            Command::Resume => self.pacer.set_paused(false),
             Command::Reset => {
                 self.runtime.reset();
                 self.overlay.messages().done("Machine reset");

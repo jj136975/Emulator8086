@@ -470,10 +470,16 @@ fn the_overlay_is_drawn_over_the_picture_and_only_where_it_is() {
             draw_and_read_back(&device, &queue, &blit, &mut pass, paint, format, target)
         };
 
+        // A pass of the overlay at input time `time`, with no events, over
+        // a machine that runs.
+        let run = |overlay: &mut Overlay, time: f64| {
+            overlay.run(input(time, Vec::new()), false);
+        };
+
         // The first seconds: the hint, in the bottom left corner. It is
         // laid out in one pass, shown from the next and fades in.
         for time in [0.0, 1.0, 2.0] {
-            overlay.run(input(time, Vec::new()));
+            run(&mut overlay, time);
         }
         let drawn = frame(&mut overlay);
         assert!(
@@ -500,8 +506,8 @@ fn the_overlay_is_drawn_over_the_picture_and_only_where_it_is() {
 
         // Shown: the menu bar along the top.
         overlay.toggle();
-        overlay.run(input(3.0, Vec::new()));
-        overlay.run(input(3.1, Vec::new()));
+        run(&mut overlay, 3.0);
+        run(&mut overlay, 3.1);
         let bar = overlay
             .context()
             .global_style()

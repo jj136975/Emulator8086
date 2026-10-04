@@ -41,6 +41,11 @@ use session::Session;
 /// The key that shows and hides the overlay.
 const OVERLAY_KEY: PhysicalKey = PhysicalKey::Code(KeyCode::F12);
 
+/// The window's title, and its title while the machine is paused: the mark
+/// in the overlay's menu bar is not there to see when the overlay is hidden.
+const TITLE: &str = "Emulator 8086";
+const TITLE_PAUSED: &str = "Emulator 8086 (paused)";
+
 /// What there is from the moment the window is: the window, what draws
 /// into it, and egui's side of it.
 struct Front {
@@ -49,6 +54,8 @@ struct Front {
     /// The window's events as egui's input, and what egui asks of the
     /// window in return: the cursor, the IME.
     egui: egui_winit::State,
+    /// Whether the title says that the machine is paused.
+    titled_paused: bool,
 }
 
 struct EmulatorApp {
@@ -112,6 +119,14 @@ impl EmulatorApp {
             front.renderer.render(&vga.borrow(), memory, overlay);
         }
 
+        let paused = self.session.paused();
+        if front.titled_paused != paused {
+            front.titled_paused = paused;
+            front
+                .window
+                .set_title(if paused { TITLE_PAUSED } else { TITLE });
+        }
+
         front.window.request_redraw();
     }
 }
@@ -126,7 +141,7 @@ impl ApplicationHandler for EmulatorApp {
             event_loop
                 .create_window(
                     Window::default_attributes()
-                        .with_title("Emulator 8086")
+                        .with_title(TITLE)
                         .with_inner_size(winit::dpi::PhysicalSize::new(
                             DEFAULT_WINDOW_WIDTH,
                             DEFAULT_WINDOW_HEIGHT,
@@ -148,6 +163,7 @@ impl ApplicationHandler for EmulatorApp {
             window,
             renderer,
             egui,
+            titled_paused: false,
         });
     }
 

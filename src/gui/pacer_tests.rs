@@ -115,3 +115,50 @@ fn timer_ticks_reach_a_busy_guest_at_the_same_rate() {
     );
     assert!(!rt.cpu.halted, "the guest was busy all along");
 }
+
+/// A paused guest is not run. Its slice goes by all the same, as long as
+/// any other: the loop that calls slice after slice keeps its pace.
+#[test]
+fn a_paused_guest_does_not_run_and_its_slice_still_lasts() {
+    let mut rt = machine(&reset_code(&[0xEB, 0xFE])); // JMP $
+    let mut pacer = Pacer::new();
+    pacer.set_paused(true);
+    assert!(pacer.paused());
+
+    let slice = Duration::from_millis(30);
+    let started = Instant::now();
+    pacer.run_slice(&mut rt, slice);
+    assert!(started.elapsed() >= slice);
+    assert_eq!(rt.instruction_count, 0);
+
+    pacer.set_paused(false);
+    pacer.run_slice(&mut rt, slice);
+    assert!(rt.instruction_count > 0, "it runs again");
+}
+
+/// The time a guest stood paused is not credited to it when it runs again:
+/// its timer does not tick while it is paused, and afterwards goes on at
+/// its own rate, without the burst of ticks the pause would be worth.
+#[test]
+fn the_time_spent_paused_is_never_credited() {
+    let mut rt = machine_idling_in_the_bios();
+    let mut pacer = Pacer::new();
+    pacer.run_slice(&mut rt, Duration::from_millis(60));
+
+    pacer.set_paused(true);
+    let ticks_at_pause = timer_ticks(&rt);
+    for _ in 0..30 {
+        pacer.run_slice(&mut rt, Duration::from_millis(10));
+    }
+    assert_eq!(timer_ticks(&rt), ticks_at_pause, "no tick while paused");
+
+    pacer.set_paused(false);
+    pacer.run_slice(&mut rt, Duration::from_millis(110));
+    let ticks = timer_ticks(&rt) - ticks_at_pause;
+    // 110 ms hold two ticks of 55 ms. The 300 ms of the pause would be
+    // five more, or four with the cap on what the timer can be owed.
+    assert!(
+        (1..=3).contains(&ticks),
+        "{ticks} ticks in 110 ms after a pause of 300 ms, expected 2"
+    );
+}

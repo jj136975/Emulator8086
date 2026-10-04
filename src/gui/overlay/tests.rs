@@ -10,9 +10,11 @@ use super::messages::{DONE_SECONDS, FAILED_SECONDS};
 use super::testing::{Driver, Passes, key};
 use super::*;
 
-/// The shell, and the commands its passes asked for.
+/// The shell, what it is told of the machine, and the commands its passes
+/// asked for. Nobody carries them out here: `paused` is what the test says.
 struct Shell {
     overlay: Overlay,
+    paused: bool,
     commands: Vec<Command>,
 }
 
@@ -22,7 +24,7 @@ impl Passes for Shell {
     }
 
     fn pass(&mut self, input: egui::RawInput) -> egui::PlatformOutput {
-        let commands = self.overlay.run(input);
+        let commands = self.overlay.run(input, self.paused);
         self.commands.extend(commands);
         self.overlay.take_platform_output()
     }
@@ -32,6 +34,7 @@ impl Passes for Shell {
 fn shell() -> Driver<Shell> {
     Driver::new(Shell {
         overlay: Overlay::new(),
+        paused: false,
         commands: Vec::new(),
     })
 }
@@ -131,6 +134,7 @@ fn the_key_ends_the_hint() {
 fn each_machine_action_asks_for_its_command() {
     let mut shell = shown();
     for (entry, command) in [
+        ("Pause", Command::Pause),
         ("Reset", Command::Reset),
         ("Dump VGA state", Command::DumpVga),
     ] {
@@ -141,6 +145,34 @@ fn each_machine_action_asks_for_its_command() {
         assert_eq!(asked(&mut shell), [command], "{entry}");
         assert!(!shell.screen().has(Role::Button, entry), "the menu closed");
     }
+}
+
+/// A paused machine is marked in the menu bar, and its Machine menu offers
+/// to resume it where a running machine's offers to pause.
+#[test]
+fn a_paused_machine_is_marked_and_can_be_resumed() {
+    let mut shell = shown();
+    assert!(!shell.screen().shows(PAUSED));
+    shell.click(Role::Button, "Machine");
+    assert!(shell.screen().has(Role::Button, "Pause"));
+    assert!(!shell.screen().has(Role::Button, "Resume"));
+    shell.click(Role::Button, "Pause");
+    assert!(
+        !shell.screen().shows(PAUSED),
+        "the shell asks; the app has not paused the machine"
+    );
+
+    shell.target.paused = true;
+    assert!(shell.frame(Vec::new()).shows(PAUSED));
+    shell.click(Role::Button, "Machine");
+    assert!(shell.screen().has(Role::Button, "Resume"));
+    assert!(!shell.screen().has(Role::Button, "Pause"));
+    asked(&mut shell);
+    shell.click(Role::Button, "Resume");
+    assert_eq!(asked(&mut shell), [Command::Resume]);
+
+    shell.target.paused = false;
+    assert!(!shell.frame(Vec::new()).shows(PAUSED));
 }
 
 /// A message shows from the first pass after it is reported and for a few

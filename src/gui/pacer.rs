@@ -2,13 +2,17 @@
 //! clock, so `Pacer` reads the host's for it: it tells the machine how much
 //! time has passed since it last looked (`Runtime::credit_pit_time`) and
 //! lets the guest run a few instructions (`Runtime::run`), over and over
-//! until a slice of host time is used up.
+//! until a slice of host time is used up. A paused guest is not run: its
+//! slices go by without it.
 //!
-//! The invariant: the guest's time is the host's. All the time the machine
-//! is credited with was measured here between two samples that follow one
-//! another, with none left out and none counted twice, and the clock is
-//! sampled every `CLOCK_SAMPLE_INTERVAL` instructions while the guest runs
-//! and at once when it halts: no timer interrupt is later than that.
+//! The invariant: the guest's time is the host's, less the time it stood
+//! paused. All the time the machine is credited with was measured here
+//! between two samples that follow one another, with none left out and none
+//! counted twice, and the clock is sampled every `CLOCK_SAMPLE_INTERVAL`
+//! instructions while the guest runs and at once when it halts: no timer
+//! interrupt is later than that. A slice that goes by paused moves the last
+//! sample to its end and credits nothing, so that the pause is owed to
+//! nobody when the guest runs again.
 
 use std::time::{Duration, Instant};
 
@@ -23,8 +27,10 @@ const IDLE_POLL: Duration = Duration::from_millis(1);
 /// Measures host time and feeds it to the machine it paces.
 pub struct Pacer {
     /// Host time of the last clock sample: the machine has been credited
-    /// with all the time up to it.
+    /// with all the time up to it that it did not stand paused.
     last_sample: Instant,
+    /// The guest stands still: slices go by and credit nothing.
+    paused: bool,
 }
 
 impl Pacer {
@@ -32,7 +38,17 @@ impl Pacer {
     pub fn new() -> Self {
         Self {
             last_sample: Instant::now(),
+            paused: false,
         }
+    }
+
+    /// Holds the guest still from the next slice on, or lets it run again.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused
     }
 
     /// Samples the host clock and credits `runtime` with the time since
@@ -49,8 +65,16 @@ impl Pacer {
     /// since the previous slice (rendering, vsync) is credited first. A
     /// halted guest does not end the slice: it is looked at again every
     /// `IDLE_POLL`, so that timer ticks and key presses reach an idle guest
-    /// promptly.
+    /// promptly. A paused guest is not looked at: the slice is waited out,
+    /// as long as any other, so that whoever calls slice after slice is
+    /// paced the same.
     pub fn run_slice(&mut self, runtime: &mut Runtime, slice: Duration) {
+        if self.paused {
+            wait(slice);
+            self.last_sample = Instant::now();
+            return;
+        }
+
         let mut now = self.sample(runtime);
         let deadline = now + slice;
         while now < deadline {
@@ -60,11 +84,17 @@ impl Pacer {
             // next sample follows without a wait. One that was halted all
             // through a look has had all the time there is, and waits.
             if runtime.cpu.halted && runtime.instruction_count == executed {
-                std::thread::sleep(IDLE_POLL.min(deadline - now));
+                wait(IDLE_POLL.min(deadline - now));
             }
             now = self.sample(runtime);
         }
     }
+}
+
+/// Lets `duration` of host time go by. The one place where the pacer
+/// waits.
+fn wait(duration: Duration) {
+    std::thread::sleep(duration);
 }
 
 #[cfg(test)]

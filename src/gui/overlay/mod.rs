@@ -18,20 +18,26 @@ pub mod theme;
 
 pub use messages::Messages;
 
-use egui::{Align2, Area, Frame, Id, MenuBar, Order, vec2};
+use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, vec2};
 
-use theme::METRICS;
+use theme::{METRICS, PALETTE};
 
 /// What the hint says. The key is the window's (`gui::OVERLAY_KEY`).
 const HINT: &str = "F12: tools";
 /// How long the hint stays after the first frame, in seconds.
 const HINT_SECONDS: f64 = 5.0;
+/// The mark of a paused machine, at the right end of the menu bar.
+const PAUSED: &str = "Paused";
 
 /// What a tool asks the app to do with the machine. The shell only asks:
 /// the app carries the command out and says what came of it through
 /// `Overlay::messages`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Stop running the guest. The window goes on drawing.
+    Pause,
+    /// Run the guest again, from where it stopped.
+    Resume,
     /// Reboot the guest.
     Reset,
     /// Put the state of the display where it can be read.
@@ -135,15 +141,16 @@ impl Overlay {
         &mut self.messages
     }
 
-    /// Runs one pass over `input`. Returns what the user asked the app to
-    /// do, in the order asked.
-    pub fn run(&mut self, input: egui::RawInput) -> Vec<Command> {
+    /// Runs one pass over `input`. `paused` says whether the app is holding
+    /// the guest still. Returns what the user asked the app to do, in the
+    /// order asked.
+    pub fn run(&mut self, input: egui::RawInput, paused: bool) -> Vec<Command> {
         // egui may run the UI twice for one frame, to lay out what it
         // shows for the first time: the commands of both runs count, and a
         // click is in only one of them.
         let mut commands = Vec::new();
         let ctx = self.ctx.clone();
-        let output = ctx.run_ui(input, |ui| self.ui(ui, &mut commands));
+        let output = ctx.run_ui(input, |ui| self.ui(ui, paused, &mut commands));
         self.shapes = output.shapes;
         self.pixels_per_point = output.pixels_per_point;
         self.textures.append(output.textures_delta);
@@ -168,7 +175,7 @@ impl Overlay {
         std::mem::take(&mut self.platform)
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+    fn ui(&mut self, ui: &mut egui::Ui, paused: bool, commands: &mut Vec<Command>) {
         let now = ui.ctx().input(|input| input.time);
         if let Hint::Unstarted = self.hint {
             self.hint = Hint::Until(now + HINT_SECONDS);
@@ -186,7 +193,7 @@ impl Overlay {
         }
 
         egui::Panel::top("overlay_menu_bar").show(ui, |ui| {
-            MenuBar::new().ui(ui, |ui| menu_bar(ui, commands));
+            MenuBar::new().ui(ui, |ui| menu_bar(ui, paused, commands));
         });
 
         // The messages go below the menu bar, in what it leaves of the
@@ -206,16 +213,31 @@ impl Drop for Overlay {
     }
 }
 
-/// The menu bar: the Machine menu.
-fn menu_bar(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+/// The menu bar: the Machine menu, and at the right end the mark of a
+/// paused machine.
+fn menu_bar(ui: &mut egui::Ui, paused: bool, commands: &mut Vec<Command>) {
     ui.menu_button("Machine", |ui| {
+        let (label, command) = if paused {
+            ("Resume", Command::Resume)
+        } else {
+            ("Pause", Command::Pause)
+        };
+        if ui.button(label).clicked() {
+            commands.push(command);
+        }
         if ui.button("Reset").clicked() {
             commands.push(Command::Reset);
         }
+        ui.separator();
         if ui.button("Dump VGA state").clicked() {
             commands.push(Command::DumpVga);
         }
     });
+    if paused {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.colored_label(PALETTE.warning, PAUSED);
+        });
+    }
 }
 
 /// The hint, in the bottom left corner of the picture.

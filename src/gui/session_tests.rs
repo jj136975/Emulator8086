@@ -228,6 +228,57 @@ fn idling_in_the_bios() -> (Driver<Session>, Receiver<EmulatorEvent>) {
     (session, sent)
 }
 
+/// The BIOS tick counter at 0040:006C, incremented by every INT 08h.
+fn timer_ticks(runtime: &Runtime) -> u32 {
+    let memory = &runtime.cpu.memory;
+    memory.read_word(0x046C) as u32 | (memory.read_word(0x046E) as u32) << 16
+}
+
+/// Runs `frames` frames as the window does: each a slice of the guest's
+/// time, a hundredth of a second of the host's, and a pass of the overlay.
+fn run_frames(session: &mut Driver<Session>, frames: usize) {
+    for _ in 0..frames {
+        let input = session.next_input(Vec::new());
+        assert!(session.target.frame(|| input), "the overlay is shown");
+    }
+}
+
+/// Machine > Pause holds the guest still while the frames go on: no
+/// instruction runs and its timer does not tick, and the overlay marks the
+/// machine as paused. Machine > Resume lets it run again from where it was,
+/// without the time it stood still: its timer goes on at its own rate.
+#[test]
+fn pause_holds_the_guest_and_resume_does_not_replay_the_paused_time() {
+    let (mut session, _sent) = idling_in_the_bios();
+    run_frames(&mut session, 6);
+
+    session.click(Role::Button, "Machine");
+    session.click(Role::Button, "Pause");
+    assert!(session.target.paused());
+    assert!(session.screen().shows("Paused"));
+
+    let ran = session.target.runtime.instruction_count;
+    let ticks = timer_ticks(&session.target.runtime);
+    run_frames(&mut session, 30);
+    assert_eq!(session.target.runtime.instruction_count, ran);
+    assert_eq!(timer_ticks(&session.target.runtime), ticks);
+
+    session.click(Role::Button, "Machine");
+    session.click(Role::Button, "Resume");
+    assert!(!session.target.paused());
+    assert!(!session.frame(Vec::new()).shows("Paused"));
+
+    run_frames(&mut session, 11);
+    let since = timer_ticks(&session.target.runtime) - ticks;
+    // 110 ms hold two ticks of 55 ms. The 300 ms of the pause would be
+    // four or five more.
+    assert!(
+        (1..=3).contains(&since),
+        "{since} ticks in 110 ms after a pause of 300 ms, expected 2"
+    );
+    assert!(session.target.runtime.instruction_count > ran);
+}
+
 /// Machine > Reset reboots the guest: the CPU is back at the reset vector,
 /// running, and the overlay says so.
 #[test]
