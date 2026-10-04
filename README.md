@@ -7,33 +7,19 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Boots MS-DOS 6.22, runs real DOS programs and games
 - Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
-- VGA text mode (80x25) with ANSI terminal rendering
-- VGA Mode 13h (320x200, 256 colors) with wgpu hardware-accelerated rendering
+- VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
 - Floppy and hard disk support with file-backed or in-memory images
-- F12 monitor for swapping disks, copying host files onto them and rebooting the guest at runtime
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
 
 ## Screenshots
 
 ### MS-DOS 6.22
 
-Terminal mode (ANSI rendering):
-![MS-DOS running in terminal mode](assets/gif/msdos_edit.gif)
-
-GUI mode (wgpu + winit window):
-![MS-DOS running in GUI mode](assets/gif/msdos_edit_gui.gif)
-
-### F12 Disk Menu (terminal mode)
-
-Installing MS-DOS 6.22 from floppy images with the F12 disk menu:
-![MS-DOS installation with floppy commands](assets/gif/msdos_install.gif)
-
-Copy files to FAT16 drives with the F12 disk menu:
-![Copy files to MS-DOS](assets/gif/msdos_put_files.gif)
+![MS-DOS running in the window](assets/gif/msdos_edit_gui.gif)
 
 ### DOOM (8088 port)
 
-Running DOOM in GUI mode with hardware-accelerated Mode 13h graphics:
+Running DOOM in Mode 13h:
 ![DOOM running on the emulator](assets/gif/msdos_doom.gif)
 
 ## Installation
@@ -41,73 +27,54 @@ Running DOOM in GUI mode with hardware-accelerated Mode 13h graphics:
 ### Requirements
 
 - [Rust](https://www.rust-lang.org/tools/install) 1.97.1 (edition 2024; the version is pinned in `rust-toolchain`, which rustup follows)
-- A BIOS ROM (included in `assets/rom/bios.bin`, or build your own with [NASM](https://www.nasm.us/))
+- A graphics adapter that wgpu supports (Vulkan, Direct3D 12, Metal or OpenGL)
+- Nothing else to run it: the BIOS is built into the binary. [NASM](https://www.nasm.us/) is only needed to change the BIOS (`assets/rom`)
 
 ### Build
 
 ```bash
-# Terminal mode (default)
 cargo build --release
-
-# GUI mode (wgpu + winit window)
-cargo build --release --features gui
 ```
 
 ## Usage
 
 ```bash
 # Boot from floppy
-cargo run --release -- assets/rom/bios.bin --disk a:floppy.img
+cargo run --release -- --disk a:floppy.img
 
 # Boot from hard disk
-cargo run --release -- assets/rom/bios.bin --hd msdos.vhd --boot hd0
+cargo run --release -- --hd msdos.vhd --boot hd0
 
 # Multiple disks with boot order
-cargo run --release -- assets/rom/bios.bin --disk a:dos1.img --hd msdos.vhd --boot a,hd0
+cargo run --release -- --disk a:dos1.img --hd msdos.vhd --boot a,hd0
 
-# GUI mode (Mode 13h graphics)
-cargo run --release --features gui -- assets/rom/bios.bin --hd msdos.vhd --boot hd0
+# Another BIOS image in place of the built-in one
+cargo run --release -- my-bios.bin --hd msdos.vhd --boot hd0
 ```
 
 ### CLI Options
 
 | Option | Description |
 |--------|-------------|
-| `<ROM>` | Path to BIOS ROM image (required) |
+| `[ROM]` | Path to a BIOS ROM image to run in place of the built-in BIOS (optional) |
 | `--disk <SPEC>` | Floppy disk: `[DRIVE:]SOURCE`, with drive `a`–`d` (default `a`) and source an image file, `memory` or `memory:KB` (e.g. `a:image.img`, `b:memory`). Append `:ro` for read-only. The image for `a:` must exist; for the other drives a missing file is created as a blank 1.44 MB image |
 | `--hd <PATH>` | Hard disk image, or `memory` (creates a blank 32 MB image if the file doesn't exist) |
 | `--boot <ORDER>` | Boot order: `a,hd0` (default), `hd0,a`, etc. |
-| `--trace` | Per-instruction register trace, written to the debug log: run with `RUST_LOG=debug` (and redirect stderr in terminal mode) |
+| `--trace` | Per-instruction register trace, written to the debug log: run with `RUST_LOG=debug` |
 
 ### In-Emulator Controls
 
 | Key | Action |
 |-----|--------|
-| F12 | Open the monitor (terminal) / dump VGA state to `vga_dump.txt` (GUI) |
-| F11 | Dump VGA state to `vga_dump.txt` (terminal) |
-| Ctrl+C | Quit (terminal) |
+| F12 | Dump VGA state to `vga_dump.txt` |
 
-### Monitor Commands (terminal mode, F12)
+Closing the window quits the emulator.
 
-| Command | Action |
-|---------|--------|
-| `swap <drive> <image>[:ro]` | Insert an existing disk image |
-| `swap <drive> memory[:KB]` | Insert an empty in-memory disk (floppies are formatted) |
-| `new <drive> <path>` | Create an image file and insert it |
-| `move <from> <to>` | Move a disk between drives |
-| `save <drive> <path>` | Save a disk's contents to a file |
-| `eject <drive>` | Eject the disk |
-| `put <file\|dir> <drive> [name]` | Copy a host file or directory onto a FAT disk |
-| `reset` | Reboot the guest |
-| `resume` | Resume emulation (or just press Enter) |
-
-Drives are `a`–`d` and `hd0`, `hd1`, …; a path that contains blanks goes in double quotes.
-
-DOS does not notice changes made to a hard disk while it is running: after `put`, `swap`, `eject` or `move` on a hard disk, reboot the guest with `reset`. To copy files without a reboot, go through a floppy (`swap a memory`, `put <file> a`, then `COPY A:<file> C:` in DOS).
+Disk and machine tools (swapping and saving disks, copying host files onto them, rebooting the guest) are moving into an overlay in the window; until it is there, disks are chosen on the command line.
 
 ### Keyboard Layouts
 
-The GUI sends the physical key positions, like a real keyboard: with a non-US keyboard, load the matching layout in DOS (`KEYB`). The terminal frontend only sees the characters you type, so it presses the keys that produce them on a US keyboard: use it with the guest's default (US) layout.
+The window sends the physical key positions, like a real keyboard: with a non-US keyboard, load the matching layout in DOS (`KEYB`).
 
 ## Technical Details
 
@@ -170,7 +137,7 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 ### Testing
 
-The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine.
+The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back; on a machine without an adapter it says so and passes.
 
 ```bash
 # Fetch the CPU test vectors (git submodule)
@@ -184,9 +151,6 @@ cargo test --release -- --include-ignored
 
 # Test a single opcode
 cargo test cpu_tests::test_opcode_00 -- --ignored
-
-# Tests of the GUI-only code
-cargo test --features gui
 ```
 
 ## Credits
