@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
+use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
 use crate::io::raster;
@@ -191,13 +192,16 @@ fn fs_main(in: VsOutput) -> @location(0) vec4<f32> {
 "#;
 
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Self {
+    /// `display` is the event loop's display handle, the one `window` was
+    /// created on.
+    pub fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        // Every backend the build has. The GL backend presents through the
+        // display the instance was given, so it gets the event loop's.
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(display),
+        ));
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
@@ -205,18 +209,16 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .expect("Failed to find GPU adapter");
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("VGA Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            },
-            None,
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("VGA Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            ..Default::default()
+        }))
         .expect("Failed to create GPU device");
 
         let surface_caps = surface.get_capabilities(&adapter);
@@ -230,6 +232,9 @@ impl Renderer {
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
+            // For an 8-bit format `Auto` is sRGB at standard range, the
+            // encoding the frame's DAC colours are in.
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
@@ -323,8 +328,8 @@ impl Renderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Blit Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -357,7 +362,7 @@ impl Renderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -492,13 +497,19 @@ impl Renderer {
         );
 
         let output = match self.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            // A suboptimal frame is drawn all the same: the resize that
+            // made it so configures the surface again.
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.surface_config);
                 return;
             }
-            Err(e) => {
-                eprintln!("Surface error: {}", e);
+            // A hidden window has nothing to draw on; it is not an error.
+            wgpu::CurrentSurfaceTexture::Occluded => return,
+            status @ (wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Validation) => {
+                eprintln!("Surface error: {:?}", status);
                 return;
             }
         };
@@ -518,6 +529,7 @@ impl Renderer {
                 label: Some("Blit Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -533,7 +545,7 @@ impl Renderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        self.queue.present(output);
     }
 }
 

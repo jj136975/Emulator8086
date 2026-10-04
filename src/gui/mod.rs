@@ -56,7 +56,7 @@ impl ApplicationHandler for EmulatorApp {
                 .expect("Failed to create window"),
         );
 
-        let renderer = Renderer::new(window.clone());
+        let renderer = Renderer::new(window.clone(), event_loop.owned_display_handle());
         self.window = Some(window);
         self.renderer = Some(renderer);
     }
