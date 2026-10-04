@@ -1,9 +1,9 @@
 //! The machine: the CPU, the devices on the port bus, and the run loop that
-//! drives them. Each pass of `step_frame` makes one `process` call (a prefix
-//! byte takes a call of its own), hands the 8253 the timer clocks host time
-//! has earned, polls the keyboard and takes a pending interrupt. Also here:
-//! the flag and segment encodings and the prefix latches the instruction
-//! code shares, interrupt entry, reset and the ROM loader.
+//! drives them. Each pass of `run` makes one `process` call (a prefix byte
+//! takes a call of its own), hands the 8253 timer clocks it is owed, polls
+//! the keyboard and takes a pending interrupt. Also here: the flag and
+//! segment encodings and the prefix latches the instruction code shares,
+//! interrupt entry, reset and the ROM loader.
 //!
 //! The invariant: an interrupt is taken only between two whole instructions,
 //! never after a prefix byte (`prefixes.pending`) or an instruction that sets
@@ -11,6 +11,10 @@
 //! single-step trap, which is sampled before the instruction runs. While the
 //! CPU runs, the 8253 gets only a few of the clocks it is owed (`pit_debt`)
 //! per instruction, so the guest has time to service every timer interrupt.
+//!
+//! The machine reads no clock. Time passes for the guest only when the
+//! owner of the machine says how much has passed on the host
+//! (`credit_pit_time`): the app measures it, a test states it.
 
 use crate::io::bus::IoBus;
 use crate::io::console::DebugConsole;
@@ -34,7 +38,6 @@ use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -88,8 +91,9 @@ pub struct Prefixes {
     pub pending: bool,
 }
 
-/// Instructions executed per `step_frame` call, at most.
-const RENDER_INTERVAL: u64 = 50_000;
+/// Instructions a test runs per `step_frame` call, at most.
+#[cfg(test)]
+const FRAME_INSTRUCTIONS: u64 = 50_000;
 
 /// Size of the ROM region, F000:0000-FFFF.
 const ROM_MAX_SIZE: usize = 0x10000;
@@ -97,9 +101,6 @@ const ROM_MAX_SIZE: usize = 0x10000;
 /// Input clock of the 8253 timer, in Hz.
 const PIT_CLOCK_HZ: u64 = 1_193_182;
 const NANOS_PER_SEC: u64 = 1_000_000_000;
-/// The host clock is read once per this many instructions (and whenever the
-/// CPU is halted); reading it for every instruction would dominate run time.
-const CLOCK_SAMPLE_INTERVAL: u64 = 256;
 /// Timer clocks handed to the 8253 per executed instruction while it is
 /// behind: few enough that the guest gets to service every timer interrupt,
 /// enough to catch up within a few thousand instructions.
@@ -107,8 +108,6 @@ const PIT_CLOCKS_PER_INSTRUCTION: u64 = 4;
 /// Most timer clocks the guest can be owed (250 ms worth). After a longer
 /// stall the excess is dropped rather than replayed as a burst of ticks.
 const PIT_MAX_DEBT: u64 = PIT_CLOCK_HZ / 4;
-/// How long `run_slice` sleeps between two looks at a halted CPU.
-const IDLE_POLL: Duration = Duration::from_millis(1);
 
 pub struct Runtime {
     /// The CPU state. The app reads it (the frame is drawn from
@@ -126,14 +125,10 @@ pub struct Runtime {
     pub vga: Option<Rc<RefCell<VgaDevice>>>,
     pit: Rc<RefCell<Pit>>,
 
-    /// Host time of the last clock sample.
-    last_clock_sample: Instant,
     /// Timer clocks owed to the 8253 for host time that has already passed.
     pit_debt: u64,
     /// Remainder of the time-to-clocks conversion, in units of 1e-9 clock.
     pit_frac: u64,
-    /// Timer time is fed in by hand (tests) instead of from the host clock.
-    manual_clock: bool,
     /// Timer clocks delivered to the 8253 so far; the VGA derives its
     /// retrace timing from this count.
     video_clock: Rc<Cell<u64>>,
@@ -163,10 +158,8 @@ impl Runtime {
             keyboard: None,
             vga: None,
             pit: Rc::new(RefCell::new(Pit::new())),
-            last_clock_sample: Instant::now(),
             pit_debt: 0,
             pit_frac: 0,
-            manual_clock: false,
             video_clock: Rc::new(Cell::new(0)),
         }
     }
@@ -241,10 +234,8 @@ impl Runtime {
             keyboard: Some(keyboard),
             vga: Some(vga),
             pit,
-            last_clock_sample: Instant::now(),
             pit_debt: 0,
             pit_frac: 0,
-            manual_clock: false,
             video_clock,
         }
     }
@@ -287,14 +278,17 @@ impl Runtime {
         self.cpu.memory.enable_rom_protection();
     }
 
-    /// Execute one batch of CPU instructions, tick PIT, poll keyboard, and
-    /// handle interrupts. The window calls it through `run_slice`.
-    pub fn step_frame(&mut self) {
-        // Host time that went by between two calls (rendering, vsync,
-        // sleeping) is credited on the first pass.
-        let mut sample_clock = true;
-
-        for _ in 0..RENDER_INTERVAL {
+    /// Runs the guest for at most `instructions` passes: one `process` call
+    /// each (a halted CPU makes none), then the timer clocks owed, the
+    /// keyboard and the interrupts. Returns early when the CPU is halted
+    /// and nothing woke it: until more time is credited or a key arrives,
+    /// another call would find the same.
+    ///
+    /// No time passes in here. Whoever paces the guest by a clock calls
+    /// this for a few instructions at a time, with `credit_pit_time`
+    /// between the calls.
+    pub fn run(&mut self, instructions: u64) {
+        for _ in 0..instructions {
             if self.trace {
                 debug!("{:#?}", self);
             }
@@ -309,13 +303,6 @@ impl Runtime {
                 self.instruction_count += 1;
             }
 
-            if sample_clock
-                || self.cpu.halted
-                || self.instruction_count.is_multiple_of(CLOCK_SAMPLE_INTERVAL)
-            {
-                sample_clock = false;
-                self.sample_host_clock();
-            }
             if self.pit_debt > 0 {
                 self.run_pit();
             }
@@ -352,22 +339,10 @@ impl Runtime {
         }
     }
 
-    /// Runs the machine for about `slice` of host time. Batches are executed
-    /// back to back; a halted CPU is looked at again every `IDLE_POLL`
-    /// instead of leaving the slice, so that timer ticks and key presses
-    /// reach an idle guest promptly.
-    pub fn run_slice(&mut self, slice: Duration) {
-        let deadline = Instant::now() + slice;
-        loop {
-            self.step_frame();
-            let now = Instant::now();
-            if now >= deadline {
-                return;
-            }
-            if self.cpu.halted {
-                std::thread::sleep(IDLE_POLL.min(deadline - now));
-            }
-        }
+    /// One batch of a test: `run` for `FRAME_INSTRUCTIONS`.
+    #[cfg(test)]
+    pub(crate) fn step_frame(&mut self) {
+        self.run(FRAME_INSTRUCTIONS);
     }
 
     /// Reboots the guest: the CPU continues at the reset vector in its
@@ -386,21 +361,13 @@ impl Runtime {
         self.interrupt_inhibit = false;
     }
 
-    /// Credits the timer with the host time elapsed since the last sample.
-    fn sample_host_clock(&mut self) {
-        if self.manual_clock {
-            return;
-        }
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_clock_sample);
-        self.last_clock_sample = now;
-        self.credit_pit_time(elapsed.as_nanos().min(NANOS_PER_SEC as u128) as u64);
-    }
-
-    /// Converts `nanos` of elapsed time (at most one second per call) into
-    /// timer clocks owed to the 8253. The sub-clock remainder is carried
-    /// over, so no time is lost to rounding however often this is called.
-    pub(crate) fn credit_pit_time(&mut self, nanos: u64) {
+    /// Tells the machine that `nanos` of host time have passed (at most one
+    /// second per call; what is more is dropped). The time becomes timer
+    /// clocks owed to the 8253, which `run` hands over as the guest
+    /// executes: this is the only way time passes for the guest. The
+    /// sub-clock remainder is carried over, so no time is lost to rounding
+    /// however often this is called.
+    pub fn credit_pit_time(&mut self, nanos: u64) {
         self.pit_frac += nanos.min(NANOS_PER_SEC) * PIT_CLOCK_HZ;
         self.pit_debt = (self.pit_debt + self.pit_frac / NANOS_PER_SEC).min(PIT_MAX_DEBT);
         self.pit_frac %= NANOS_PER_SEC;
@@ -430,15 +397,6 @@ impl Runtime {
                 break;
             }
         }
-    }
-
-    /// Stops following the host clock, so a test can feed timer time by hand
-    /// through `credit_pit_time`.
-    #[cfg(test)]
-    pub(crate) fn use_manual_clock(&mut self) {
-        self.manual_clock = true;
-        self.pit_debt = 0;
-        self.pit_frac = 0;
     }
 
     pub fn port_in_byte(&mut self, port: u16) -> u8 {

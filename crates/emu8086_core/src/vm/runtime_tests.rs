@@ -1,50 +1,74 @@
 use super::*;
 
-/// The fraction of a timer clock left over after a host clock sample is
+/// A machine without devices whose guest spins in `JMP $`.
+fn spinning_guest() -> Runtime {
+    let mut rt = Runtime::new_test();
+    rt.cpu.memory.write_byte(0x10000, 0xEB); // JMP $
+    rt.cpu.memory.write_byte(0x10001, 0xFE);
+    rt.cpu.registers.cs.reg_mut().set(0x1000);
+    rt.cpu.registers.pc.set(0);
+    rt
+}
+
+/// The fraction of a timer clock left over after a credit of host time is
 /// carried into the next one: dropping it would make the timer run several
 /// percent slow while the guest is busy.
 #[test]
 fn timer_time_is_not_lost_to_rounding() {
     let mut rt = Runtime::new_test();
-    rt.use_manual_clock();
     for _ in 0..1_000_000 {
         rt.credit_pit_time(100); // less than one timer clock
     }
     assert_eq!(rt.pit_debt, 119_318); // 0.1 s of a 1,193,182 Hz clock
 }
 
-/// A time slice runs batches back to back, as many as fit: one batch per
-/// displayed frame would hold the guest to 50,000 instructions per frame.
+/// A running guest executes exactly the instructions `run` is asked for:
+/// whoever paces it by a clock counts on the length of a call.
 #[test]
-fn run_slice_runs_batches_back_to_back() {
+fn run_executes_the_instructions_asked_for() {
+    let mut rt = spinning_guest();
+    rt.run(256);
+    assert_eq!(rt.instruction_count, 256);
+    rt.run(1);
+    assert_eq!(rt.instruction_count, 257);
+    rt.run(0);
+    assert_eq!(rt.instruction_count, 257);
+}
+
+/// `run` returns as soon as the CPU is halted with nothing to wake it, and
+/// a call on such a CPU makes one pass and executes nothing: the caller
+/// learns at once that the guest is waiting.
+#[test]
+fn run_returns_when_the_guest_halts() {
     let mut rt = Runtime::new_test();
-    rt.use_manual_clock();
-    rt.cpu.memory.write_byte(0x10000, 0xEB); // JMP $
-    rt.cpu.memory.write_byte(0x10001, 0xFE);
+    rt.cpu.memory.write_byte(0x10000, 0x90); // NOP
+    rt.cpu.memory.write_byte(0x10001, 0xF4); // HLT, with interrupts off
     rt.cpu.registers.cs.reg_mut().set(0x1000);
     rt.cpu.registers.pc.set(0);
 
-    rt.run_slice(Duration::from_millis(100));
-    assert!(
-        rt.instruction_count >= 2 * RENDER_INTERVAL,
-        "only {} instructions ran",
-        rt.instruction_count
-    );
+    rt.run(1000);
+    assert!(rt.cpu.halted);
+    assert_eq!(rt.instruction_count, 2);
+
+    rt.run(1000);
+    assert!(rt.cpu.halted);
+    assert_eq!(rt.instruction_count, 2);
 }
 
-/// A halted CPU does not end the slice early: the machine keeps being
-/// polled until the slice is over.
+/// The machine reads no clock: however long the guest runs, the timer is
+/// clocked for the time the machine was credited with and for no other.
 #[test]
-fn run_slice_lasts_the_whole_slice_when_halted() {
-    let mut rt = Runtime::new_test();
-    rt.use_manual_clock();
-    rt.cpu.halted = true; // interrupts disabled: nothing can wake it
+fn guest_time_is_the_time_credited_and_no_other() {
+    let mut rt = spinning_guest();
+    rt.run(100_000);
+    assert_eq!(rt.video_clock.get(), 0, "no time was credited");
 
-    let slice = Duration::from_millis(30);
-    let started = Instant::now();
-    rt.run_slice(slice);
-    assert!(started.elapsed() >= slice);
-    assert_eq!(rt.instruction_count, 0);
+    rt.credit_pit_time(1_000_000); // 1 ms: 1,193 timer clocks
+    rt.run(100_000);
+    assert_eq!(rt.video_clock.get(), 1_193);
+
+    rt.run(100_000);
+    assert_eq!(rt.video_clock.get(), 1_193, "a credit is paid out once");
 }
 
 #[test]
@@ -115,7 +139,6 @@ fn unusable_rom_file_is_an_error_that_names_the_file() {
 #[test]
 fn timer_debt_is_capped_after_a_long_stall() {
     let mut rt = Runtime::new_test();
-    rt.use_manual_clock();
     for _ in 0..3 {
         rt.credit_pit_time(NANOS_PER_SEC);
     }

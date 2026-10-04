@@ -1,7 +1,8 @@
 //! The window: a winit application that owns the machine. Each redraw runs
-//! the CPU for `CPU_SLICE`, draws the frame (`renderer`) and asks for the
-//! next redraw; key presses and releases go to the keyboard controller as
-//! scancodes (`keys`), and F12 asks for a VGA dump.
+//! the guest for `CPU_SLICE` of host time (`pacer`), draws the frame
+//! (`renderer`) and asks for the next redraw; key presses and releases go
+//! to the keyboard controller as scancodes (`keys`), and F12 asks for a VGA
+//! dump.
 //!
 //! The invariant: the guest runs only inside `RedrawRequested`, so a redraw
 //! must always be pending. The loop asks for one after every frame and
@@ -9,6 +10,7 @@
 //! machine.
 
 mod keys;
+mod pacer;
 mod renderer;
 
 use std::sync::Arc;
@@ -24,6 +26,7 @@ use winit::window::{Window, WindowId};
 use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
 use keys::physical_key_to_scancode;
+use pacer::Pacer;
 use renderer::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, Renderer};
 
 /// Host time the CPU runs for before each frame is drawn. The rest of the
@@ -32,6 +35,7 @@ const CPU_SLICE: Duration = Duration::from_millis(10);
 
 struct EmulatorApp {
     runtime: Runtime,
+    pacer: Pacer,
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     kbd_tx: mpsc::Sender<EmulatorEvent>,
@@ -102,7 +106,7 @@ impl ApplicationHandler for EmulatorApp {
             }
 
             WindowEvent::RedrawRequested => {
-                self.runtime.run_slice(CPU_SLICE);
+                self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
 
                 if let (Some(renderer), Some(vga)) = (&mut self.renderer, &self.runtime.vga) {
                     let vga = vga.borrow();
@@ -138,6 +142,7 @@ pub fn run(runtime: Runtime, kbd_tx: mpsc::Sender<EmulatorEvent>) {
 
     let mut app = EmulatorApp {
         runtime,
+        pacer: Pacer::new(),
         renderer: None,
         window: None,
         kbd_tx,

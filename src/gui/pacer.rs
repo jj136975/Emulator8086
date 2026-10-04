@@ -1,0 +1,72 @@
+//! Real-time pacing: how the guest gets its time. The machine reads no
+//! clock, so `Pacer` reads the host's for it: it tells the machine how much
+//! time has passed since it last looked (`Runtime::credit_pit_time`) and
+//! lets the guest run a few instructions (`Runtime::run`), over and over
+//! until a slice of host time is used up.
+//!
+//! The invariant: the guest's time is the host's. All the time the machine
+//! is credited with was measured here between two samples that follow one
+//! another, with none left out and none counted twice, and the clock is
+//! sampled every `CLOCK_SAMPLE_INTERVAL` instructions while the guest runs
+//! and at once when it halts: no timer interrupt is later than that.
+
+use std::time::{Duration, Instant};
+
+use emu8086_core::vm::runtime::Runtime;
+
+/// Instructions the guest runs between two samples of the host clock;
+/// reading it for every instruction would dominate run time.
+const CLOCK_SAMPLE_INTERVAL: u64 = 256;
+/// How long a halted guest is left alone before it is looked at again.
+const IDLE_POLL: Duration = Duration::from_millis(1);
+
+/// Measures host time and feeds it to the machine it paces.
+pub struct Pacer {
+    /// Host time of the last clock sample: the machine has been credited
+    /// with all the time up to it.
+    last_sample: Instant,
+}
+
+impl Pacer {
+    /// The first sample credits the time since this call.
+    pub fn new() -> Self {
+        Self {
+            last_sample: Instant::now(),
+        }
+    }
+
+    /// Samples the host clock and credits `runtime` with the time since
+    /// the previous sample. Returns the sample.
+    fn sample(&mut self, runtime: &mut Runtime) -> Instant {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_sample);
+        self.last_sample = now;
+        runtime.credit_pit_time(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
+        now
+    }
+
+    /// Runs `runtime` for about `slice` of host time. The time that went by
+    /// since the previous slice (rendering, vsync) is credited first. A
+    /// halted guest does not end the slice: it is looked at again every
+    /// `IDLE_POLL`, so that timer ticks and key presses reach an idle guest
+    /// promptly.
+    pub fn run_slice(&mut self, runtime: &mut Runtime, slice: Duration) {
+        let mut now = self.sample(runtime);
+        let deadline = now + slice;
+        while now < deadline {
+            let executed = runtime.instruction_count;
+            runtime.run(CLOCK_SAMPLE_INTERVAL);
+            // A guest that halts gets the time that has passed at once: the
+            // next sample follows without a wait. One that was halted all
+            // through a look has had all the time there is, and waits.
+            if runtime.cpu.halted && runtime.instruction_count == executed {
+                std::thread::sleep(IDLE_POLL.min(deadline - now));
+            }
+            now = self.sample(runtime);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "pacer_tests.rs"]
+mod tests;

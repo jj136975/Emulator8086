@@ -381,22 +381,9 @@ fn int10_set_mode_preserves_registers() {
 
 // ---------------------------------------------------------------------------
 // Timer — 8253 channel 0 -> IRQ0 -> INT 08h
+//
+// No time passes for a machine but what `feed_time` credits it with.
 // ---------------------------------------------------------------------------
-
-/// Within a time slice a guest idling in HLT is looked at every millisecond,
-/// not once per displayed frame, so its timer keeps ticking.
-#[test]
-fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
-    // The BIOS has programmed 18.2 Hz and waits for a key in HLT.
-    let mut machine = Machine::boot(disks(vec![]));
-    let before = machine.timer_ticks();
-    machine.rt.run_slice(std::time::Duration::from_millis(250));
-    let ticks = machine.timer_ticks() - before;
-    assert!(
-        (3..=6).contains(&ticks),
-        "{ticks} ticks in 250 ms, expected 4 or 5"
-    );
-}
 
 /// The vertical retrace bit of port 3DAh follows timer time, not the reads
 /// of the port: 70 frames in a second, however that second is delivered, so
@@ -404,7 +391,6 @@ fn timer_ticks_reach_an_idle_guest_during_a_time_slice() {
 #[test]
 fn vertical_retrace_comes_70_times_per_second_of_timer_time() {
     let mut machine = Machine::boot(disks(vec![]));
-    machine.rt.use_manual_clock();
     machine.load_stub(&[
         0xBA, 0xDA, 0x03, // MOV DX,03DAh
         0x31, 0xDB, // XOR BX,BX
@@ -421,9 +407,9 @@ fn vertical_retrace_comes_70_times_per_second_of_timer_time() {
 const IDLE_HALTED: [u8; 3] = [0xF4, 0xEB, 0xFD]; // HLT ; JMP back to the HLT
 const IDLE_BUSY: [u8; 2] = [0xEB, 0xFE]; // JMP $
 
-/// Boots, switches to a hand-fed clock, and starts a guest that programs
-/// timer channel 0 with `control` and `divisor` and then idles in `idle`.
-/// The BIOS tick counter is zero when this returns.
+/// Boots and starts a guest that programs timer channel 0 with `control`
+/// and `divisor` and then idles in `idle`. The BIOS tick counter is zero
+/// when this returns.
 fn machine_with_timer(control: u8, divisor: u16, idle: &[u8]) -> Machine {
     let [lo, hi] = divisor.to_le_bytes();
     let mut code = vec![
@@ -435,7 +421,6 @@ fn machine_with_timer(control: u8, divisor: u16, idle: &[u8]) -> Machine {
     code.extend_from_slice(idle);
 
     let mut machine = Machine::boot(disks(vec![]));
-    machine.rt.use_manual_clock();
     machine.load_stub(&code);
     machine.rt.step_frame(); // runs the programming sequence; no time passes
     for addr in 0x046C..0x0470 {
@@ -2171,7 +2156,6 @@ fn timer_hook_is_not_re_entered_by_the_next_tick() {
     const DATA: usize = ((STUB_SEG as usize) << 4) + 0x0200;
 
     let mut machine = Machine::booted();
-    machine.rt.use_manual_clock();
     for addr in DATA..DATA + 6 {
         machine.rt.cpu.memory.write_byte(addr, 0);
     }
