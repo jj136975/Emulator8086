@@ -188,6 +188,8 @@ pub fn parse_boot_order(spec: &str) -> Result<Vec<u8>, String> {
 /// drive or for a hard disk is created when its file does not exist. That,
 /// and a hard disk image too large to be used in full, is reported on
 /// stderr. A floppy held in memory is formatted, at the time `clock` shows.
+/// The disks a machine starts with are no change to a guest that has not
+/// booted: no reboot is due on the controller.
 pub fn open_drives(
     disk_specs: Vec<DiskSpec>,
     hd_specs: &[String],
@@ -283,6 +285,7 @@ pub fn open_drives(
         controller.attach(drive, image);
     }
 
+    controller.bootstrap_starts();
     Ok(controller)
 }
 

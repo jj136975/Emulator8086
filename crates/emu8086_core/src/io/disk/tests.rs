@@ -548,6 +548,69 @@ fn host_side_write_raises_the_change_line() {
     );
 }
 
+/// A hard disk has no change line to tell the guest with. What the host
+/// does to one leaves a reboot due instead, until the bootstrap starts
+/// again: a write to the boot order port, which rewinds the list. What the
+/// host does to a floppy leaves none due, nor does a copy that a
+/// write-protected or missing hard disk refused untouched.
+#[test]
+fn host_side_change_of_a_hard_disk_leaves_a_reboot_due_until_the_bootstrap() {
+    let mut rt = Runtime::new_test();
+    let mut disk_ctrl = DiskController::new();
+    let mut hard_disk = DiskImage::new_in_memory_hard_disk(1);
+    hard_disk.format_fat(&FixedClock).unwrap();
+    // What INT 19h does first.
+    let bootstrap = |disk_ctrl: &mut DiskController, rt: &mut Runtime| {
+        disk_ctrl.port_out_byte(BOOT_ORDER_PORT, 0x00, &mut rt.cpu);
+    };
+    assert!(!disk_ctrl.reboot_due());
+
+    disk_ctrl.attach(0x00, formatted_floppy());
+    disk_ctrl
+        .put_file(0x00, b"hello", "HELLO.TXT", &FixedClock)
+        .unwrap();
+    disk_ctrl.detach(0x00);
+    assert!(!disk_ctrl.reboot_due(), "the change line tells of a floppy");
+
+    disk_ctrl.attach(0x80, hard_disk);
+    assert!(disk_ctrl.reboot_due(), "inserted");
+    bootstrap(&mut disk_ctrl, &mut rt);
+    assert!(!disk_ctrl.reboot_due());
+
+    disk_ctrl
+        .put_file(0x80, b"hello", "HELLO.TXT", &FixedClock)
+        .unwrap();
+    assert!(disk_ctrl.reboot_due(), "written to");
+    bootstrap(&mut disk_ctrl, &mut rt);
+
+    disk_ctrl.find_drive(0x80).unwrap().readonly = true;
+    assert!(
+        disk_ctrl
+            .put_file(0x80, b"hello", "OTHER.TXT", &FixedClock)
+            .is_err()
+    );
+    assert!(
+        disk_ctrl
+            .put_dir(0x80, &std::env::temp_dir(), &FixedClock)
+            .is_err()
+    );
+    assert!(
+        disk_ctrl
+            .put_file(0x81, b"hello", "HELLO.TXT", &FixedClock)
+            .is_err()
+    );
+    assert!(!disk_ctrl.reboot_due(), "no disk was touched");
+
+    // Reading the boot order takes nothing away.
+    disk_ctrl.detach(0x80);
+    assert!(disk_ctrl.reboot_due(), "removed");
+    disk_ctrl.port_in_byte(BOOT_ORDER_PORT, &mut rt.cpu);
+    assert!(disk_ctrl.reboot_due());
+    bootstrap(&mut disk_ctrl, &mut rt);
+    assert!(disk_ctrl.detach(0x80).is_none());
+    assert!(!disk_ctrl.reboot_due(), "nothing was there to remove");
+}
+
 // -----------------------------------------------------------------------
 // Geometry of image files
 // -----------------------------------------------------------------------

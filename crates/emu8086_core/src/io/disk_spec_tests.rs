@@ -253,6 +253,20 @@ fn images_for_other_drives_are_created_when_missing() {
     assert!(controller.find_drive(0x80).unwrap().readonly);
 }
 
+/// The disks a machine starts with are no change behind the back of a
+/// guest: there is none yet, and its first bootstrap reads them all.
+#[test]
+fn the_drives_a_machine_starts_with_leave_no_reboot_due() {
+    let controller = open_drives(
+        vec![parse_disk_spec("a:memory").unwrap()],
+        &["memory".to_string(), "memory".to_string()],
+        &FixedClock,
+    )
+    .unwrap();
+    assert_eq!(controller.drives.len(), 3);
+    assert!(!controller.reboot_due());
+}
+
 /// One image file is one disk in one drive: a second drive on the same file
 /// would cache and write it without knowing of the first.
 #[test]

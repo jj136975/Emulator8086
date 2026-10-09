@@ -10,6 +10,9 @@
 //! host (`attach`, `detach`, `put_file`, `put_dir`) raises the change line
 //! of that drive, and the guest is told exactly once. A hard disk has no
 //! change line: what the host changes on one takes a reboot of the guest.
+//! Nothing can tell the guest so, but the host is told: the same ways in
+//! leave a reboot due (`reboot_due`) until the bootstrap runs again, which
+//! reads the disks afresh.
 
 use super::clock::WallClock;
 use super::image::DiskImage;
@@ -41,6 +44,9 @@ pub struct DiskController {
     /// Change line of each floppy drive: the disk was inserted, removed or
     /// rewritten from the host since the guest last asked (AH=16h).
     pub(super) floppy_changed: [bool; FLOPPY_UNITS],
+    /// A hard disk was inserted, removed or written to from the host since
+    /// the bootstrap last started.
+    reboot_due: bool,
 }
 
 impl DiskController {
@@ -51,6 +57,7 @@ impl DiskController {
             boot_cursor: 0,
             floppy_installed: [true, true, false, false],
             floppy_changed: [false; FLOPPY_UNITS],
+            reboot_due: false,
         }
     }
 
@@ -68,18 +75,37 @@ impl DiskController {
     pub fn attach(&mut self, drive: u8, image: DiskImage) {
         if let Some(unit) = Self::floppy_unit(drive) {
             self.floppy_installed[unit] = true;
-            self.floppy_changed[unit] = true;
         }
+        self.mark_changed(drive);
         self.drives.retain(|(attached, _)| *attached != drive);
         self.drives.push((drive, image));
     }
 
-    /// Raises the change line of a floppy drive after its disk was modified
-    /// from the host, so the guest drops what it has cached of that disk.
+    /// Records that the disk in `drive` was changed from the host. For a
+    /// floppy drive that raises its change line, so the guest drops what it
+    /// has cached of the disk. A hard disk has none: a reboot is due.
     pub(super) fn mark_changed(&mut self, drive: u8) {
-        if let Some(unit) = Self::floppy_unit(drive) {
-            self.floppy_changed[unit] = true;
+        match Self::floppy_unit(drive) {
+            Some(unit) => self.floppy_changed[unit] = true,
+            None => self.reboot_due = true,
         }
+    }
+
+    /// Whether the guest has to be rebooted before it uses its hard disks
+    /// again: one of them was changed from the host since the bootstrap
+    /// last started. DOS never re-reads a fixed disk; it goes on with the
+    /// FAT and directory sectors in its buffers and writes them back over
+    /// whatever was changed.
+    pub fn reboot_due(&self) -> bool {
+        self.reboot_due
+    }
+
+    /// The bootstrap starts, at power-on or again: the boot list is read
+    /// from its head, and whatever boots reads the hard disks afresh, so no
+    /// reboot is due anymore.
+    pub(crate) fn bootstrap_starts(&mut self) {
+        self.boot_cursor = 0;
+        self.reboot_due = false;
     }
 
     /// Copies a host file into the FAT volume on the disk in `drive` and
@@ -92,8 +118,10 @@ impl DiskController {
         dos_path: &str,
         clock: &dyn WallClock,
     ) -> std::io::Result<String> {
-        let result = self.disk_in(drive)?.copy_file_to_fat(data, dos_path, clock);
-        self.mark_changed(drive);
+        let disk = self.disk_in(drive)?;
+        let write_protected = disk.readonly;
+        let result = disk.copy_file_to_fat(data, dos_path, clock);
+        self.mark_copied_to(drive, write_protected);
         result
     }
 
@@ -106,9 +134,23 @@ impl DiskController {
         host_dir: &Path,
         clock: &dyn WallClock,
     ) -> std::io::Result<usize> {
-        let result = self.disk_in(drive)?.copy_dir_to_fat(host_dir, clock);
-        self.mark_changed(drive);
+        let disk = self.disk_in(drive)?;
+        let write_protected = disk.readonly;
+        let result = disk.copy_dir_to_fat(host_dir, clock);
+        self.mark_copied_to(drive, write_protected);
         result
+    }
+
+    /// Records a copy from the host onto the disk in `drive`, whatever came
+    /// of it: one that failed half-way has changed the disk too. A
+    /// write-protected disk refused the copy untouched, and a hard disk
+    /// that was not touched asks for no reboot. A floppy's change line is
+    /// raised all the same: it costs the guest no more than another look at
+    /// the disk.
+    fn mark_copied_to(&mut self, drive: u8, write_protected: bool) {
+        if Self::floppy_unit(drive).is_some() || !write_protected {
+            self.mark_changed(drive);
+        }
     }
 
     fn disk_in(&mut self, drive: u8) -> std::io::Result<&mut DiskImage> {
@@ -190,7 +232,7 @@ impl IoDevice for DiskController {
     fn port_out_byte(&mut self, port: u16, _value: u8, cpu: &mut Cpu) {
         match port {
             DISK_TRAP_PORT => self.handle_trap(cpu),
-            BOOT_ORDER_PORT => self.boot_cursor = 0,
+            BOOT_ORDER_PORT => self.bootstrap_starts(),
             _ => {}
         }
     }

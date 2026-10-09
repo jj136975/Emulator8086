@@ -300,6 +300,46 @@ fn reset_reboots_the_guest() {
     );
 }
 
+/// A hard disk the host changes under a guest leaves a reboot due, and the
+/// guest's bootstrap is what ends that, since it reads the disks afresh:
+/// the one a reset leads to, not the reset itself, and the one the BIOS
+/// runs again after a key when nothing booted.
+#[test]
+fn the_bootstrap_ends_the_wait_for_a_reboot() {
+    let reboot_due = |machine: &Machine| machine.rt.disks.borrow().reboot_due();
+
+    // The disks a machine is powered on with are read by its first
+    // bootstrap.
+    let mut machine = Machine::boot(disks(vec![
+        (0x00, bootable_floppy()),
+        (0x80, bootable_hard_disk()),
+    ]));
+    assert!(!reboot_due(&machine));
+
+    machine
+        .rt
+        .disks
+        .borrow_mut()
+        .attach(0x81, bootable_hard_disk());
+    assert!(reboot_due(&machine));
+    machine.rt.reset();
+    assert!(reboot_due(&machine), "nothing has booted yet");
+    machine.run_until(Machine::parked);
+    assert!(!reboot_due(&machine));
+
+    let mut machine = Machine::boot(disks(vec![]));
+    machine
+        .rt
+        .disks
+        .borrow_mut()
+        .attach(0x80, bootable_hard_disk());
+    assert!(reboot_due(&machine));
+    machine.press(0x1C); // Enter
+    machine.run_until(Machine::parked);
+    assert_eq!(machine.booted_drive(), Some(0x80));
+    assert!(!reboot_due(&machine));
+}
+
 // ---------------------------------------------------------------------------
 // Keyboard
 // ---------------------------------------------------------------------------
