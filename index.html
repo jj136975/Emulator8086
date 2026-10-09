@@ -7,12 +7,17 @@
   The page holds nothing itself. The application puts its canvas into the
   body and lays it over the whole viewport (src/platform/web.rs); what is
   styled here is only what shows around a canvas that is not there yet.
+
+  The page names an empty icon: a page that names none has the browser ask
+  for /favicon.ico at the root of its server, which a site served below a
+  path (GitHub Pages) does not own, and the answer is a 404 on the console.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Emulator 8086</title>
+    <link rel="icon" href="data:," />
     <style>
       html,
       body {
