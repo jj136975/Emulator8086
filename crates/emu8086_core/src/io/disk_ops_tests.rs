@@ -129,6 +129,9 @@ impl Drop for Scratch {
 
 // ---- eject, move ---------------------------------------------------------
 
+/// An eject takes the disk out and a move puts it into the other drive,
+/// and each says what it did. A drive without a disk has none to eject or
+/// to move, and says that it is empty.
 #[test]
 fn eject_and_move_report_what_they_did() {
     let mut disks = DiskController::new();
@@ -447,6 +450,9 @@ fn a_blank_disk_is_a_formatted_floppy_or_a_hard_disk_of_the_default_size() {
 
 // ---- create ----------------------------------------------------------------
 
+/// A new image file, a formatted 1.44 MB floppy or a blank hard disk of the
+/// default size, is created where asked and put into the drive at once. A
+/// file that is there already is never replaced, whichever drive asks.
 #[test]
 fn creating_an_image_file_inserts_it_and_never_replaces_a_file() {
     let floppy = Scratch::missing("new floppy.img");
@@ -498,6 +504,9 @@ fn creating_an_image_file_inserts_it_and_never_replaces_a_file() {
 
 // ---- save, contents --------------------------------------------------------
 
+/// A save writes the whole disk to the file it names, and only flushes the
+/// disk's own file, which holds every write of the guest already. The image
+/// file of another drive is refused: it would be replaced under that drive.
 #[test]
 fn save_writes_the_image_and_recognises_its_own_file() {
     let target = Scratch::missing("saved disk.img");
@@ -593,6 +602,9 @@ fn put_copies_a_file_that_comes_by_its_path_or_as_its_contents() {
     assert_eq!(refusal(&mut disks, put(0x00, &[])), "No file to copy");
 }
 
+/// What a copy reports is the name the file has in DOS: one generated for a
+/// name that is no valid 8.3 name, the name as DOS spells it otherwise. A
+/// write-protected disk refuses the copy, and the reason says so.
 #[test]
 fn put_shows_the_name_the_file_has_in_dos() {
     let host_file = Scratch::file("longname.txt", b"hello");
@@ -727,6 +739,10 @@ fn changing_a_hard_disk_asks_for_a_reboot() {
     }
 }
 
+/// A floppy changed from the host asks for no reboot: its change line tells
+/// the guest. Nor does an operation refused before it touched a disk, a
+/// save, which only reads one, or a copy that a write-protected hard disk
+/// refused.
 #[test]
 fn floppy_changes_and_refused_operations_ask_for_no_reboot() {
     let host_file = Scratch::file("quiet.txt", b"hello");
