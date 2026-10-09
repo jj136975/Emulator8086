@@ -60,14 +60,14 @@ The core, in `crates/emu8086_core/`:
 | path | role |
 |---|---|
 | `src/lib.rs` | the two rules of the crate, its public modules, `BIOS_ROM`, the crate-level test modules |
-| `src/vm/runtime.rs` | the machine: the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM loader, the loans of the devices the app reads (`pit`, `keyboard`, `debug_console`) |
+| `src/vm/runtime.rs` | the machine: the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM loader, the loans of the devices the app reads (`pit`, `keyboard`, `debug_console`), and the account of the guest's time it keeps for whoever measures it (`guest_time`: timer clocks handed over, of them while halted, owed, dropped) |
 | `src/vm/instructions/` | the CPU: `process()` in `mod.rs` is the opcode table, one line per opcode; the bodies live in the domain modules beside it (`alu`, `bcd`, `control`, `shift`, `stack`, `string`, `transfer`) |
 | `src/vm/modrm.rs` | `decode_rm`, the only effective-address decoder, and the `ModRM` operand widths |
 | `src/vm/registers.rs`, `memory.rs`, `cpu.rs` | the register file and the raw-pointer operand wrappers, the 1 MB memory with its ROM protection, the `Cpu` (which also holds the 8259A) |
 | `src/utils/number.rs` | `SpecialOps`: the arithmetic the instruction code is written once with for `u8` and `u16` |
 | `src/vm/cli.rs` | the monitor's disk commands (swap, new, move, save, eject, put, reset); compiled for tests only until the overlay's disk panel calls them |
 | `src/io/bus.rs` | `IoDevice` and the port bus |
-| `src/io/pic.rs`, `pit.rs`, `keyboard.rs`, `dma.rs`, `fdc.rs`, `hdc.rs`, `console.rs` | 8259A, 8253, the XT keyboard on the 8255, the 8237 as registers, two controller stand-ins, debug port E9h (which keeps its last lines). The first three and the console describe themselves to a reader without a port access: `Pic::view`, `Pit::channels`, `KeyboardController::view`, `DebugConsole::lines` |
+| `src/io/pic.rs`, `pit.rs`, `keyboard.rs`, `dma.rs`, `fdc.rs`, `hdc.rs`, `console.rs` | 8259A, 8253, the XT keyboard on the 8255, the 8237 as registers, two controller stand-ins, debug port E9h (which keeps its last lines). The first three and the console describe themselves to a reader without a port access: `Pic::view`, `Pit::channels`, `KeyboardController::view`, `DebugConsole::lines`; `Pic::acknowledged` tallies the interrupts acknowledged on each line |
 | `src/io/vga.rs`, `raster.rs`, `font_cp437.rs` | the VGA registers (`VgaDevice::registers` and `dac_colour` for a reader), the CPU-side rasterisers the window uploads, the 8x16 font |
 | `src/io/disk/`, `src/io/disk_spec.rs` | disk images, the host side of INT 13h, host-side FAT access and the `WallClock` its callers pass; the spellings of drives and images on the command line and in the monitor |
 | `build.rs` | reassembles `assets/rom/bios.bin` when a ROM source is newer and patches its checksum |

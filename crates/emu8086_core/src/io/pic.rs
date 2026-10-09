@@ -9,7 +9,9 @@
 //!
 //! `Pic::view` describes the controller to a reader in its datasheet's
 //! terms, without a port access: reading the status ports would answer a
-//! poll the guest is waiting for.
+//! poll the guest is waiting for. `Pic::acknowledged` is a tally the
+//! emulator keeps beside the registers: the interrupts acknowledged on each
+//! line since power-on.
 //!
 //! The invariant: a request is latched. `request_interrupt` sets an IRR bit
 //! that stays until the interrupt is acknowledged (in edge-triggered mode)
@@ -98,6 +100,10 @@ pub struct Pic {
     lowest_priority: u8,
     /// Whether to rotate priorities on auto-EOI
     rotate_on_aeoi: bool,
+
+    /// Interrupts acknowledged on each line since power-on, IRQ0 first. Not
+    /// a register: nothing the guest does clears it.
+    acknowledged: [u64; 8],
 }
 
 impl Pic {
@@ -117,7 +123,17 @@ impl Pic {
             trigger_mode: TriggerMode::Edge,
             lowest_priority: 7,
             rotate_on_aeoi: false,
+            acknowledged: [0; 8],
         }
+    }
+
+    /// The interrupts acknowledged on each line since power-on, IRQ0 first:
+    /// those the CPU took and those a poll read took into service. A tally
+    /// the emulator keeps for whoever measures the machine, not a register
+    /// of the 8259A: neither ICW1 nor a reset of the CPU clears it, and a
+    /// spurious acknowledge, with no request, counts on no line.
+    pub fn acknowledged(&self) -> [u64; 8] {
+        self.acknowledged
     }
 
     /// The controller as a reader sees it. Nothing is acknowledged, polled
@@ -253,6 +269,7 @@ impl Pic {
     fn acknowledge_irq(&mut self) -> Option<u8> {
         let irq = self.highest_priority_bit(self.irr & !self.imr)?;
         let mask = 1u8 << irq;
+        self.acknowledged[usize::from(irq)] += 1;
 
         // In edge-triggered mode, clear IRR (the edge has been consumed).
         // In level-triggered mode, do NOT clear IRR — the line is still held high.

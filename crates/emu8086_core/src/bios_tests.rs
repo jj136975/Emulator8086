@@ -497,6 +497,37 @@ fn one_shot_timer_rearmed_with_a_new_count_interrupts_again() {
     );
 }
 
+/// What the machine counts of the time it hands over agrees with what the
+/// guest sees: every INT 08h the BIOS counts was acknowledged on IRQ0, all
+/// the time credited was handed over and none dropped, and a guest idling
+/// in HLT spends its time halted but for the clocks its handlers take,
+/// where a busy guest spends none of it halted.
+#[test]
+fn the_machine_counts_the_ticks_it_delivers_and_the_time_spent_halted() {
+    const SECOND: u64 = 1_193_182; // timer clocks
+    for (idle, halts) in [(&IDLE_HALTED[..], true), (&IDLE_BUSY[..], false)] {
+        let mut machine = machine_with_timer(0x36, 1000, idle);
+        let taken = machine.rt.cpu.pic.acknowledged()[0];
+        let before = machine.rt.guest_time();
+        machine.feed_time(50, 20_000_000); // one second, 20 ms at a time
+
+        assert_eq!(machine.timer_ticks(), 1193);
+        assert_eq!(machine.rt.cpu.pic.acknowledged()[0] - taken, 1193);
+        let after = machine.rt.guest_time();
+        assert_eq!(after.delivered - before.delivered, SECOND);
+        assert_eq!((after.owed, after.dropped), (0, 0));
+        let halted = after.halted - before.halted;
+        if halts {
+            assert!(
+                (SECOND / 2..SECOND).contains(&halted),
+                "{halted} of {SECOND} clocks halted"
+            );
+        } else {
+            assert_eq!(halted, 0, "a busy guest never halts");
+        }
+    }
+}
+
 // ===========================================================================
 // Helpers for the BIOS service tests below
 // ===========================================================================

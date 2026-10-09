@@ -3,8 +3,9 @@
 //! takes a call of its own), hands the 8253 timer clocks it is owed, polls
 //! the keyboard and takes a pending interrupt. Also here: the flag and
 //! segment encodings and the prefix latches the instruction code shares,
-//! interrupt entry, reset, the ROM loader, and the devices it lends to
-//! whoever reads them (`pit`, `keyboard`, `debug_console`).
+//! interrupt entry, reset, the ROM loader, the devices it lends to whoever
+//! reads them (`pit`, `keyboard`, `debug_console`), and the account of the
+//! guest's time it keeps for whoever measures it (`guest_time`).
 //!
 //! The invariant: an interrupt is taken only between two whole instructions,
 //! never after a prefix byte (`prefixes.pending`) or an instruction that sets
@@ -110,6 +111,22 @@ const PIT_CLOCKS_PER_INSTRUCTION: u64 = 4;
 /// stall the excess is dropped rather than replayed as a burst of ticks.
 const PIT_MAX_DEBT: u64 = PIT_CLOCK_HZ / 4;
 
+/// Where the guest's time went since power-on, in clocks of the 8253's
+/// input (`pit::INPUT_HZ`): handed over, owed, or dropped. A copy: holding
+/// one changes nothing in the machine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuestTime {
+    /// Clocks handed to the 8253: the time that has passed for the guest.
+    pub delivered: u64,
+    /// Of those, the clocks handed over while the CPU was halted.
+    pub halted: u64,
+    /// Clocks owed for host time that has passed, not handed over yet.
+    pub owed: u64,
+    /// Clocks the guest will never be handed: host time it was told of
+    /// beyond what it can be owed.
+    pub dropped: u64,
+}
+
 pub struct Runtime {
     /// The CPU state. The app reads it (the frame is drawn from
     /// `cpu.memory`); whoever writes to it keeps the rule of `vm`: the
@@ -134,6 +151,11 @@ pub struct Runtime {
     /// Timer clocks delivered to the 8253 so far; the VGA derives its
     /// retrace timing from this count.
     video_clock: Rc<Cell<u64>>,
+    /// Of the clocks delivered, those delivered while the CPU was halted.
+    halted_clocks: u64,
+    /// Timer clocks the machine was told of and never owed: what a credit
+    /// put over `PIT_MAX_DEBT`, and what was over a second in one credit.
+    dropped_clocks: u64,
 }
 
 impl Runtime {
@@ -164,6 +186,8 @@ impl Runtime {
             pit_debt: 0,
             pit_frac: 0,
             video_clock: Rc::new(Cell::new(0)),
+            halted_clocks: 0,
+            dropped_clocks: 0,
         }
     }
 
@@ -244,6 +268,8 @@ impl Runtime {
             pit_debt: 0,
             pit_frac: 0,
             video_clock,
+            halted_clocks: 0,
+            dropped_clocks: 0,
         }
     }
 
@@ -397,15 +423,36 @@ impl Runtime {
         self.debug_console.as_ref().map(|console| console.borrow())
     }
 
+    /// Where the guest's time went since power-on (`GuestTime`). An account
+    /// the machine keeps for whoever measures it: reading it changes
+    /// nothing in the guest.
+    pub fn guest_time(&self) -> GuestTime {
+        GuestTime {
+            delivered: self.video_clock.get(),
+            halted: self.halted_clocks,
+            owed: self.pit_debt,
+            dropped: self.dropped_clocks,
+        }
+    }
+
     /// Tells the machine that `nanos` of host time have passed (at most one
     /// second per call; what is more is dropped). The time becomes timer
     /// clocks owed to the 8253, which `run` hands over as the guest
     /// executes: this is the only way time passes for the guest. The
     /// sub-clock remainder is carried over, so no time is lost to rounding
-    /// however often this is called.
+    /// however often this is called. What is dropped, here or at the cap on
+    /// the debt, is counted (`GuestTime::dropped`).
     pub fn credit_pit_time(&mut self, nanos: u64) {
-        self.pit_frac += nanos.min(NANOS_PER_SEC) * PIT_CLOCK_HZ;
-        self.pit_debt = (self.pit_debt + self.pit_frac / NANOS_PER_SEC).min(PIT_MAX_DEBT);
+        let credited = nanos.min(NANOS_PER_SEC);
+        if credited < nanos {
+            self.dropped_clocks = self
+                .dropped_clocks
+                .saturating_add(clocks_in(nanos - credited));
+        }
+        self.pit_frac += credited * PIT_CLOCK_HZ;
+        let owed = self.pit_debt + self.pit_frac / NANOS_PER_SEC;
+        self.pit_debt = owed.min(PIT_MAX_DEBT);
+        self.dropped_clocks = self.dropped_clocks.saturating_add(owed - self.pit_debt);
         self.pit_frac %= NANOS_PER_SEC;
     }
 
@@ -425,6 +472,9 @@ impl Runtime {
             self.pit_debt -= advance.clocks as u64;
             self.video_clock
                 .set(self.video_clock.get() + advance.clocks as u64);
+            if self.cpu.halted {
+                self.halted_clocks += advance.clocks as u64;
+            }
             if advance.ch0_rising_edge {
                 self.cpu.pic.request_interrupt(0);
             }
@@ -510,6 +560,12 @@ impl Runtime {
             &mut self.cpu.registers.ds
         }
     }
+}
+
+/// The timer clocks `nanos` of host time come to, rounded down.
+fn clocks_in(nanos: u64) -> u64 {
+    let clocks = u128::from(nanos) * u128::from(PIT_CLOCK_HZ) / u128::from(NANOS_PER_SEC);
+    u64::try_from(clocks).unwrap_or(u64::MAX)
 }
 
 #[inline(always)]

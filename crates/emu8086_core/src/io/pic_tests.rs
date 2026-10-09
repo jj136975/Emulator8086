@@ -278,6 +278,34 @@ fn icw1_leaves_special_mask_mode() {
     assert!(!rt.cpu.pic.has_interrupt());
 }
 
+/// The controller tallies the interrupts it acknowledges, line by line:
+/// those the CPU takes and those a poll read takes into service. A spurious
+/// acknowledge counts on no line, and a new initialisation keeps the tally:
+/// it is the emulator's, not a register the guest can clear.
+#[test]
+fn each_acknowledge_is_counted_on_its_line() {
+    let (mut rt, mut dev) = initialized();
+    assert_eq!(rt.cpu.pic.acknowledged(), [0; 8]);
+    for _ in 0..2 {
+        rt.cpu.pic.request_interrupt(0);
+        assert_eq!(rt.cpu.pic.acknowledge(), 0x08);
+        dev.port_out_byte(0x20, 0x20, &mut rt.cpu); // EOI
+    }
+    rt.cpu.pic.request_interrupt(3);
+    dev.port_out_byte(0x20, 0x0C, &mut rt.cpu); // OCW3: poll
+    assert_eq!(dev.port_in_byte(0x20, &mut rt.cpu), 0x83);
+    dev.port_out_byte(0x20, 0x20, &mut rt.cpu);
+    assert_eq!(rt.cpu.pic.acknowledged(), [2, 0, 0, 1, 0, 0, 0, 0]);
+
+    assert_eq!(rt.cpu.pic.acknowledge(), 0x0F, "nothing was requested");
+    assert_eq!(rt.cpu.pic.acknowledged(), [2, 0, 0, 1, 0, 0, 0, 0]);
+
+    for (port, value) in [(0x20, 0x13), (0x21, 0x08), (0x21, 0x01)] {
+        dev.port_out_byte(port, value, &mut rt.cpu);
+    }
+    assert_eq!(rt.cpu.pic.acknowledged(), [2, 0, 0, 1, 0, 0, 0, 0]);
+}
+
 /// The view names what each initialisation word set, as the BIOS programs
 /// the controller (ICW1 11h, ICW2 08h, ICW3 04h, ICW4 01h, then the mask
 /// FCh), and says which word a sequence still waits for.

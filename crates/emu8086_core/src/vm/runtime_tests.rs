@@ -144,3 +144,69 @@ fn timer_debt_is_capped_after_a_long_stall() {
     }
     assert_eq!(rt.pit_debt, PIT_MAX_DEBT);
 }
+
+/// Host time the guest cannot be owed is counted as it is dropped: what a
+/// credit puts over the cap on the debt, and in a credit of more than a
+/// second, what is over the second. A credit under the cap drops nothing.
+#[test]
+fn the_time_dropped_at_the_cap_is_counted() {
+    let mut rt = Runtime::new_test();
+    rt.credit_pit_time(NANOS_PER_SEC / 10); // 100 ms: 119,318.2 clocks
+    assert_eq!(
+        rt.guest_time(),
+        GuestTime {
+            owed: 119_318,
+            ..GuestTime::default()
+        }
+    );
+
+    // 200 ms more, 238,636.4 clocks, with the 0.2 carried over: 357,954
+    // owed, 59,659 of them over the cap.
+    rt.credit_pit_time(NANOS_PER_SEC / 5);
+    let time = rt.guest_time();
+    assert_eq!(
+        (time.owed, time.dropped),
+        (PIT_MAX_DEBT, 357_954 - PIT_MAX_DEBT)
+    );
+
+    // Five seconds at once: the four over a second, and the one second
+    // left, since the debt is at its cap already.
+    rt.credit_pit_time(5 * NANOS_PER_SEC);
+    let time = rt.guest_time();
+    assert_eq!(time.owed, PIT_MAX_DEBT);
+    assert_eq!(time.dropped, 59_659 + 4 * PIT_CLOCK_HZ + PIT_CLOCK_HZ);
+
+    // However long the stall, the count does not overflow.
+    rt.credit_pit_time(u64::MAX);
+    assert!(rt.guest_time().dropped > time.dropped);
+}
+
+/// The clocks handed to the 8253 are accounted for as they go, and apart,
+/// those handed over while the CPU is halted: the guest's time in HLT. A
+/// busy guest's time is never halted, a halted guest's is all halted.
+#[test]
+fn the_time_a_halted_guest_is_handed_is_counted_apart() {
+    let mut rt = spinning_guest();
+    rt.credit_pit_time(1_000_000); // 1 ms: 1,193.182 clocks
+    rt.run(100_000);
+    assert_eq!(
+        rt.guest_time(),
+        GuestTime {
+            delivered: 1_193,
+            ..GuestTime::default()
+        }
+    );
+
+    // Interrupts are off on this machine: nothing wakes the CPU.
+    rt.cpu.halted = true;
+    rt.credit_pit_time(2_000_000); // 2,386.364 clocks, and the 0.182 carried
+    rt.run(1);
+    assert_eq!(
+        rt.guest_time(),
+        GuestTime {
+            delivered: 1_193 + 2_386,
+            halted: 2_386,
+            ..GuestTime::default()
+        }
+    );
+}
