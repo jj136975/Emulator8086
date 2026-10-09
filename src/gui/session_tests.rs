@@ -277,6 +277,27 @@ fn a_hidden_overlay_runs_no_pass() {
     assert!(session.frame(|| input(1.0, Vec::new())));
 }
 
+/// Each frame tells the meter of its slice and of what the machine counted
+/// after it, whether the overlay shows anything or not: the meter keeps the
+/// session's own machine, from the first frame on.
+#[test]
+fn each_frame_tells_the_meter_what_the_machine_counted() {
+    let (mut session, _sent) = session_with(&BUSY_ROM);
+    assert_eq!(session.meter.counts(), None);
+    session.overlay_key(ElementState::Pressed, false);
+    session.overlay_key(ElementState::Pressed, false);
+    assert!(!session.overlay.draws(), "nothing to show");
+
+    session.frame(|| panic!("no input is gathered for an overlay that shows nothing"));
+    session.frame(|| panic!("no input is gathered for an overlay that shows nothing"));
+    assert_eq!(
+        session.meter.counts(),
+        Some(&Counts::read(&session.runtime))
+    );
+    assert!(session.meter.counts().unwrap().instructions > 0);
+    assert!(session.meter.uptime() >= 2 * CPU_SLICE, "two slices long");
+}
+
 /// A machine on which the BIOS found no disk to boot and waits for a key
 /// in HLT, with interrupts on. It gets there without any time passing.
 fn idling_in_the_bios() -> (Driver<Session>, Receiver<EmulatorEvent>) {

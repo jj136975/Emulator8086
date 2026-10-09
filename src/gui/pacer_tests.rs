@@ -136,6 +136,46 @@ fn a_paused_guest_does_not_run_and_its_slice_still_lasts() {
     assert!(rt.instruction_count > 0, "it runs again");
 }
 
+/// A slice says what it did with its time. A busy guest's slice runs it
+/// from its first sample to its last and lets nothing go by; a halted
+/// guest's is waited out but for the looks at the guest between the waits.
+/// Each slice begins after the one before it ended.
+#[test]
+fn a_slice_says_how_much_of_its_time_it_let_go_by() {
+    let slice = Duration::from_millis(30);
+    let mut rt = machine(&reset_code(&[0xEB, 0xFE])); // JMP $
+    let mut pacer = Pacer::new();
+    let busy = pacer.run_slice(&mut rt, slice);
+    assert!(busy.end.duration_since(busy.start) >= slice);
+    assert_eq!(busy.waited, Duration::ZERO);
+    assert!(!busy.paused);
+
+    rt.cpu.halted = true; // interrupts are off after a reset: nothing can wake it
+    let idle = pacer.run_slice(&mut rt, slice);
+    assert!(idle.start >= busy.end);
+    let length = idle.end.duration_since(idle.start);
+    assert!(length >= slice);
+    assert!(
+        idle.waited <= length && idle.waited >= length * 9 / 10,
+        "{:?} of {length:?} waited",
+        idle.waited
+    );
+}
+
+/// A paused guest's slice is all waited, and says that the guest was
+/// paused.
+#[test]
+fn a_paused_guests_slice_is_all_waited() {
+    let mut rt = machine(&reset_code(&[0xEB, 0xFE])); // JMP $
+    let mut pacer = Pacer::new();
+    pacer.set_paused(true);
+    let slice = Duration::from_millis(20);
+    let paused = pacer.run_slice(&mut rt, slice);
+    assert!(paused.paused);
+    assert_eq!(paused.waited, paused.end.duration_since(paused.start));
+    assert!(paused.waited >= slice);
+}
+
 /// The time a guest stood paused is not credited to it when it runs again:
 /// its timer does not tick while it is paused, and afterwards goes on at
 /// its own rate, without the burst of ticks the pause would be worth.
@@ -203,6 +243,18 @@ fn a_halted_guests_slice_ends_at_once_on_a_host_that_cannot_wait() {
         "the slice ended"
     );
     assert_eq!(rt.instruction_count, 0);
+}
+
+/// Nothing of such a slice is let go by: it ends instead, and says that it
+/// waited nothing.
+#[test]
+fn a_halted_guests_slice_waits_nothing_on_a_host_that_cannot_wait() {
+    let mut rt = machine(&reset_code(&[]));
+    rt.cpu.halted = true; // interrupts are off after a reset: nothing can wake it
+
+    let idle = Pacer::waiting_with(cannot_wait).run_slice(&mut rt, Duration::from_secs(5));
+    assert_eq!(idle.waited, Duration::ZERO);
+    assert!(!idle.paused);
 }
 
 /// So does the slice of a paused guest, which is not run.

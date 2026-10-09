@@ -1,8 +1,8 @@
 //! A session of the emulator: the machine, the pacer that feeds it time,
-//! the guest's keyboard and the overlay. It is all of the app that needs no
-//! window: the window (`gui`) gathers the input and draws, and what the
-//! input means is decided here: whose a key is, and what a command of the
-//! overlay does to the machine.
+//! the meter that measures it, the guest's keyboard and the overlay. It is
+//! all of the app that needs no window: the window (`gui`) gathers the
+//! input and draws, and what the input means is decided here: whose a key
+//! is, and what a command of the overlay does to the machine.
 //!
 //! The invariant: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -21,6 +21,7 @@ use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
 
 use super::keys::GuestKeys;
+use super::meter::{Counts, Meter};
 use super::overlay::{Command, Overlay};
 use super::pacer::Pacer;
 use crate::platform;
@@ -36,6 +37,8 @@ const VGA_DUMP_FILE: &str = "vga_dump.txt";
 pub struct Session {
     pub runtime: Runtime,
     pacer: Pacer,
+    /// What the frames measured of the emulation, which the overlay shows.
+    meter: Meter,
     keys: GuestKeys,
     pub overlay: Overlay,
     /// Where `Command::DumpVga` puts the dump.
@@ -48,6 +51,7 @@ impl Session {
         Self {
             runtime,
             pacer: Pacer::new(),
+            meter: Meter::default(),
             keys: GuestKeys::new(kbd_tx),
             overlay: Overlay::new(),
             dump_file: PathBuf::from(VGA_DUMP_FILE),
@@ -102,11 +106,13 @@ impl Session {
     }
 
     /// One frame: a slice of the guest's time, which a paused guest lets go
-    /// by, then a pass of the overlay if it has anything to show. `input`
-    /// is asked for only then. Returns whether there was a pass: something
-    /// to paint, and wishes of egui for the window to heed.
+    /// by, and the meter told of it whether the overlay is shown or not;
+    /// then a pass of the overlay if it has anything to show. `input` is
+    /// asked for only then. Returns whether there was a pass: something to
+    /// paint, and wishes of egui for the window to heed.
     pub fn frame(&mut self, input: impl FnOnce() -> egui::RawInput) -> bool {
-        self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
+        let slice = self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
+        self.meter.frame(slice, Counts::read(&self.runtime));
         let draws = self.overlay.draws();
         if draws {
             self.run_overlay(input());
@@ -119,7 +125,10 @@ impl Session {
     /// if the pass took it.
     fn run_overlay(&mut self, input: egui::RawInput) {
         let paused = self.pacer.paused();
-        for command in self.overlay.run(input, &mut self.runtime, paused) {
+        for command in self
+            .overlay
+            .run(input, &mut self.runtime, paused, &self.meter)
+        {
             self.execute(command);
         }
         self.yield_keyboard();

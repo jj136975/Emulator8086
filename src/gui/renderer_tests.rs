@@ -12,6 +12,7 @@ use std::cell::Ref;
 use std::time::Duration;
 
 use super::*;
+use crate::gui::meter::Meter;
 use crate::gui::overlay::testing::{SCREEN, input};
 use crate::wall_clock::HostClock;
 use emu8086_core::io::keyboard::KeyboardController;
@@ -551,8 +552,9 @@ fn overlay_lies_over_the_picture(gpu: Option<(wgpu::Device, wgpu::Queue)>) {
 
         // A pass of the overlay at input time `time`, with no events, over
         // the machine whose picture this is, running.
+        let meter = Meter::default();
         let mut run = |overlay: &mut Overlay, time: f64| {
-            overlay.run(input(time, Vec::new()), &mut rt, false);
+            overlay.run(input(time, Vec::new()), &mut rt, false, &meter);
         };
 
         // The first seconds: the hint, in the bottom left corner. It is

@@ -42,13 +42,15 @@ The app, in `src/`:
 | `platform/tests.rs` | the rule of `platform` as a test: a sweep of the app's sources |
 | `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, as `platform::fat_options` carries it |
 | `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw |
-| `gui/session.rs` | `Session`: the machine, the pacer, the guest's keyboard and the overlay, without a window. Decides whose a key is, and carries out the overlay's `Command`s on the machine |
-| `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause |
+| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard and the overlay, without a window. Decides whose a key is, and carries out the overlay's `Command`s on the machine |
+| `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause; what each slice did with its time (`Slice`) |
+| `gui/meter.rs` | measuring the emulation: `Meter`, told of each frame by the session (the pacer's `Slice`, the machine's `Counts`), averages over about a second the guest's speed (with the last minute of it), the frames and how their host time divides, the guest's time (its clock, the time owed and dropped, the share spent halted) and the interrupts per line. It reads no clock |
 | `gui/renderer.rs` | wgpu: `FrameBlit` (frame texture and blit pipeline), `OverlayPass` (egui's meshes), `record_frame` (both in one render pass, no surface needed) and `Renderer` (the window's surface) |
 | `gui/keys.rs` | physical key to XT scancode; `GuestKeys` sends the codes and remembers which keys the guest holds |
 | `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on |
 | `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
 | `gui/overlay/about.rs` | the About panel; every panel has a file like it |
+| `gui/overlay/stats.rs` | the Stats panel: whether the guest keeps up with real time and where the host's time goes, from the `Meter` the shell is lent (`Cx::meter`); the chart of the last minute, drawn with egui's painter |
 | `gui/overlay/memory.rs` | the Memory panel: a hex view of guest memory, the address field (`parse_address`), the jumps to where the register pairs point and to the landmarks of the first megabyte |
 | `gui/overlay/pic.rs`, `pit.rs`, `vga.rs`, `keyboard.rs`, `debug_port.rs` | the device panels: the 8259A, the 8253, the VGA and its DAC, the 8255's keyboard interface, the port E9h log |
 | `gui/overlay/messages.rs` | where a tool says what it did or why it failed |
@@ -118,6 +120,17 @@ box is never replaced).
   slice like any other. The window's cursor blink is the one thing drawn on
   host time, and the overlay's only time is that of egui's input. A test
   states the time: `credit_pit_time`, then `step_frame`.
+- **A measurement of the emulation**: `Meter` (`src/gui/meter.rs`). The
+  session tells it of every frame, shown or hidden, after the slice: the
+  pacer's `Slice` (when it began and ended, what it waited) and `Counts`,
+  what the machine counted since power-on (`instruction_count`,
+  `Pic::acknowledged`, `Runtime::guest_time`, channel 0's period). The meter
+  reads no clock: a test tells it a history by hand. A figure is a ratio of
+  two counts over the same span, the frames' over a second of host time,
+  the guest's over a second of its running (a paused guest has none). What
+  a measurement needs of the machine is a read-only count there, never a
+  read on the hot path beyond an increment; the Stats panel shows only
+  what the meter averaged.
 - **The wall clock**: `io::disk::WallClock`, an argument of whatever formats
   a disk or copies a file onto one. The app passes `HostClock`
   (`src/wall_clock.rs`), a test `FixedClock`. How a host tells its local

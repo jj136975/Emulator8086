@@ -16,6 +16,7 @@ use egui::accesskit::{Node, Role, Toggled};
 use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
 
 use super::{Command, Overlay};
+use crate::gui::meter::Meter;
 use crate::wall_clock::HostClock;
 use emu8086_core::BIOS_ROM;
 use emu8086_core::io::keyboard::{EmulatorEvent, KeyboardController};
@@ -253,11 +254,12 @@ impl<T: Passes> Driver<T> {
 
 /// The shell by itself, lent a machine: what the tests of the shell and of
 /// its panels drive. Nobody carries out the commands its passes ask for:
-/// `paused` is what the test says.
+/// `paused` is what the test says, and so is `meter`, which no frame feeds.
 pub struct Shell {
     pub overlay: Overlay,
     pub runtime: Runtime,
     pub paused: bool,
+    pub meter: Meter,
     pub commands: Vec<Command>,
 }
 
@@ -268,6 +270,7 @@ impl Shell {
             overlay: Overlay::new(),
             runtime,
             paused: false,
+            meter: Meter::default(),
             commands: Vec::new(),
         }
     }
@@ -290,7 +293,9 @@ impl Passes for Shell {
     }
 
     fn pass(&mut self, input: RawInput) -> egui::PlatformOutput {
-        let commands = self.overlay.run(input, &mut self.runtime, self.paused);
+        let commands = self
+            .overlay
+            .run(input, &mut self.runtime, self.paused, &self.meter);
         self.commands.extend(commands);
         self.overlay.take_platform_output()
     }

@@ -2,17 +2,17 @@
 //! file is the shell: whether the overlay is shown, the hint of the first
 //! seconds, the menu bar, the windows of the panels and the messages.
 //! `panels` is THE panel table, with a file per panel beside it (`about`,
-//! `memory`, and one per device: `pic`, `pit`, `vga`, `keyboard`,
+//! `stats`, `memory`, and one per device: `pic`, `pit`, `vga`, `keyboard`,
 //! `debug_port`); `messages` is where a tool says what it did; `theme` is
 //! the look.
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
 //! called (`platform::OVERLAY_SWITCH`). The window gathers egui's input and
-//! calls `run`, which is lent the machine for the length of the pass and
-//! returns what the user asked the app to do (`Command`); the renderer takes
-//! what to draw (`take_paint`). The only time there is, is the time of that
-//! input.
+//! calls `run`, which is lent the machine and what the app measured of it
+//! (`gui::meter`) for the length of the pass and returns what the user
+//! asked the app to do (`Command`); the renderer takes what to draw
+//! (`take_paint`). The only time there is, is the time of that input.
 //!
 //! The invariant: a hidden overlay costs nothing. `draws` says whether there
 //! is anything to show; while it says no, the window runs no pass and the
@@ -27,6 +27,7 @@ mod messages;
 mod panels;
 mod pic;
 mod pit;
+mod stats;
 pub mod theme;
 mod vga;
 
@@ -35,6 +36,7 @@ pub use panels::Panel;
 
 use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Vec2, Window, vec2};
 
+use super::meter::Meter;
 use crate::platform::OVERLAY_SWITCH;
 use emu8086_core::vm::runtime::Runtime;
 use theme::{METRICS, PALETTE};
@@ -72,6 +74,8 @@ pub struct Cx<'a> {
     pub runtime: &'a mut Runtime,
     /// Whether the app is holding the guest still.
     pub paused: bool,
+    /// What the app measured of the emulation, frame by frame.
+    pub meter: &'a Meter,
     /// What the app is asked to do once the pass is over.
     pub commands: &'a mut Vec<Command>,
     /// Where to say what was done, or why it could not be.
@@ -182,20 +186,24 @@ impl Overlay {
     }
 
     /// Runs one pass over `input`, on the machine as it is: `paused` says
-    /// whether the app is holding the guest still. Returns what the user
-    /// asked the app to do, in the order asked.
+    /// whether the app is holding the guest still, `meter` what it measured
+    /// of the emulation. Returns what the user asked the app to do, in the
+    /// order asked.
     pub fn run(
         &mut self,
         input: egui::RawInput,
         runtime: &mut Runtime,
         paused: bool,
+        meter: &Meter,
     ) -> Vec<Command> {
         // egui may run the UI twice for one frame, to lay out what it
         // shows for the first time: the commands of both runs count, and a
         // click is in only one of them.
         let mut commands = Vec::new();
         let ctx = self.ctx.clone();
-        let output = ctx.run_ui(input, |ui| self.ui(ui, runtime, paused, &mut commands));
+        let output = ctx.run_ui(input, |ui| {
+            self.ui(ui, runtime, paused, meter, &mut commands)
+        });
         self.shapes = output.shapes;
         self.pixels_per_point = output.pixels_per_point;
         self.textures.append(output.textures_delta);
@@ -225,6 +233,7 @@ impl Overlay {
         ui: &mut egui::Ui,
         runtime: &mut Runtime,
         paused: bool,
+        meter: &Meter,
         commands: &mut Vec<Command>,
     ) {
         let now = ui.ctx().input(|input| input.time);
@@ -246,6 +255,7 @@ impl Overlay {
         let mut cx = Cx {
             runtime,
             paused,
+            meter,
             commands,
             messages: &mut self.messages,
         };

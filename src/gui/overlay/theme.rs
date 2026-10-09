@@ -48,6 +48,17 @@ pub struct Palette {
     pub off: Color32,
     /// A line held back whatever it asks: an interrupt that is masked.
     pub masked: Color32,
+    /// The line of a chart over time, such as the guest's speed over the
+    /// last minute. The chart lies in the colour of a well.
+    pub chart_line: Color32,
+    /// Under the line of a chart, down to its foot.
+    pub chart_fill: Color32,
+    /// The part of a frame's host time spent running the guest,
+    pub frame_running: Color32,
+    /// the part let go by while the guest was halted or paused,
+    pub frame_idle: Color32,
+    /// and the rest: the overlay, the drawing, the display.
+    pub frame_rest: Color32,
 }
 
 /// The sizes of the overlay, in points.
@@ -82,6 +93,12 @@ pub struct Metrics {
     /// window of the panel before it: enough to leave that one's title bar
     /// in view.
     pub cascade: f32,
+    /// Size of a chart over time, such as the guest's speed over the last
+    /// minute.
+    pub chart: Vec2,
+    /// Height of a bar that divides a span into its parts, such as a
+    /// frame's host time. It is as wide as a chart.
+    pub bar: f32,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -102,6 +119,11 @@ pub const PALETTE: Palette = Palette {
     on: Color32::from_rgb(112, 204, 132),
     off: Color32::from_rgb(104, 110, 124),
     masked: Color32::from_rgb(196, 136, 96),
+    chart_line: Color32::from_rgb(110, 196, 236),
+    chart_fill: Color32::from_rgba_unmultiplied_const(110, 196, 236, 64),
+    frame_running: Color32::from_rgb(88, 156, 236),
+    frame_idle: Color32::from_rgb(76, 84, 102),
+    frame_rest: Color32::from_rgb(172, 132, 216),
 };
 
 pub const METRICS: Metrics = Metrics {
@@ -118,6 +140,8 @@ pub const METRICS: Metrics = Metrics {
     shadow_blur: 12,
     swatch: 8.0,
     cascade: 24.0,
+    chart: vec2(180.0, 36.0),
+    bar: 10.0,
 };
 
 /// Puts the theme on `ctx`. egui keeps one style for a dark host and one

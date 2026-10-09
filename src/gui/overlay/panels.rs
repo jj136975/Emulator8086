@@ -24,12 +24,13 @@
 //! compile until a new one is named there:
 //! `every_panel_has_a_title_a_checkbox_and_a_window`.
 
-use super::{Cx, about, debug_port, keyboard, memory, pic, pit, vga};
+use super::{Cx, about, debug_port, keyboard, memory, pic, pit, stats, vga};
 
 /// The panels of the overlay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
     About,
+    Stats,
     Memory,
     Interrupts,
     Timer,
@@ -40,8 +41,9 @@ pub enum Panel {
 
 impl Panel {
     /// Every panel, in the order of the View menu.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::About,
+        Self::Stats,
         Self::Memory,
         Self::Interrupts,
         Self::Timer,
@@ -56,6 +58,7 @@ impl Panel {
     pub fn title(self) -> &'static str {
         match self {
             Self::About => "About",
+            Self::Stats => "Stats",
             Self::Memory => "Memory",
             Self::Interrupts => "Interrupts (8259A)",
             Self::Timer => "Timer (8253)",
@@ -69,6 +72,7 @@ impl Panel {
     pub(super) fn body(self, ui: &mut egui::Ui, cx: &mut Cx<'_>) {
         match self {
             Self::About => about::body(ui, cx),
+            Self::Stats => stats::body(ui, cx),
             Self::Memory => memory::body(ui, cx),
             Self::Interrupts => pic::body(ui, cx),
             Self::Timer => pit::body(ui, cx),

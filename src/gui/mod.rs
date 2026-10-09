@@ -1,8 +1,8 @@
 //! The window: a winit application around a `Session`, which is the
-//! machine, its pacer, the guest's keyboard and the overlay. This file is
-//! the glue that needs the window: it hands the window's events to egui and
-//! to the session, and each redraw runs a frame of the session and draws it
-//! (`renderer`): the emulator's picture, and over it the overlay.
+//! machine, its pacer and meter, the guest's keyboard and the overlay. This
+//! file is the glue that needs the window: it hands the window's events to
+//! egui and to the session, and each redraw runs a frame of the session and
+//! draws it (`renderer`): the emulator's picture, and over it the overlay.
 //!
 //! The invariants:
 //!
@@ -27,6 +27,7 @@
 //!   dropped on the spot.
 
 mod keys;
+mod meter;
 mod overlay;
 mod pacer;
 mod renderer;

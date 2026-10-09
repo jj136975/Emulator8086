@@ -3,7 +3,8 @@
 //! time has passed since it last looked (`Runtime::credit_pit_time`) and
 //! lets the guest run a few instructions (`Runtime::run`), over and over
 //! until a slice of host time is used up. A paused guest is not run: its
-//! slices go by without it.
+//! slices go by without it. Each slice says what it did with its time
+//! (`Slice`), for whoever measures the emulation (`gui::meter`).
 //!
 //! The invariant: the guest's time is the host's, less the time it stood
 //! paused. All the time the machine is credited with was measured here
@@ -31,6 +32,26 @@ const IDLE_POLL: Duration = Duration::from_millis(1);
 /// How a pacer lets host time go by: `platform::wait`, or what a test puts
 /// in its place. `false` says the host cannot wait.
 type Wait = fn(Duration) -> bool;
+
+/// What a slice did with its host time: when it began and ended, and how
+/// much of it was let go by without running the guest. From the end of one
+/// slice to the end of the next is all the time the second one credited.
+#[derive(Clone, Copy, Debug)]
+pub struct Slice {
+    /// When the slice began: its first sample of the clock, which credited
+    /// the time since the slice before. A paused slice samples nothing: it
+    /// began when it was called.
+    pub start: Instant,
+    /// Its last sample: the next slice credits the time from there.
+    pub end: Instant,
+    /// Of the time from `start` to `end`, what was let go by without
+    /// running the guest: the waits for a halted guest, or the whole slice
+    /// of a paused one.
+    pub waited: Duration,
+    /// The guest was paused: the slice did not run it, and the time since
+    /// the slice before was credited to nobody.
+    pub paused: bool,
+}
 
 /// Measures host time and feeds it to the machine it paces.
 pub struct Pacer {
@@ -91,31 +112,52 @@ impl Pacer {
     /// at once, and it is for the caller to come back, as a browser does
     /// with its next frame. A halted guest is then looked at once per
     /// slice.
-    pub fn run_slice(&mut self, runtime: &mut Runtime, slice: Duration) {
+    pub fn run_slice(&mut self, runtime: &mut Runtime, slice: Duration) -> Slice {
         if self.paused {
+            let start = Instant::now();
             (self.wait)(slice);
             self.last_sample = Instant::now();
-            return;
+            return Slice {
+                start,
+                end: self.last_sample,
+                waited: self.last_sample.duration_since(start),
+                paused: true,
+            };
         }
 
-        let mut now = self.sample(runtime);
-        let deadline = now + slice;
+        let start = self.sample(runtime);
+        let deadline = start + slice;
+        let mut now = start;
+        let mut waited = Duration::ZERO;
         while now < deadline {
             let executed = runtime.instruction_count;
             runtime.run(CLOCK_SAMPLE_INTERVAL);
             // A guest that halts gets the time that has passed at once: the
             // next sample follows without a wait. One that was halted all
             // through a look has had all the time there is, and waits.
-            if runtime.cpu.halted
-                && runtime.instruction_count == executed
-                && !(self.wait)(IDLE_POLL.min(deadline - now))
-            {
+            let idle = runtime.cpu.halted && runtime.instruction_count == executed;
+            if idle && !(self.wait)(IDLE_POLL.min(deadline - now)) {
                 // Sampling again on the spot would spin until the deadline.
                 // The time from the last sample on is not lost: the next
                 // slice credits it.
-                return;
+                return Slice {
+                    start,
+                    end: now,
+                    waited,
+                    paused: false,
+                };
             }
+            let looked = now;
             now = self.sample(runtime);
+            if idle {
+                waited += now.duration_since(looked);
+            }
+        }
+        Slice {
+            start,
+            end: now,
+            waited,
+            paused: false,
         }
     }
 }

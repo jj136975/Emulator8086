@@ -15,7 +15,7 @@ use super::theme::PALETTE;
 
 /// What the PC/XT wires to each line, IRQ0 to IRQ7, as its technical
 /// reference lists them.
-const DEVICES: [&str; 8] = [
+pub(super) const DEVICES: [&str; 8] = [
     "timer",
     "keyboard",
     "reserved",
