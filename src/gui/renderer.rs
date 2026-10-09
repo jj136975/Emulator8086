@@ -5,7 +5,8 @@
 //! target black; `OverlayPass` is the overlay, egui's meshes over the
 //! picture. `record_frame` puts both into one render pass, the picture
 //! first. `Renderer` holds the wgpu surface on the winit window and records
-//! one such frame into it per redraw.
+//! one such frame into it per redraw; each redraw reports how long the
+//! surface kept it waiting for that frame, apart from its drawing (`Drawn`).
 //!
 //! The invariants: the frame holds display-encoded DAC colours that must
 //! reach the screen unchanged, so the texture's encoding follows the
@@ -15,6 +16,7 @@
 //! egui's renderer is not touched.
 
 use std::sync::Arc;
+use std::time::Duration;
 use wgpu::util::DeviceExt;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
@@ -630,6 +632,15 @@ fn window_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
         .unwrap_or(formats[0])
 }
 
+/// What one `Renderer::render` took: the time the surface kept it waiting
+/// for a frame to draw on, and the drawing after that, presenting the frame
+/// included.
+#[derive(Clone, Copy, Debug)]
+pub struct Drawn {
+    pub waited: Duration,
+    pub drawing: Duration,
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -744,9 +755,36 @@ impl Renderer {
     /// over it, what the last pass of `overlay` left to paint, if an overlay
     /// is given. Its paint is taken only once there is a frame to draw on:
     /// the texture changes it carries come once and are kept in the overlay
-    /// until then.
-    pub fn render(&mut self, vga: &VgaDevice, memory: &Memory, overlay: Option<&mut Overlay>) {
-        let output = match self.surface.get_current_texture() {
+    /// until then. Returns how long the surface kept it waiting for that
+    /// frame, and how long the rest took.
+    pub fn render(
+        &mut self,
+        vga: &VgaDevice,
+        memory: &Memory,
+        overlay: Option<&mut Overlay>,
+    ) -> Drawn {
+        let asked = Instant::now();
+        let current = self.surface.get_current_texture();
+        let waited = asked.elapsed();
+        let drawing = Instant::now();
+        self.draw_on(current, vga, memory, overlay);
+        Drawn {
+            waited,
+            drawing: drawing.elapsed(),
+        }
+    }
+
+    /// Draws on the frame `current` gave the surface, if it gave one: a lost
+    /// surface is configured again for the next frame, and a hidden window
+    /// has nothing to draw on.
+    fn draw_on(
+        &mut self,
+        current: wgpu::CurrentSurfaceTexture,
+        vga: &VgaDevice,
+        memory: &Memory,
+        overlay: Option<&mut Overlay>,
+    ) {
+        let output = match current {
             // A suboptimal frame is drawn all the same: the resize that
             // made it so configures the surface again.
             wgpu::CurrentSurfaceTexture::Success(frame)

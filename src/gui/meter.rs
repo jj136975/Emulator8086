@@ -3,22 +3,28 @@
 //! the guest's time keeps up with the host's. `Meter` is told of each frame
 //! once its slice is over (`Session::frame`): what the pacer did with the
 //! slice's host time (`pacer::Slice`), and what the machine has counted
-//! since power-on (`Counts`). It reads no clock and holds no machine: what
-//! it shows is made of what it is told, so a test tells it a history by
-//! hand, instant by instant.
+//! since power-on (`Counts`). It is told too of what the frame spent outside
+//! its slice: the overlay's pass (`overlay_pass`), and the window's drawing
+//! and its wait for the display (`drawn`, the renderer's `Drawn`). It reads
+//! no clock and holds no machine: what it shows is made of what it is told,
+//! so a test tells it a history by hand, instant by instant.
 //!
 //! A frame is the host time from the end of one slice to the end of the
-//! next: whatever came between the two (the overlay, the drawing, the
-//! display), then the slice. The figures are averages over about a second:
-//! the frames until the first that ends a second after the last average,
-//! and the guest's seconds of running. A paused guest runs nothing and is
-//! owed nothing: the frames it stands paused are measured as frames, and
-//! are no part of its seconds.
+//! next: whatever came between the two (the overlay, the drawing, the wait
+//! for the display), then the slice. What is told after a slice is part of
+//! the frame that the next slice ends, and it is kept until then. The
+//! figures are averages over about a second: the frames until the first
+//! that ends a second after the last average, and the guest's seconds of
+//! running. A paused guest runs nothing and is owed nothing: the frames it
+//! stands paused are measured as frames, and are no part of its seconds.
 //!
 //! The invariant: a figure is the ratio of two counts over the same span.
 //! The counts are read after a slice and a frame ends with its slice, so
 //! what a slice did and the host time it was credited for fall into the
-//! same second.
+//! same second. The parts of a frame do not overlap: its slice, the overlay's
+//! pass and the window's drawing and wait are spans of the host clock within
+//! the frame. So they add up to no more than its time, and the waiting for
+//! the display is what the rest of the frame leaves.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -27,6 +33,7 @@ use emu8086_core::io::pit::{INPUT_HZ, PitChannelView};
 use emu8086_core::vm::runtime::{GuestTime, Runtime};
 
 use super::pacer::Slice;
+use super::renderer::Drawn;
 use crate::platform::Instant;
 
 /// The span of an average, at the least: it covers the frames until the
@@ -93,18 +100,27 @@ pub struct Frames {
     /// Of their time, what their slices spent running the guest,
     pub running: Duration,
     /// and what their slices let go by: the waits for a halted guest, the
-    /// slices of a paused one. The rest (`Frames::rest`) is the overlay,
-    /// the drawing and the display.
+    /// slices of a paused one.
     pub idle: Duration,
+    /// What the overlay's passes took, each in the frame after its slice.
+    pub overlay: Duration,
+    /// What the window's drawing took, presenting included.
+    pub drawing: Duration,
+    /// What the window waited for the display: for the surface to hand it a
+    /// frame to draw on. `Frames::waiting` adds what nothing measured.
+    pub waited: Duration,
 }
 
 impl Frames {
-    fn add(&mut self, frame: Duration, running: Duration, idle: Duration) {
+    fn add(&mut self, frame: Duration, parts: Parts) {
         self.count += 1;
         self.time += frame;
         self.longest = self.longest.max(frame);
-        self.running += running;
-        self.idle += idle;
+        self.running += parts.running;
+        self.idle += parts.idle;
+        self.overlay += parts.overlay;
+        self.drawing += parts.drawing;
+        self.waited += parts.waited;
     }
 
     /// Frames per second.
@@ -117,16 +133,30 @@ impl Frames {
         self.time / self.count.max(1)
     }
 
-    /// Of their time, what went neither to running the guest nor to
-    /// letting time go by for it.
-    pub fn rest(&self) -> Duration {
-        self.time.saturating_sub(self.running + self.idle)
+    /// Of their time, what waited for the display: the wait the window
+    /// measured, and whatever else of the time nothing measured. In a
+    /// browser the latter is the wait for the next animation frame.
+    pub fn waiting(&self) -> Duration {
+        let measured = self.running + self.idle + self.overlay + self.drawing + self.waited;
+        self.waited + self.time.saturating_sub(measured)
     }
 
     /// The share of their time `part` is, from 0 to 1.
     pub fn share(&self, part: Duration) -> f64 {
         per_second(part.as_secs_f64(), self.time)
     }
+}
+
+/// What a frame's host time went to, as the meter is told of it: what its
+/// slice spent running the guest and letting time go by, and what the
+/// overlay and the window measured outside the slice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Parts {
+    running: Duration,
+    idle: Duration,
+    overlay: Duration,
+    drawing: Duration,
+    waited: Duration,
 }
 
 /// A second of the guest's running: what the machine counted in it, and
@@ -220,6 +250,10 @@ pub struct Meter {
     opened: Counts,
     /// The guest's seconds, oldest first: the last minute of its running.
     seconds: VecDeque<Second>,
+    /// What the overlay and the window measured since the last slice ended,
+    /// for the frame that the next slice ends. Its running and idle stay at
+    /// none: those come from the slice.
+    outside: Parts,
 }
 
 impl Meter {
@@ -231,13 +265,23 @@ impl Meter {
             self.started = Some(slice.start);
             self.origin = counts;
             self.opened = counts;
+            // Nothing measured before the first slice ended is in a frame.
+            self.outside = Parts::default();
             return;
         };
 
         let frame = slice.end.duration_since(last_end);
         let guest = slice.end.duration_since(slice.start).min(frame);
         let idle = slice.waited.min(guest);
-        self.frames.add(frame, guest - idle, idle);
+        let outside = std::mem::take(&mut self.outside);
+        self.frames.add(
+            frame,
+            Parts {
+                running: guest - idle,
+                idle,
+                ..outside
+            },
+        );
         if self.frames.time >= AVERAGED_OVER {
             self.averaged = Some(std::mem::take(&mut self.frames));
         }
@@ -255,6 +299,19 @@ impl Meter {
             self.opened = counts;
             self.running = Duration::ZERO;
         }
+    }
+
+    /// The overlay's pass took `time`, run after the last slice: it is part
+    /// of the frame that the next slice ends.
+    pub fn overlay_pass(&mut self, time: Duration) {
+        self.outside.overlay += time;
+    }
+
+    /// The window drew after the last slice, as `drawn` tells it: that is
+    /// part of the frame that the next slice ends.
+    pub fn drawn(&mut self, drawn: Drawn) {
+        self.outside.waited += drawn.waited;
+        self.outside.drawing += drawn.drawing;
     }
 
     /// The frames of the last average: none before the first second.

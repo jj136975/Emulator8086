@@ -57,8 +57,12 @@ pub struct Palette {
     pub frame_running: Color32,
     /// the part let go by while the guest was halted or paused,
     pub frame_idle: Color32,
-    /// and the rest: the overlay, the drawing, the display.
-    pub frame_rest: Color32,
+    /// the part the overlay's passes took,
+    pub frame_overlay: Color32,
+    /// the part the window's drawing took,
+    pub frame_drawing: Color32,
+    /// and the part spent waiting for the display.
+    pub frame_waiting: Color32,
 }
 
 /// The sizes of the overlay, in points.
@@ -123,7 +127,9 @@ pub const PALETTE: Palette = Palette {
     chart_fill: Color32::from_rgba_unmultiplied_const(110, 196, 236, 64),
     frame_running: Color32::from_rgb(88, 156, 236),
     frame_idle: Color32::from_rgb(76, 84, 102),
-    frame_rest: Color32::from_rgb(172, 132, 216),
+    frame_overlay: Color32::from_rgb(72, 190, 170),
+    frame_drawing: Color32::from_rgb(226, 186, 88),
+    frame_waiting: Color32::from_rgb(172, 132, 216),
 };
 
 pub const METRICS: Metrics = Metrics {

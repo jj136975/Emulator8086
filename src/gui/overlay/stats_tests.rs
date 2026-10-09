@@ -5,6 +5,7 @@ use super::*;
 use crate::gui::meter::Counts;
 use crate::gui::overlay::testing::{Driver, Screen, Shell, waiting_for_a_key};
 use crate::gui::pacer::Slice;
+use crate::gui::renderer::Drawn;
 use crate::platform::Instant;
 
 /// The panel's title, which the View menu and its window show.
@@ -15,13 +16,15 @@ fn ms(millis: u64) -> Duration {
 }
 
 /// A meter told `seconds` seconds of a steady guest, fifty frames a second:
-/// 8 ms of the rest of the frame, then a slice of 12 ms of which 9 were
-/// waited. In each frame the guest runs 200,000 instructions and is handed
-/// 23,864 timer clocks, three quarters of them while halted, and is owed
-/// 1,193 (a millisecond) after its slice; in 18 frames of each 50 it takes
-/// an interrupt on IRQ0. Channel 0 repeats every 65536 clocks, as the BIOS
-/// leaves it, and the machine had taken 1,000 interrupts on IRQ0 before the
-/// first frame. In the very last frame `dropped` timer clocks are dropped.
+/// 8 ms of the rest of the frame, of which the overlay's pass takes 2 ms, the
+/// drawing 1 ms and the wait for the display 3 ms, the rest nothing measured;
+/// then a slice of 12 ms of which 9 were waited. In each frame the guest runs
+/// 200,000 instructions and is handed 23,864 timer clocks, three quarters of
+/// them while halted, and is owed 1,193 (a millisecond) after its slice; in
+/// 18 frames of each 50 it takes an interrupt on IRQ0. Channel 0 repeats
+/// every 65536 clocks, as the BIOS leaves it, and the machine had taken 1,000
+/// interrupts on IRQ0 before the first frame. In the very last frame
+/// `dropped` timer clocks are dropped.
 fn steady(seconds: u64, dropped: u64) -> Meter {
     let origin = Instant::now();
     let mut meter = Meter::default();
@@ -36,6 +39,11 @@ fn steady(seconds: u64, dropped: u64) -> Meter {
         let start = end + ms(8);
         end = start + ms(12);
         if frame > 0 {
+            meter.overlay_pass(ms(2));
+            meter.drawn(Drawn {
+                waited: ms(3),
+                drawing: ms(1),
+            });
             counts.instructions += 200_000;
             counts.time.delivered += 23_864;
             counts.time.halted += 17_898;
@@ -182,7 +190,9 @@ fn a_meter_in_a_known_state_shows_its_figures() {
         ("Uptime", vec!["0:00:12"]),
         ("Running the guest", vec!["3.0 ms", "15.0 %"]),
         ("Idle (halted or paused)", vec!["9.0 ms", "45.0 %"]),
-        ("Overlay, drawing, display", vec!["8.0 ms", "40.0 %"]),
+        ("Overlay", vec!["2.0 ms", "10.0 %"]),
+        ("Drawing", vec!["1.0 ms", "5.0 %"]),
+        ("Waiting for the display", vec!["5.0 ms", "25.0 %"]),
         ("Frame, on average", vec!["20.0 ms", "50.0 a second"]),
         ("Frame, at most", vec!["20.0 ms"]),
         ("Clock", vec!["100.0 % of real time"]),
@@ -213,12 +223,35 @@ fn before_the_first_second_there_are_no_figures() {
     assert!(screen.shows("Measuring"));
     assert_eq!(row(screen, "Speed"), ["Speed", NOTHING]);
     assert_eq!(row(screen, "Uptime"), ["Uptime", "0:00:00"]);
-    assert_eq!(
-        row(screen, "Running the guest"),
-        ["Running the guest", NOTHING, NOTHING]
-    );
+    for part in PARTS.map(|(name, _, _)| name) {
+        assert_eq!(row(screen, part), [part, NOTHING, NOTHING]);
+    }
     assert_eq!(row(screen, "Timer"), ["Timer", "— taken, — programmed"]);
     assert!(screen.shows("None yet"));
+}
+
+/// The parts of a frame's host time are five rows of the panel, and the bar
+/// is drawn from the same five, in their order: the bar is whole, since the
+/// parts of a frame make up its time, and each is as long as its share.
+#[test]
+fn the_bar_is_drawn_from_the_five_parts_of_the_rows() {
+    let names = PARTS.map(|(name, _, _)| name);
+    assert_eq!(
+        names,
+        [
+            "Running the guest",
+            "Idle (halted or paused)",
+            "Overlay",
+            "Drawing",
+            "Waiting for the display",
+        ]
+    );
+
+    let frames = *steady(2, 0).frames().expect("a second of frames");
+    let parts = parts(&frames);
+    assert_eq!(parts.iter().sum::<Duration>(), frames.time);
+    let percents = parts.map(|part| (frames.share(part) * 100.0).round());
+    assert_eq!(percents, [15.0, 45.0, 10.0, 5.0, 25.0]);
 }
 
 /// The menu bar shows the guest's speed at its right end whenever the

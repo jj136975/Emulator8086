@@ -29,7 +29,8 @@ use super::keys::GuestKeys;
 use super::meter::{Counts, Meter};
 use super::overlay::{Command, Overlay};
 use super::pacer::Pacer;
-use crate::platform;
+use super::renderer::Drawn;
+use crate::platform::{self, Instant};
 
 /// Host time the CPU runs for before each frame is drawn. The rest of the
 /// frame period is left for rasterising and for waiting on vsync.
@@ -138,10 +139,17 @@ impl Session {
         draws
     }
 
+    /// What the window drew after the frame's slice, as the renderer reports
+    /// it: the meter counts it in the frame that the next slice ends.
+    pub fn drawn(&mut self, drawn: Drawn) {
+        self.meter.drawn(drawn);
+    }
+
     /// One pass of the overlay over `input`, and what follows from it: the
     /// commands it asked for are carried out, and the keyboard is given up
-    /// if the pass took it.
+    /// if the pass took it. The meter is told how long all of that took.
     fn run_overlay(&mut self, input: egui::RawInput) {
+        let started = Instant::now();
         let paused = self.pacer.paused();
         for command in self
             .overlay
@@ -150,6 +158,7 @@ impl Session {
             self.execute(command);
         }
         self.yield_keyboard();
+        self.meter.overlay_pass(started.elapsed());
     }
 
     /// Lets go of the keys the guest holds if the overlay has the keyboard.

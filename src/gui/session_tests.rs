@@ -298,6 +298,31 @@ fn each_frame_tells_the_meter_what_the_machine_counted() {
     assert!(session.meter.uptime() >= 2 * CPU_SLICE, "two slices long");
 }
 
+/// The overlay's pass is timed, and what the window draws after a frame is
+/// told to the meter: each frame of an average holds the drawing that
+/// followed the frame before it, one for one, so the waits and the drawing
+/// come to what was told, and the passes of the overlay take host time.
+#[test]
+fn the_overlay_and_the_drawing_are_measured_into_the_frames() {
+    let (mut session, _sent) = shown(&BUSY_ROM);
+    let (waited, drawing) = (Duration::from_millis(2), Duration::from_millis(1));
+    // A frame is a slice of 10 ms and the overlay's pass: a second of frames
+    // is about a hundred of them.
+    let mut frames_run = 0;
+    while session.target.meter.frames().is_none() {
+        assert!(frames_run < 1000, "no second of frames in 1000 frames");
+        let input = session.next_input(Vec::new());
+        assert!(session.target.frame(|| input), "the overlay is shown");
+        session.target.drawn(Drawn { waited, drawing });
+        frames_run += 1;
+    }
+
+    let frames = *session.target.meter.frames().expect("a second of frames");
+    assert_eq!(frames.waited, frames.count * waited);
+    assert_eq!(frames.drawing, frames.count * drawing);
+    assert!(frames.overlay > Duration::ZERO, "the passes took time");
+}
+
 /// A machine on which the BIOS found no disk to boot and waits for a key
 /// in HLT, with interrupts on. It gets there without any time passing.
 fn idling_in_the_bios() -> (Driver<Session>, Receiver<EmulatorEvent>) {

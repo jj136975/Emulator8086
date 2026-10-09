@@ -1,11 +1,11 @@
 //! The Stats panel: whether the emulation keeps up with real time, and
 //! where the host's time goes. First the answer in words; then the guest's
 //! speed, with the last minute of it as a chart; how the host's frames
-//! divide their time between running the guest, letting time go by for it
-//! and the rest; how the guest's time keeps up with the host's (its clock,
-//! its timer's interrupts against the rate programmed, what it is owed,
-//! what it lost, what it spent halted); and the interrupts it takes, line
-//! by line. It only reads.
+//! divide their time between running the guest, letting time go by for it,
+//! the overlay, the drawing and the wait for the display; how the guest's
+//! time keeps up with the host's (its clock, its timer's interrupts against
+//! the rate programmed, what it is owed, what it lost, what it spent halted);
+//! and the interrupts it takes, line by line. It only reads.
 //!
 //! The invariant: the panel shows what the meter measured (`Meter`), never
 //! a count read off the machine on the spot, so that its figures are
@@ -32,7 +32,7 @@ const HEADROOM: f64 = 1.25;
 
 /// The parts of a frame's host time, as the panel names them, with their
 /// colours and what each holds.
-const PARTS: [(&str, Color32, &str); 3] = [
+const PARTS: [(&str, Color32, &str); 5] = [
     (
         "Running the guest",
         PALETTE.frame_running,
@@ -42,13 +42,24 @@ const PARTS: [(&str, Color32, &str); 3] = [
         "Idle (halted or paused)",
         PALETTE.frame_idle,
         "Host time a slice let go by: the guest was halted with nothing due, or paused. \
-         A browser cannot wait: there the slice ends instead, and that time falls to the rest",
+         A browser cannot wait: there the slice ends instead, and the time until the next \
+         frame is waiting for the display",
     ),
     (
-        "Overlay, drawing, display",
-        PALETTE.frame_rest,
-        "All of a frame but its slice: the overlay, the picture and its way to the display, \
-         the window's events",
+        "Overlay",
+        PALETTE.frame_overlay,
+        "The overlay's passes: laying it out, and carrying out what its tools asked for",
+    ),
+    (
+        "Drawing",
+        PALETTE.frame_drawing,
+        "The picture and the overlay drawn into the window, presenting included",
+    ),
+    (
+        "Waiting for the display",
+        PALETTE.frame_waiting,
+        "The wait for the window to be given a frame to draw on, and whatever nothing else \
+         measured: in a browser, the wait for the next animation frame",
     ),
 ];
 
@@ -300,8 +311,14 @@ fn swatch(ui: &mut Ui, colour: Color32) {
 }
 
 /// The parts of a frame's host time, in the order of `PARTS`.
-fn parts(frames: &Frames) -> [Duration; 3] {
-    [frames.running, frames.idle, frames.rest()]
+fn parts(frames: &Frames) -> [Duration; 5] {
+    [
+        frames.running,
+        frames.idle,
+        frames.overlay,
+        frames.drawing,
+        frames.waiting(),
+    ]
 }
 
 /// The parts of the frames' host time side by side, each as long as its

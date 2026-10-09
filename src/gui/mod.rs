@@ -153,7 +153,8 @@ impl EmulatorApp {
         if let Some(vga) = &self.session.runtime.vga {
             let overlay = passed.then_some(&mut self.session.overlay);
             let memory = &self.session.runtime.cpu.memory;
-            renderer.render(&vga.borrow(), memory, overlay);
+            let drawn = renderer.render(&vga.borrow(), memory, overlay);
+            self.session.drawn(drawn);
         }
 
         let paused = self.session.paused();
