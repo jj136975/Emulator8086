@@ -59,8 +59,9 @@ pub fn drive_label(drive: u8) -> String {
 /// the drive the file is about to go into, which may hold it already.
 pub fn require_unshared(controller: &DiskController, path: &Path, drive: u8) -> Result<(), String> {
     match controller.drive_backed_by(path) {
+        // A drive's name may end in a colon (`A:`): the sentence ends there.
         Some(other) if other != drive => Err(format!(
-            "'{}' is already the disk in {}: one image file cannot be in two drives",
+            "'{}' cannot be in two drives: it is already the disk in {}",
             path.display(),
             drive_label(other)
         )),

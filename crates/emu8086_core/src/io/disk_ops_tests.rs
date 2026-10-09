@@ -303,7 +303,13 @@ fn an_image_file_that_is_in_another_drive_is_refused() {
 
     did(&mut disks, insert(0x00, image_at(&image.0)));
     let reason = refusal(&mut disks, insert(0x01, image_at(&image.0)));
-    assert!(reason.contains("already the disk in A:"), "{reason}");
+    assert_eq!(
+        reason,
+        format!(
+            "'{}' cannot be in two drives: it is already the disk in A:",
+            image.0.display()
+        )
+    );
     assert!(disks.find_drive(0x01).is_none(), "B: stays empty");
     did(&mut disks, insert(0x00, image_at(&image.0)));
     assert_eq!(disks.drives.len(), 1);
@@ -514,7 +520,13 @@ fn save_writes_the_image_and_recognises_its_own_file() {
     let own = did(&mut disks, save(0x01));
     assert!(own.starts_with("B: already lives in"), "{own}");
     let others = refusal(&mut disks, save(0x00));
-    assert!(others.contains("is the image file of B:"), "{others}");
+    assert_eq!(
+        others,
+        format!(
+            "{} is the image file of B:, which has to be ejected first",
+            target.0.display()
+        )
+    );
     assert_eq!(std::fs::metadata(&target.0).unwrap().len(), FLOPPY_144_SIZE);
 }
 

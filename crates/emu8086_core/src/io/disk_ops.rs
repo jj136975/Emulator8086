@@ -167,7 +167,7 @@ pub fn contents(disks: &mut DiskController, drive: u8) -> Result<Vec<u8>, String
         .find_drive(drive)
         .ok_or_else(|| format!("{} is empty", label))?;
     disk.contents()
-        .map_err(|error| format!("Cannot read the disk in {}: {}", label, error))
+        .map_err(|error| format!("The disk in {} cannot be read: {}", label, error))
 }
 
 fn is_hard_disk(drive: u8) -> bool {
@@ -328,7 +328,7 @@ fn save(disks: &mut DiskController, drive: u8, target: &Path) -> Result<String, 
         && other != drive
     {
         return Err(format!(
-            "{} is the image file of {}; eject that drive first",
+            "{} is the image file of {}, which has to be ejected first",
             target.display(),
             drive_label(other)
         ));
