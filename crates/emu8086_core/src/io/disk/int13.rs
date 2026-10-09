@@ -181,7 +181,7 @@ impl DiskController {
         let drive = cpu.registers.dx.low();
 
         // The BIOS start-up code only puts a default at 40:75. The number
-        // of hard disks is known here, and it changes when the monitor
+        // of hard disks is known here, and it changes when the host
         // attaches or ejects one, so every call writes it.
         cpu.memory
             .write_byte(BDA_HARD_DISK_COUNT, self.hard_disk_count());

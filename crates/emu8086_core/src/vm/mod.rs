@@ -1,8 +1,6 @@
 //! The machine: the CPU state (`cpu`, `registers`, `memory`), the
 //! instruction interpreter (`instructions`, with `modrm` decoding its
-//! operands), the `runtime` that wires the devices to it and runs it, and
-//! the monitor's commands (`cli`), which only the tests compile until the
-//! overlay's disk panel calls them.
+//! operands) and the `runtime` that wires the devices to it and runs it.
 //!
 //! The invariant: a machine is single-threaded and its `Memory` box is
 //! permanent. The segment registers hold raw pointers to that allocation,
@@ -11,8 +9,6 @@
 //! and a `Runtime` never crosses threads. The app reads the CPU state
 //! through `Runtime::cpu` and is bound by the same rule.
 
-#[cfg(test)]
-pub mod cli;
 pub mod cpu;
 pub(crate) mod instructions;
 pub mod memory;

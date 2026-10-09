@@ -1,7 +1,8 @@
 //! Parsing of what the user types to name drives and disk images, and the
-//! opening of the images the command line names. The `--disk`, `--hd` and
-//! `--boot` options and the monitor's commands (`vm/cli.rs`) share these
-//! functions, so both accept the same spellings.
+//! opening of the images the command line names: the `--disk`, `--hd` and
+//! `--boot` options. The disk tools (`disk_ops`) name the drives and refuse
+//! a shared image file with the functions here, so that a drive is called
+//! the same wherever the user reads of it.
 //!
 //! The invariant: a colon separates the parts of a specification
 //! (`b:disk.img:ro`, `memory:720`) and is also part of a Windows path, so
@@ -36,6 +37,12 @@ pub fn parse_drive(name: &str) -> Result<u8, String> {
             .filter(|drive| *drive != BOOT_ORDER_END),
     };
     drive.ok_or_else(|| format!("invalid drive '{}' (use a-d or hd0, hd1, ...)", name))
+}
+
+/// Whether `number` is the BIOS number of a drive that `parse_drive` has a
+/// name for: 00h to 03h, the floppy drives, or 80h to FEh, the hard disks.
+pub fn is_drive(number: u8) -> bool {
+    number < 0x04 || (0x80..BOOT_ORDER_END).contains(&number)
 }
 
 /// How a BIOS drive number is shown to the user: `A:` or `HD0`.
