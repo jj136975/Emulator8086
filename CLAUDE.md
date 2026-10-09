@@ -28,7 +28,8 @@ profiles. `assets/rom/` (the BIOS sources and image) and `8086/` (the CPU
 vectors, a submodule) stay at the root of the repository; the core reaches
 them from its own directory. `index.html` at the root is the page trunk
 builds the browser build into; `dist/`, where trunk puts the result, is
-ignored.
+ignored. `.github/workflows/pages.yml` publishes the browser build on
+GitHub Pages ("Build & test").
 
 The app, in `src/`:
 
@@ -260,6 +261,20 @@ builds it, serves it on http://127.0.0.1:8080 and rebuilds on change, and
 the version locked in `Cargo.lock`, and wasm-opt for a release build, on
 first use.
 
+The browser build of `main` is published on GitHub Pages, at
+https://jj136975.github.io/Emulator8086/, by `.github/workflows/pages.yml`:
+at every push to main, and by hand from the Actions tab, GitHub's Ubuntu
+runner builds it with `trunk build --release` and publishes `dist/`. The
+site is served below the repository's name, so the workflow gives trunk the
+base path Pages reports as its `--public-url`; a page built for `/` loads
+nothing there. The runner installs the toolchain `rust-toolchain` pins, and
+takes trunk from its releases at the version the workflow names, checked
+against the checksum beside it: a new version of trunk changes both. The
+workflow runs no test and no lint (the bar above is run by hand before a
+commit), and uses GitHub's own actions alone (the ledger below). Its
+deployment needs the repository's Settings > Pages to name "GitHub Actions"
+as the source of the site.
+
 The CPU is validated against real hardware: a change under the core's
 `src/vm/` runs the suite with `--include-ignored`. Never judge a suite
 through a pipe (`cargo test | tail` hides the exit code): redirect to a log,
@@ -418,6 +433,7 @@ not listed has not been asked: ask first, and add the answer here.
 | 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other (beside those `rfd` asks for itself) |
 | 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate. In use: 0.21, with `index.html` at the root |
 | 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
+| 2026-10-10 | GitHub's own actions: `actions/checkout`, `actions/cache`, `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` | requested with the deployment (the user asked for the browser build to be built by CI and published on GitHub Pages), not asked one by one | `.github/workflows/pages.yml` alone. No action of a third party: the runner's rustup installs the toolchain, and trunk comes from its releases, checked against the checksum the workflow holds |
 
 Approved does not mean added: the manifests say what is in use, the root
 one at which version and each crate's own which of them it takes.

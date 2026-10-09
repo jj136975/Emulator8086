@@ -9,7 +9,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
 - A tools overlay in the window (F12): pause and resume, reset, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, and the drives: put disks in and take them out, save them, copy host files onto them
-- Runs in a browser as well: the same application built for WebAssembly, drawn with WebGPU or WebGL2
+- Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
 
@@ -106,6 +106,8 @@ The window sends the physical key positions, like a real keyboard: with a non-US
 
 The same application builds for `wasm32-unknown-unknown` and runs in a browser, in a page that holds nothing but the emulator's picture, as large as the browser's window.
 
+The build of `main` is online at <https://jj136975.github.io/Emulator8086/>: GitHub Actions builds it and publishes it on GitHub Pages at every push to `main` (`.github/workflows/pages.yml`).
+
 ### Requirements
 
 - The `wasm32-unknown-unknown` target. `rust-toolchain` lists it, so rustup installs it with the toolchain
@@ -124,7 +126,11 @@ trunk serve --release
 trunk build --release
 ```
 
-`index.html` at the root of the repository is the page trunk builds the application into.
+`index.html` at the root of the repository is the page trunk builds the application into. The page `trunk build` makes is for the root of a web server. A page served below a path, as GitHub Pages serves a repository's site, is built with that path as its public URL:
+
+```bash
+trunk build --release --public-url /Emulator8086/
+```
 
 ### Browsers
 

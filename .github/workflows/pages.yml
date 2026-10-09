@@ -1,0 +1,91 @@
+# Publishes the browser build on GitHub Pages: on every push to main, and by
+# hand from the Actions tab, trunk builds the application for
+# wasm32-unknown-unknown into dist/, and the Pages actions publish that
+# folder as the site, https://jj136975.github.io/Emulator8086/.
+#
+# The site is served below the repository's name, so trunk is given the
+# base path Pages reports as its public URL: every link trunk writes into
+# the page starts with it, and a page built for `/` would load nothing. The
+# repository's Settings > Pages must name "GitHub Actions" as the source of
+# the site, or the build stops at configure-pages.
+#
+# trunk is the version the project is built with by hand (CLAUDE.md, "Build
+# & test"), downloaded from its releases and checked against the checksum
+# below: a new version changes both.
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. A run queued behind another replaces any queued
+# before it; the run in progress is never cancelled.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  TRUNK_VERSION: 0.21.14
+  TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The toolchain `rust-toolchain` pins, with the wasm32 target it lists.
+      - name: Rust toolchain
+        run: rustup toolchain install --profile minimal
+
+      - name: trunk
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/trunk.tar.gz" \
+            "https://github.com/trunk-rs/trunk/releases/download/v$TRUNK_VERSION/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$TRUNK_SHA256  $RUNNER_TEMP/trunk.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # The crates and what was built of them, kept for as long as the
+      # toolchain and the manifests stay the same.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: pages-${{ runner.os }}-${{ hashFiles('rust-toolchain', '**/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: pages-${{ runner.os }}-
+
+      - name: Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Build
+        run: trunk build --release --public-url "$PUBLIC_URL"
+        env:
+          PUBLIC_URL: ${{ steps.pages.outputs.base_path }}/
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5
