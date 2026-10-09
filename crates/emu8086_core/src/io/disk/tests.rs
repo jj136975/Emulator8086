@@ -422,7 +422,7 @@ fn change_line_reports_a_swap_exactly_once() {
         assert_eq!(rt.cpu.registers.ax.high(), 0x00);
     }
 
-    // What the monitor's `swap` does.
+    // What putting another disk into the drive from the host does.
     disk_ctrl.detach(0x00);
     disk_ctrl.attach(0x00, floppy(FLOPPY_144_SIZE));
     int13(&mut disk_ctrl, &mut rt, 0x1600, 0, 0x0000);
@@ -644,6 +644,170 @@ fn boot_sector_is_consulted_only_when_it_is_needed_and_credible() {
     bytes[0] = 0x00; // no jump instruction: not a boot sector
     std::fs::write(scratch.path(), &bytes).unwrap();
     assert_eq!(geometry_of(scratch.path()), (2, 16, 63));
+}
+
+// -----------------------------------------------------------------------
+// Images a host hands over as their contents, and takes back as such
+// -----------------------------------------------------------------------
+
+fn geometry(image: &DiskImage) -> (u16, u8, u8) {
+    (image.cylinders, image.heads, image.sectors_per_track)
+}
+
+/// An image handed over as its contents is the disk its file would be: the
+/// floppy format its size is, whatever its boot sector says; else what a
+/// credible boot sector states; else a hard disk of its size.
+#[test]
+fn an_image_from_bytes_has_the_geometry_its_file_would_have() {
+    let scratch = ScratchFile::new("geometry-bytes.img");
+    let formatted = formatted_floppy_bytes();
+
+    let mut lying = formatted.clone();
+    lying[0x18..0x1A].copy_from_slice(&21u16.to_le_bytes());
+    let mut padded = formatted.clone();
+    padded.extend_from_slice(&[0u8; SECTOR_SIZE]);
+    let mut wide = formatted.clone();
+    wide.resize(80 * 2 * 21 * SECTOR_SIZE, 0);
+    wide[0x13..0x15].copy_from_slice(&3360u16.to_le_bytes());
+    wide[0x18..0x1A].copy_from_slice(&21u16.to_le_bytes());
+    let blank = vec![0u8; FLOPPY_144_SIZE as usize + SECTOR_SIZE];
+
+    for (contents, expected) in [
+        (formatted, (80, 2, 18)),
+        (lying, (80, 2, 18)),
+        (padded, (80, 2, 18)),
+        (wide, (80, 2, 21)),
+        (blank, (2, 16, 63)),
+        (vec![0u8; 737_280], (80, 2, 9)),
+        (Vec::new(), (1, 16, 63)),
+    ] {
+        std::fs::write(scratch.path(), &contents).unwrap();
+        let size = contents.len();
+        let image = DiskImage::from_bytes(contents, "floppy.img", false);
+        assert_eq!(geometry(&image), expected, "{size} bytes");
+        assert_eq!(geometry(&image), geometry_of(scratch.path()), "as its file");
+    }
+
+    let hard_disk = DiskImage::hard_disk_from_bytes(vec![0u8; 4 * 16 * 63 * 512], "c.vhd", true);
+    assert_eq!(geometry(&hard_disk), (4, 16, 63));
+    assert!(hard_disk.readonly);
+    // A hard disk is whole cylinders, and has one at least.
+    let odd = DiskImage::hard_disk_from_bytes(vec![0u8; 4 * 16 * 63 * 512 + 1000], "c.vhd", false);
+    assert_eq!(geometry(&odd), (4, 16, 63));
+    let tiny = DiskImage::hard_disk_from_bytes(vec![0u8; 1000], "c.vhd", false);
+    assert_eq!(geometry(&tiny), (1, 16, 63));
+}
+
+/// An image held in memory reaches as far as its disk. Contents that end
+/// before the geometry does are filled up with zeros, which the guest reads
+/// and may write; contents that go on behind it stay as they are, out of
+/// the guest's reach, and are given back with the rest.
+#[test]
+fn an_image_from_bytes_is_as_long_as_its_disk() {
+    // A volume of 3340 sectors on tracks of 21: it ends inside its last
+    // cylinder, which the disk has in full.
+    let mut short = formatted_floppy_bytes();
+    short.resize(3340 * SECTOR_SIZE, 0);
+    short[0x13..0x15].copy_from_slice(&3340u16.to_le_bytes());
+    short[0x18..0x1A].copy_from_slice(&21u16.to_le_bytes());
+    let mut image = DiskImage::from_bytes(short, "short.img", false);
+    assert_eq!(geometry(&image), (80, 2, 21));
+    assert_eq!(
+        image.read_sectors(79, 1, 21, 1).unwrap(),
+        [0u8; SECTOR_SIZE]
+    );
+    image
+        .write_sectors(79, 1, 21, 1, &[0x5Au8; SECTOR_SIZE])
+        .unwrap();
+    let contents = image.contents().unwrap();
+    assert_eq!(contents.len(), 3360 * SECTOR_SIZE);
+    assert_eq!(contents[3359 * SECTOR_SIZE..], [0x5Au8; SECTOR_SIZE]);
+
+    // Four cylinders of a hard disk, and a tail that is no whole cylinder.
+    let mut long = vec![0u8; 4 * 16 * 63 * SECTOR_SIZE];
+    long.extend_from_slice(&[0xEEu8; 1000]);
+    let mut image = DiskImage::hard_disk_from_bytes(long.clone(), "long.vhd", false);
+    assert!(image.read_sectors(4, 0, 1, 1).is_err(), "behind the disk");
+    assert!(
+        image
+            .write_sectors(4, 0, 1, 1, &[0u8; SECTOR_SIZE])
+            .is_err()
+    );
+    assert_eq!(image.contents().unwrap(), long);
+}
+
+/// The contents of an image are what a save writes to its target, whether
+/// the image lives in memory or in a file.
+#[test]
+fn the_contents_of_an_image_are_what_a_save_writes() {
+    let own = ScratchFile::new("contents-own.img");
+    let saved = ScratchFile::new("contents-saved.img");
+    std::fs::write(own.path(), numbered_sectors()).unwrap();
+
+    let mut on_file = DiskImage::open(own.path(), false).unwrap();
+    on_file
+        .write_sectors(0, 0, 1, 1, &[0x5Au8; SECTOR_SIZE])
+        .unwrap();
+    on_file.save_to_file(saved.path()).unwrap();
+    assert_eq!(
+        on_file.contents().unwrap(),
+        std::fs::read(saved.path()).unwrap()
+    );
+    // Reading the whole file does not disturb the transfers that follow.
+    assert_eq!(
+        on_file.read_sectors(0, 0, 2, 1).unwrap(),
+        [1u8; SECTOR_SIZE]
+    );
+
+    let mut in_memory = DiskImage::from_bytes(numbered_sectors(), "numbered.img", false);
+    in_memory
+        .write_sectors(79, 1, 18, 1, &[0xA5u8; SECTOR_SIZE])
+        .unwrap();
+    in_memory.save_to_file(saved.path()).unwrap();
+    assert_eq!(
+        in_memory.contents().unwrap(),
+        std::fs::read(saved.path()).unwrap()
+    );
+}
+
+/// An image made of a file's contents is known by the name of that file. A
+/// blank image has no name, and one that lives in a file has its path.
+#[test]
+fn an_image_from_bytes_carries_the_name_of_its_file() {
+    let scratch = ScratchFile::new("named.img");
+    std::fs::write(scratch.path(), numbered_sectors()).unwrap();
+
+    let handed_over = DiskImage::from_bytes(numbered_sectors(), "DOS 6.22 disk 1.img", false);
+    assert_eq!(handed_over.name(), Some("DOS 6.22 disk 1.img"));
+    assert!(handed_over.backing_path().is_none());
+    let hard_disk = DiskImage::hard_disk_from_bytes(vec![0u8; 516_096], "c.vhd", false);
+    assert_eq!(hard_disk.name(), Some("c.vhd"));
+
+    assert_eq!(floppy(FLOPPY_144_SIZE).name(), None);
+    let on_file = DiskImage::open(scratch.path(), false).unwrap();
+    assert_eq!(on_file.name(), None);
+    assert!(on_file.backing_path().is_some());
+}
+
+/// CHS addresses end at 1024 cylinders. An image held in memory that goes
+/// on for a cylinder or more behind them says so, as an image file does;
+/// one that fits says nothing.
+#[test]
+fn an_image_from_bytes_too_large_to_reach_in_full_says_so() {
+    let cylinder = 16 * 63 * SECTOR_SIZE;
+    let small = DiskImage::hard_disk_from_bytes(vec![0u8; 4 * cylinder], "small.vhd", false);
+    assert_eq!(small.capacity_note(), None);
+
+    // 1030 cylinders of zeros, which the allocator hands out untouched.
+    let large = DiskImage::hard_disk_from_bytes(vec![0u8; 1030 * cylinder], "large.vhd", false);
+    assert_eq!(large.cylinders, 1024);
+    let note = large
+        .capacity_note()
+        .expect("the guest cannot reach it all");
+    assert!(
+        note.contains("506 MB") && note.contains("504 MB") && note.contains("1024 cylinders"),
+        "{note}"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -1374,7 +1538,7 @@ fn extended_drive_parameters_describe_the_disk() {
 }
 
 // -----------------------------------------------------------------------
-// Copying host files into the FAT volume (the monitor's `put`)
+// Copying host files into the FAT volume (`put_file`, `put_dir`)
 // -----------------------------------------------------------------------
 
 fn formatted_floppy() -> DiskImage {

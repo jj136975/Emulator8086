@@ -1,6 +1,8 @@
 //! A disk image: the sectors of one disk, in a host file or in memory, and
 //! the geometry that addresses them. Opening and creating image files,
-//! sector transfers by CHS address, and saving an image to a host file.
+//! taking an image whose contents a host hands over, sector transfers by
+//! CHS address, and giving an image back: saved to a host file, or as its
+//! contents.
 //!
 //! The invariant: a file-backed image is its file. Guest writes go straight
 //! to that file, so it must never be truncated or replaced under the image:
@@ -48,6 +50,10 @@ pub enum SaveOutcome {
 
 pub struct DiskImage {
     pub(super) storage: DiskStorage,
+    /// The name of the file whose contents an image held in memory was
+    /// made of (`from_bytes`). A blank image has none, and a file-backed
+    /// one has its path.
+    name: Option<String>,
     pub cylinders: u16,
     pub heads: u8,
     pub sectors_per_track: u8,
@@ -60,6 +66,7 @@ impl DiskImage {
         let (cylinders, heads, sectors_per_track) = geometry;
         Self {
             storage: DiskStorage::file_backed(file, path),
+            name: None,
             cylinders,
             heads,
             sectors_per_track,
@@ -69,9 +76,33 @@ impl DiskImage {
 
     /// A blank image held in memory.
     fn in_memory(geometry: Geometry, readonly: bool) -> Self {
+        Self::holding(
+            vec![0u8; geometry_bytes(geometry) as usize],
+            None,
+            geometry,
+            readonly,
+        )
+    }
+
+    /// An image held in memory whose contents are `data`. A disk reaches as
+    /// far as its geometry: contents that end before it are filled up with
+    /// zeros, since the guest may write there, as it may behind the end of
+    /// an image file that is shorter than its disk. Contents that go on
+    /// behind the geometry are kept, out of the guest's reach.
+    fn holding(
+        mut data: Vec<u8>,
+        name: Option<String>,
+        geometry: Geometry,
+        readonly: bool,
+    ) -> Self {
         let (cylinders, heads, sectors_per_track) = geometry;
+        let disk_bytes = geometry_bytes(geometry) as usize;
+        if data.len() < disk_bytes {
+            data.resize(disk_bytes, 0);
+        }
         Self {
-            storage: DiskStorage::InMemory(vec![0u8; geometry_bytes(geometry) as usize]),
+            storage: DiskStorage::InMemory(data),
+            name,
             cylinders,
             heads,
             sectors_per_track,
@@ -149,6 +180,32 @@ impl DiskImage {
         Self::in_memory(hd_geometry_from_size(size_mb * 1024 * 1024), false)
     }
 
+    /// A floppy image whose contents are `bytes`, held in memory: what a
+    /// host gives that hands a file over without a path to it. `name` is
+    /// the name of that file. The geometry is found as `open` finds it.
+    pub fn from_bytes(bytes: Vec<u8>, name: &str, readonly: bool) -> Self {
+        let size = bytes.len() as u64;
+        let geometry = floppy_geometry(size)
+            .or_else(|| geometry_from_boot_sector(&bytes))
+            .unwrap_or_else(|| hd_geometry_from_size(size));
+        Self::holding(bytes, Some(name.to_string()), geometry, readonly)
+    }
+
+    /// A hard disk image whose contents are `bytes`, held in memory. `name`
+    /// is the name of the file they were handed over as. The geometry is
+    /// found as `open_hard_disk` finds it.
+    pub fn hard_disk_from_bytes(bytes: Vec<u8>, name: &str, readonly: bool) -> Self {
+        let geometry = hd_geometry_from_size(bytes.len() as u64);
+        Self::holding(bytes, Some(name.to_string()), geometry, readonly)
+    }
+
+    /// The name of the file whose contents an image held in memory was made
+    /// of. `None` for a blank image, and for a file-backed one, which has
+    /// its path (`backing_path`).
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
     /// Number of sectors the geometry addresses.
     pub(super) fn total_sectors(&self) -> u64 {
         self.cylinders as u64 * self.heads as u64 * self.sectors_per_track as u64
@@ -160,21 +217,21 @@ impl DiskImage {
     }
 
     /// What the user should be told when the guest cannot reach all of the
-    /// image file: CHS addresses end at 1024 cylinders, and whatever a
-    /// larger image holds beyond them is out of reach.
+    /// image: CHS addresses end at 1024 cylinders, and whatever a larger
+    /// image holds beyond them is out of reach.
     pub fn capacity_note(&self) -> Option<String> {
-        let DiskStorage::FileBacked { file, .. } = &self.storage else {
-            return None;
+        let image_size = match &self.storage {
+            DiskStorage::FileBacked { file, .. } => file.metadata().ok()?.len(),
+            DiskStorage::InMemory(data) => data.len() as u64,
         };
-        let file_size = file.metadata().ok()?.len();
         let cylinder = geometry_bytes((1, self.heads, self.sectors_per_track));
         let cut_off =
-            self.cylinders as u64 == MAX_CYLINDERS && file_size >= self.total_bytes() + cylinder;
+            self.cylinders as u64 == MAX_CYLINDERS && image_size >= self.total_bytes() + cylinder;
         cut_off.then(|| {
             format!(
                 "the image is {} MB, but a disk has at most {} cylinders: the guest sees only \
                  the first {} MB",
-                file_size >> 20,
+                image_size >> 20,
                 MAX_CYLINDERS,
                 self.total_bytes() >> 20
             )
@@ -341,6 +398,22 @@ impl DiskImage {
             }
         }
         out.sync_all()
+    }
+
+    /// The whole image as bytes: what `save_to_file` writes to its target,
+    /// for a host that takes a file back as its contents. Such a host has
+    /// neither a path to save to nor a process to name a temporary file
+    /// after (a browser), so nothing here asks for one.
+    pub fn contents(&mut self) -> std::io::Result<Vec<u8>> {
+        match &mut self.storage {
+            DiskStorage::InMemory(data) => Ok(data.clone()),
+            DiskStorage::FileBacked { file, .. } => {
+                let mut contents = Vec::new();
+                file.seek(SeekFrom::Start(0))?;
+                file.read_to_end(&mut contents)?;
+                Ok(contents)
+            }
+        }
     }
 
     fn chs_to_lba(&self, c: u16, h: u8, s: u8) -> u64 {
