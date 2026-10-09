@@ -11,11 +11,16 @@
 use std::cell::Ref;
 use std::time::Duration;
 
+use super::blit::{SHADER_SRC, compute_viewport_math, framebuffer_format};
+use super::surface::window_format;
 use super::*;
 use crate::gui::meter::Meter;
+use crate::gui::overlay::Overlay;
 use crate::gui::overlay::testing::{SCREEN, input};
 use crate::wall_clock::HostClock;
 use emu8086_core::io::keyboard::KeyboardController;
+use emu8086_core::io::raster::BlinkPhase;
+use emu8086_core::io::vga::VgaDevice;
 use emu8086_core::vm::runtime::Runtime;
 
 /// The default window is a whole multiple of both frame sizes, so the text
