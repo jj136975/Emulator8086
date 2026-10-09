@@ -708,3 +708,37 @@ fn the_session_carries_out_an_answer_on_the_frame_after_it_came() {
     session.frame(|| panic!("no input is gathered for an overlay that shows nothing"));
     assert_eq!(std::fs::metadata(&saved.0).unwrap().len(), 368_640);
 }
+
+/// A command that is refused says why on the screen, as one that is done
+/// says what it did: an image file that is the disk of another drive stays
+/// out of the drive it was chosen for, and the message names the drive it
+/// is in.
+#[test]
+fn a_command_that_fails_shows_its_reason_on_the_screen() {
+    let floppy = Scratch::file("refused.img", &vec![0u8; 737_280]);
+    let host = ByHand::default();
+    let (kbd_tx, _sent) = channel();
+    let mut session = Session::new(machine(&[], &[]), kbd_tx);
+    session.disks = DiskTools::on(Box::new(host.clone()), FileAccess::Paths);
+    let in_a = DiskImage::open(&floppy.0, false).unwrap();
+    session.runtime.disks.borrow_mut().attach(0x00, in_a);
+    session.overlay_key(ElementState::Pressed, false);
+    let mut shown = Driver::new(session);
+    shown.frame(Vec::new());
+    shown.toggle_in_view_menu("Disks");
+
+    shown.click(Role::RadioButton, "B:");
+    shown.click(Role::Button, "Image file...");
+    let (_, answer) = host.question();
+    answer.send(vec![HostFile::Path(floppy.0.clone())]).unwrap();
+    let input = shown.next_input(Vec::new());
+    shown.target.frame(|| input);
+
+    let screen = shown.frame(Vec::new());
+    let reason = format!(
+        "'{}' cannot be in two drives: it is already the disk in A:",
+        floppy.0.display()
+    );
+    assert!(screen.shows(&reason), "{:?}", screen.texts());
+    assert_eq!(screen.row_of(Role::RadioButton, "B:"), ["no disk"]);
+}
