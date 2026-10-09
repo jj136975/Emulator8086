@@ -145,6 +145,23 @@ fn verdict(second: Option<&Second>, paused: bool) -> RichText {
     }
 }
 
+/// The guest's speed for the menu bar, compact: its last second of
+/// running, in millions of instructions to a tenth in five places, then
+/// the unit. While the guest is paused it is the speed it ran at before
+/// the pause, in the colour of a line at rest.
+pub(super) fn readout(meter: &Meter, paused: bool) -> RichText {
+    let text = match meter.speed() {
+        Some(speed) => format!("{:>5.1} M instr/s", speed / 1e6),
+        None => format!("{NOTHING:>5} M instr/s"),
+    };
+    let readout = RichText::new(text).monospace();
+    if paused {
+        readout.color(PALETTE.off)
+    } else {
+        readout
+    }
+}
+
 pub(super) fn body(ui: &mut Ui, cx: &mut Cx<'_>) {
     let meter = cx.meter;
     // Gaps, not separators, between the parts: a separator spans the

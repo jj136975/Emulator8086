@@ -310,7 +310,8 @@ impl Drop for Overlay {
 }
 
 /// The menu bar: the Machine menu, the View menu with a checkbox for every
-/// panel, and at the right end the mark of a paused machine.
+/// panel, and at the right end the guest's speed, beside the mark of a
+/// paused machine.
 fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, open: &mut Vec<Panel>) {
     ui.menu_button("Machine", |ui| {
         let (label, command) = if cx.paused {
@@ -341,11 +342,13 @@ fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, open: &mut Vec<Panel>) {
             }
         }
     });
-    if cx.paused {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.label(stats::readout(cx.meter, cx.paused))
+            .on_hover_text("Instructions per second, over the guest's last second of running");
+        if cx.paused {
             ui.colored_label(PALETTE.warning, PAUSED);
-        });
-    }
+        }
+    });
 }
 
 /// The hint, in the bottom left corner of the picture.

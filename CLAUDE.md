@@ -50,7 +50,7 @@ The app, in `src/`:
 | `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on |
 | `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
 | `gui/overlay/about.rs` | the About panel; every panel has a file like it |
-| `gui/overlay/stats.rs` | the Stats panel: whether the guest keeps up with real time and where the host's time goes, from the `Meter` the shell is lent (`Cx::meter`); the chart of the last minute, drawn with egui's painter |
+| `gui/overlay/stats.rs` | the Stats panel: whether the guest keeps up with real time and where the host's time goes, from the `Meter` the shell is lent (`Cx::meter`); the chart of the last minute, drawn with egui's painter; and the guest's speed at the right end of the menu bar (`readout`) |
 | `gui/overlay/memory.rs` | the Memory panel: a hex view of guest memory, the address field (`parse_address`), the jumps to where the register pairs point and to the landmarks of the first megabyte |
 | `gui/overlay/pic.rs`, `pit.rs`, `vga.rs`, `keyboard.rs`, `debug_port.rs` | the device panels: the 8259A, the 8253, the VGA and its DAC, the 8255's keyboard interface, the port E9h log |
 | `gui/overlay/messages.rs` | where a tool says what it did or why it failed |

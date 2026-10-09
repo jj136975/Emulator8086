@@ -596,8 +596,9 @@ fn overlay_lies_over_the_picture(gpu: Option<(wgpu::Device, wgpu::Queue)>) {
             .panel_fill
             .to_array();
         let drawn = frame(&mut overlay);
-        // Inside the bar, right of its menus.
-        for (x, y) in [(300, 3), (width / 2, 8), (width - 40, 6)] {
+        // Inside the bar, right of its menus and left of the guest's speed
+        // at its right end.
+        for (x, y) in [(300, 3), (width / 2, 8), (width - 200, 6)] {
             let drawn = pixel(&drawn, width, x, y);
             // An sRGB target takes the colour decoded and stores it encoded
             // again: one step of rounding either way.

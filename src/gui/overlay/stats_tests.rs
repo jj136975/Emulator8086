@@ -221,6 +221,30 @@ fn before_the_first_second_there_are_no_figures() {
     assert!(screen.shows("None yet"));
 }
 
+/// The menu bar shows the guest's speed at its right end whenever the
+/// overlay is shown, with no panel open: compact, in millions to a tenth,
+/// and keeping its width. Before the first second it is the mark of
+/// nothing; beside the mark of a paused machine it is the speed from
+/// before the pause.
+#[test]
+fn the_menu_bar_shows_the_guests_speed() {
+    assert_eq!(readout(&Meter::default(), false).text(), "    — M instr/s");
+    assert_eq!(readout(&steady(1, 0), false).text(), " 10.0 M instr/s");
+    assert_eq!(readout(&steady(1, 0), true).text(), " 10.0 M instr/s");
+
+    let (runtime, _keys) = waiting_for_a_key();
+    let mut shell = Shell::new(runtime);
+    shell.overlay.toggle();
+    let mut shell = Driver::new(shell);
+    assert!(shell.frame(Vec::new()).shows("    — M instr/s"));
+
+    shell.target.meter = steady(2, 0);
+    assert!(shell.frame(Vec::new()).shows(" 10.0 M instr/s"));
+    shell.target.paused = true;
+    let screen = shell.frame(Vec::new());
+    assert_eq!(row(screen, "Paused"), ["Paused", "10.0 M instr/s"]);
+}
+
 /// A paused guest keeps up with nothing: the answer says that it is
 /// paused and that its figures are from before the pause, which stay as
 /// they were.
