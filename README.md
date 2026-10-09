@@ -8,7 +8,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
-- A tools overlay in the window (F12): pause and resume, reset, VGA dump, the machine's drives at a glance
+- A tools overlay in the window (F12): pause and resume, reset, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the machine's drives at a glance
 - Runs in a browser as well: the same application built for WebAssembly, drawn with WebGPU or WebGL2
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
@@ -83,6 +83,7 @@ F12 puts a menu bar over the picture; for the first seconds after start a hint i
 | Machine | Reset | Reboots the guest |
 | Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory (in a browser: offers it as a download) |
 | View | About | A panel with the key bindings, the version, and the machine: the image in each drive, whether it can be written, and the boot order |
+| View | Stats | Whether the guest keeps up with real time, and where the host's time goes: the guest's speed with a chart of its last minute, how a frame divides between running the guest, idling and drawing, the guest's clock and its timer against real time, the time owed and the time dropped, the share spent halted, and the interrupts taken on each line. The menu bar shows the speed at its right end |
 | View | Memory | A hex view of guest memory with an ASCII column: an address field (`B8000` or `B800:0000`), jumps to where the registers point and to the vector table, the BIOS data area, video memory and the ROM |
 | View | Interrupts (8259A) | Each interrupt line's request, in-service and mask bits, the vector base and the modes in force |
 | View | Timer (8253) | The three channels: mode, reload value, current count, output and gate, and the rate of the timer interrupt |
