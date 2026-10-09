@@ -2,7 +2,9 @@
 //! the meter that measures it, the guest's keyboard and the overlay. It is
 //! all of the app that needs no window: the window (`gui`) gathers the
 //! input and draws, and what the input means is decided here: whose a key
-//! is, and what a command of the overlay does to the machine.
+//! is, and what a command of the overlay does to the machine. What the
+//! Disks panel asks for is carried out by `disk_tools`, which has the file
+//! dialogs to wait for.
 //!
 //! The invariant: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -11,15 +13,18 @@
 //! overlay, and a key the guest never sees released stays down in it.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use winit::event::ElementState;
 use winit::keyboard::PhysicalKey;
+use winit::window::Window;
 
 use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
 
+use super::disk_tools::DiskTools;
 use super::keys::GuestKeys;
 use super::meter::{Counts, Meter};
 use super::overlay::{Command, Overlay};
@@ -43,6 +48,8 @@ pub struct Session {
     pub overlay: Overlay,
     /// Where `Command::DumpVga` puts the dump.
     dump_file: PathBuf,
+    /// What carries out `Command::Disk`, and the file dialogs it has open.
+    pub(super) disks: DiskTools,
 }
 
 impl Session {
@@ -55,7 +62,14 @@ impl Session {
             keys: GuestKeys::new(kbd_tx),
             overlay: Overlay::new(),
             dump_file: PathBuf::from(VGA_DUMP_FILE),
+            disks: DiskTools::new(),
         }
+    }
+
+    /// The window the machine is shown in is there: the file dialogs of the
+    /// disk tools belong to it from now on. The session needs none.
+    pub fn shown_in(&mut self, window: &Arc<Window>) {
+        self.disks.set_window(window);
     }
 
     /// The overlay's key went down or came up. Going down, it shows the
@@ -105,12 +119,16 @@ impl Session {
         self.pacer.paused()
     }
 
-    /// One frame: a slice of the guest's time, which a paused guest lets go
-    /// by, and the meter told of it whether the overlay is shown or not;
-    /// then a pass of the overlay if it has anything to show. `input` is
-    /// asked for only then. Returns whether there was a pass: something to
-    /// paint, and wishes of egui for the window to heed.
+    /// One frame: the answers of the file dialogs that have come in, a
+    /// slice of the guest's time, which a paused guest lets go by, and the
+    /// meter told of it whether the overlay is shown or not; then a pass of
+    /// the overlay if it has anything to show. `input` is asked for only
+    /// then. Returns whether there was a pass: something to paint, and
+    /// wishes of egui for the window to heed.
     pub fn frame(&mut self, input: impl FnOnce() -> egui::RawInput) -> bool {
+        // Shown or hidden, the overlay is told what came of them: a dialog
+        // may be answered long after the tools were put away.
+        self.disks.poll(&mut self.runtime, self.overlay.messages());
         let slice = self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
         self.meter.frame(slice, Counts::read(&self.runtime));
         let draws = self.overlay.draws();
@@ -163,6 +181,10 @@ impl Session {
                     },
                     None => self.overlay.messages().failed("The machine has no VGA"),
                 }
+            }
+            Command::Disk(command) => {
+                self.disks
+                    .execute(command, &mut self.runtime, self.overlay.messages());
             }
         }
     }

@@ -2,9 +2,9 @@
 //! file is the shell: whether the overlay is shown, the hint of the first
 //! seconds, the menu bar, the windows of the panels and the messages.
 //! `panels` is THE panel table, with a file per panel beside it (`about`,
-//! `stats`, `memory`, and one per device: `pic`, `pit`, `vga`, `keyboard`,
-//! `debug_port`); `messages` is where a tool says what it did; `theme` is
-//! the look.
+//! `disks`, `stats`, `memory`, and one per device: `pic`, `pit`, `vga`,
+//! `keyboard`, `debug_port`); `messages` is where a tool says what it did;
+//! `theme` is the look.
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
@@ -21,6 +21,7 @@
 
 mod about;
 mod debug_port;
+mod disks;
 mod keyboard;
 mod memory;
 mod messages;
@@ -31,6 +32,7 @@ mod stats;
 pub mod theme;
 mod vga;
 
+pub use disks::DiskCommand;
 pub use messages::Messages;
 pub use panels::Panel;
 
@@ -65,6 +67,8 @@ pub enum Command {
     Reset,
     /// Put the state of the display where it can be read.
     DumpVga,
+    /// Do to a drive what the Disks panel asks.
+    Disk(DiskCommand),
 }
 
 /// What the menu bar and the panels work on during a pass: the machine, and

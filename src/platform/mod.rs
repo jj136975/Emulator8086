@@ -28,8 +28,13 @@
 //! - `wait`: lets host time go by, and says whether the host could: a
 //!   browser cannot.
 //! - `fat_options`: the FAT mount options that carry the host's local time.
-//! - `save_text`: puts a text where the user can read it: in a file, or in
-//!   a download.
+//! - `save_text`, `save_bytes`: put a text, or a file made here, where the
+//!   user can get at it: in a file, or in a download.
+//! - `FILE_ACCESS`: how the user's files reach the app (`FileAccess`): by
+//!   their paths on a desktop, by their contents in a browser.
+//! - `FileDialogs`: asks the user for files in the host's own dialog
+//!   (`FileQuestion`) and does not wait for the answer, which comes later,
+//!   down a channel, as `HostFile`s: paths, or names and contents.
 //!
 //! and the clocks, which are `web_time`'s on every host: `Instant`,
 //! `SystemTime`, `UNIX_EPOCH`. They are std's on a desktop and the page's
@@ -78,6 +83,43 @@ pub struct OverlaySwitch {
     /// What the overlay calls the switch, in its hint and in its About
     /// panel.
     pub name: &'static str,
+}
+
+/// How the files of the user reach the app on a host. The tools offer what
+/// the host has, and no more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileAccess {
+    /// By their paths: the app opens, creates and writes the files the
+    /// user names, and reads a folder of them. A disk image stays in its
+    /// file.
+    Paths,
+    /// By their contents: the user hands a file over, and the app is given
+    /// its name and its bytes, never a path. What the app makes goes back
+    /// as a download. There is no file to create and no folder to read.
+    Contents,
+}
+
+/// What the user is asked in a file dialog (`FileDialogs::ask`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileQuestion {
+    /// What the dialog is headed with, where a host's dialog has a heading.
+    pub title: String,
+    pub wanted: Wanted,
+}
+
+/// What a file dialog is to come back with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wanted {
+    /// One file that exists: a disk image.
+    Image,
+    /// A disk image to write: a new file, or one to replace, which the
+    /// dialog has the user confirm. `suggested` is the name it offers.
+    /// Asked only where files have paths.
+    NewImage { suggested: String },
+    /// Files that exist, one or more, of any kind.
+    Files,
+    /// A folder. Asked only where files have paths.
+    Folder,
 }
 
 #[cfg(test)]

@@ -3,12 +3,15 @@
 //! the page's own.
 //!
 //! The invariant: nothing here blocks. Whatever takes time (the GPU's
-//! start-up, the wait for the next frame) is a task or a callback of the
-//! page's event loop, and `wait` says that it cannot wait: a call that did
-//! not return would freeze the page with the machine in it.
+//! start-up, the wait for the next frame, the user at a file picker) is a
+//! task or a callback of the page's event loop, and `wait` says that it
+//! cannot wait: a call that did not return would freeze the page with the
+//! machine in it.
 
 use std::future::Future;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use wasm_bindgen::closure::Closure;
@@ -21,10 +24,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys, WindowExtWebSys};
 use winit::window::Window;
 
-use super::OverlaySwitch;
 use super::egui_events::{CursorWish, EguiEvents};
 use super::fat_stamp;
+use super::{FileAccess, FileQuestion, OverlaySwitch, Wanted};
 use crate::Options;
+use emu8086_core::io::disk_ops::HostFile;
 
 /// The most detailed level of the log that reaches the console. The console
 /// has a filter of its own; what is cut here is the cost of formatting, on
@@ -45,8 +49,8 @@ const CANVAS_STYLE: [(&str, &str); 6] = [
     ("outline", "none"),
 ];
 
-/// How long the browser has to start reading a download before the text is
-/// given up, in milliseconds.
+/// How long the browser has to start reading a download before it is given
+/// up, in milliseconds.
 const DOWNLOAD_KEPT_MS: i32 = 60_000;
 
 /// The keys that stay the browser's own, by the `code` of their events: its
@@ -306,28 +310,103 @@ impl fatfs::TimeProvider for PageClock {
 /// what was done with it, for a message to the user, or why it could not
 /// be done.
 pub fn save_text(file: &Path, text: &str) -> Result<String, String> {
+    let parts = js_sys::Array::of1(&JsValue::from_str(text));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("text/plain;charset=utf-8");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options);
+    offer(file, "download.txt", blob)
+}
+
+/// Puts `bytes` where the user can get at them: the browser is handed them
+/// as a download, named as `file` is. Returns what was done with them, for
+/// a message to the user, or why it could not be done.
+pub fn save_bytes(file: &Path, bytes: &[u8]) -> Result<String, String> {
+    // The page's copy of the bytes: the download is read after this call
+    // has returned, when the caller's may be gone.
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("application/octet-stream");
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options);
+    offer(file, "download.bin", blob)
+}
+
+/// Offers `blob` as a download named as `file` is, or `unnamed` if `file`
+/// has no name a page can use, and says what was done, or why not.
+fn offer(
+    file: &Path,
+    unnamed: &str,
+    blob: Result<web_sys::Blob, JsValue>,
+) -> Result<String, String> {
     let name = file
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("download.txt");
-    match download(name, text) {
+        .unwrap_or(unnamed);
+    match blob.and_then(|blob| download(name, &blob)) {
         Ok(()) => Ok(format!("offered as the download {name}")),
         Err(error) => Err(format!("Cannot offer {name} as a download: {error:?}")),
     }
 }
 
-/// Has the browser download `text` as a file called `name`: a link to the
-/// text, with the name, that the page follows itself.
-fn download(name: &str, text: &str) -> Result<(), JsValue> {
+/// How the user's files reach the app: by their contents. A page is given
+/// no path to a file of its user, and can write none.
+pub const FILE_ACCESS: FileAccess = FileAccess::Contents;
+
+/// The page's file picker. It belongs to the page, whatever the window: a
+/// browser shows it over the tab.
+pub struct FileDialogs;
+
+impl FileDialogs {
+    /// Dialogs that belong to no window: the page's, as all are.
+    pub fn windowless() -> Self {
+        Self
+    }
+
+    /// The dialogs of `_window`, which are the page's.
+    pub fn new(_window: &Arc<Window>) -> Self {
+        Self
+    }
+
+    /// Asks the user `question` in the browser's file picker, and returns
+    /// at once. The answer arrives later through the channel returned: the
+    /// files chosen, each by its name and its contents, or none if the user
+    /// chose nothing. What a page cannot ask for, a folder or a file to
+    /// write, is answered with none.
+    ///
+    /// A browser opens its picker only for a page its user has just
+    /// clicked in or typed at. Asked later than that, the picker's library
+    /// puts a small form of its own into the page, with the button the
+    /// browser wants pressed.
+    pub fn ask(&self, question: FileQuestion) -> Receiver<Vec<HostFile>> {
+        let (answer, receiver) = mpsc::channel();
+        spawn(async move {
+            let dialog = rfd::AsyncFileDialog::new().set_title(question.title);
+            let picked: Vec<rfd::FileHandle> = match question.wanted {
+                Wanted::Image => dialog.pick_file().await.into_iter().collect(),
+                Wanted::Files => dialog.pick_files().await.unwrap_or_default(),
+                Wanted::NewImage { .. } | Wanted::Folder => Vec::new(),
+            };
+            let mut files = Vec::with_capacity(picked.len());
+            for file in picked {
+                files.push(HostFile::Contents {
+                    name: file.file_name(),
+                    bytes: file.read().await,
+                });
+            }
+            // Whoever asked may have gone since.
+            let _ = answer.send(files);
+        });
+        receiver
+    }
+}
+
+/// Has the browser download `blob` as a file called `name`: a link to it,
+/// with the name, that the page follows itself.
+fn download(name: &str, blob: &web_sys::Blob) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or("the page has no window")?;
     let document = window.document().ok_or("the page has no document")?;
     let body = document.body().ok_or("the page has no body")?;
 
-    let parts = js_sys::Array::of1(&JsValue::from_str(text));
-    let options = web_sys::BlobPropertyBag::new();
-    options.set_type("text/plain;charset=utf-8");
-    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options)?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+    let url = web_sys::Url::create_object_url_with_blob(blob)?;
 
     let link: web_sys::HtmlAnchorElement = document.create_element("a")?.unchecked_into();
     link.set_href(&url);
@@ -337,7 +416,7 @@ fn download(name: &str, text: &str) -> Result<(), JsValue> {
     link.click();
     link.remove();
 
-    // The browser reads the text after this call has returned: the text is
+    // The browser reads the download after this call has returned: it is
     // given up later, not here.
     let give_up = Closure::once_into_js(move || {
         let _ = web_sys::Url::revoke_object_url(&url);

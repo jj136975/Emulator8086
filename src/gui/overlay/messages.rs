@@ -62,6 +62,17 @@ impl Messages {
         });
     }
 
+    /// Takes what was reported since the last call, oldest first, each
+    /// with whether it tells of a failure: how a test of whoever reports
+    /// here reads it, without a pass to show it.
+    #[cfg(test)]
+    pub fn take_said(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.shown)
+            .into_iter()
+            .map(|message| (message.text, message.failed))
+            .collect()
+    }
+
     /// Draws the messages with their top right corner at `corner`, at input
     /// time `now`, and drops those whose time is over.
     pub(super) fn show(&mut self, ctx: &egui::Context, corner: Pos2, now: f64) {

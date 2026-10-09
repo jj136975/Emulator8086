@@ -4,10 +4,15 @@
 //! start asks of the machine.
 //!
 //! The invariant: every name here keeps the meaning `platform` gives it for
-//! all hosts. A caller that works with this side works with any other.
+//! all hosts. A caller that works with this side works with any other. That
+//! holds for what may block as well: the thread of the window blocks where
+//! `spawn` says it does and nowhere else, so a file dialog, which is open
+//! for as long as its user likes, is waited for on a thread of its own.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use clap::Parser;
@@ -18,8 +23,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::KeyCode;
 use winit::window::Window;
 
-use super::OverlaySwitch;
+use super::{FileAccess, FileQuestion, OverlaySwitch, Wanted};
 use crate::Options;
+use emu8086_core::io::disk_ops::HostFile;
 
 /// How the overlay is shown and hidden: with F12, a key no XT keyboard has,
 /// so that the guest misses nothing.
@@ -193,10 +199,109 @@ pub fn fat_options() -> fatfs::FsOptions {
 /// what was done with it, for a message to the user, or why it could not
 /// be done.
 pub fn save_text(file: &Path, text: &str) -> Result<String, String> {
-    match std::fs::write(file, text) {
+    save_bytes(file, text.as_bytes())
+}
+
+/// Puts `bytes` where the user can get at them: in the file `file`. Returns
+/// what was done with them, for a message to the user, or why it could not
+/// be done.
+pub fn save_bytes(file: &Path, bytes: &[u8]) -> Result<String, String> {
+    match std::fs::write(file, bytes) {
         Ok(()) => Ok(format!("written to {}", file.display())),
         Err(error) => Err(format!("Cannot write {}: {error}", file.display())),
     }
+}
+
+/// How the user's files reach the app: by their paths.
+pub const FILE_ACCESS: FileAccess = FileAccess::Paths;
+
+/// A file dialog's answer on its way: the paths the user chose, none if
+/// they chose nothing.
+type Choosing = std::pin::Pin<Box<dyn Future<Output = Vec<PathBuf>> + Send>>;
+
+/// The file dialogs of the desktop's system. Those of a window belong to
+/// it: while one is open, the system keeps it in front of that window.
+pub struct FileDialogs {
+    parent: Option<Arc<Window>>,
+}
+
+impl FileDialogs {
+    /// Dialogs that belong to no window: there is none yet.
+    pub fn windowless() -> Self {
+        Self { parent: None }
+    }
+
+    /// The dialogs of `window`.
+    pub fn new(window: &Arc<Window>) -> Self {
+        Self {
+            parent: Some(window.clone()),
+        }
+    }
+
+    /// Asks the user `question` in a dialog of the system, and returns at
+    /// once. The answer arrives later through the channel returned: the
+    /// files chosen, by their paths, or none if the user chose nothing. A
+    /// channel that closes without an answer says that no dialog could be
+    /// shown.
+    pub fn ask(&self, question: FileQuestion) -> Receiver<Vec<HostFile>> {
+        // No filter by extension: a disk image is known by what it holds,
+        // not by its name, and a filter that left one out would hide it.
+        let mut dialog = rfd::AsyncFileDialog::new().set_title(question.title);
+        if let Some(parent) = &self.parent {
+            dialog = dialog.set_parent(parent.as_ref());
+        }
+        // The dialog is made here, on the thread of the window: there are
+        // systems that show one from no other thread.
+        let choosing: Choosing = match question.wanted {
+            Wanted::Image => {
+                let picked = dialog.pick_file();
+                Box::pin(async move { picked.await.into_iter().map(PathBuf::from).collect() })
+            }
+            Wanted::NewImage { suggested } => {
+                let named = dialog.set_file_name(suggested).save_file();
+                Box::pin(async move { named.await.into_iter().map(PathBuf::from).collect() })
+            }
+            Wanted::Files => {
+                let picked = dialog.pick_files();
+                Box::pin(async move { paths(picked.await) })
+            }
+            Wanted::Folder => {
+                let picked = dialog.pick_folder();
+                Box::pin(async move { picked.await.into_iter().map(PathBuf::from).collect() })
+            }
+        };
+        answer_later(choosing)
+    }
+}
+
+/// The paths of the files a dialog came back with.
+fn paths(handles: Option<Vec<rfd::FileHandle>>) -> Vec<PathBuf> {
+    handles
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Waits for `choosing` on a thread of its own, and sends what the user
+/// chose down the channel returned. The thread of the window does not wait:
+/// it looks into the channel when it comes by. If the thread cannot be
+/// started, the channel closes with nothing in it.
+fn answer_later(
+    choosing: impl Future<Output = Vec<PathBuf>> + Send + 'static,
+) -> Receiver<Vec<HostFile>> {
+    let (answer, receiver) = mpsc::channel();
+    let waiting = std::thread::Builder::new()
+        .name("file dialog".to_string())
+        .spawn(move || {
+            let chosen = pollster::block_on(choosing);
+            // Whoever asked may have gone since.
+            let _ = answer.send(chosen.into_iter().map(HostFile::Path).collect());
+        });
+    if let Err(error) = waiting {
+        log::error!("No thread to wait for a file dialog on: {error}");
+    }
+    receiver
 }
 
 #[cfg(test)]

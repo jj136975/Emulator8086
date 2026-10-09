@@ -122,12 +122,47 @@ impl Screen {
         row.into_iter().map(|(value, _)| value).collect()
     }
 
+    /// The running texts level with the control of `role` labelled `label`,
+    /// left to right: the row of a table that starts with a control, as
+    /// `row` is the row of a text. Empty when the control is not on the
+    /// screen.
+    pub fn row_of(&self, role: Role, label: &str) -> Vec<&str> {
+        let Some(control) = self.find(role, label).and_then(Node::bounds) else {
+            return Vec::new();
+        };
+        let middle = (control.y0 + control.y1) / 2.0;
+        let mut row: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|node| node.role() == Role::Label)
+            .filter_map(|node| Some((node.value()?, node.bounds()?)))
+            .filter(|(_, bounds)| bounds.y0 <= middle && middle <= bounds.y1)
+            .collect();
+        row.sort_by(|(_, a), (_, b)| a.x0.total_cmp(&b.x0));
+        row.into_iter().map(|(value, _)| value).collect()
+    }
+
     /// Whether the checkbox labelled `label` is ticked.
     pub fn ticked(&self, label: &str) -> bool {
         let checkbox = self
             .find(Role::CheckBox, label)
             .unwrap_or_else(|| panic!("no checkbox {label:?} on the screen"));
         checkbox.toggled() == Some(Toggled::True)
+    }
+
+    /// Whether the radio button labelled `label` is the one chosen.
+    pub fn chosen(&self, label: &str) -> bool {
+        let radio = self
+            .find(Role::RadioButton, label)
+            .unwrap_or_else(|| panic!("no radio button {label:?} on the screen"));
+        radio.toggled() == Some(Toggled::True)
+    }
+
+    /// Whether the control of `role` labelled `label` can be used: it is on
+    /// the screen, and not greyed out.
+    pub fn enabled(&self, role: Role, label: &str) -> bool {
+        self.find(role, label)
+            .is_some_and(|control| !control.is_disabled())
     }
 
     /// Where the control of `role` labelled `label` is.

@@ -12,6 +12,7 @@ use emu8086_core::io::disk::DiskController;
 use emu8086_core::io::disk_spec::drive_label;
 
 use super::Cx;
+use super::disks::{disk_size, image_place};
 use crate::platform::OVERLAY_SWITCH;
 
 /// What the overlay's switch does. A button of the pointer is the switch on
@@ -44,39 +45,21 @@ struct Drive {
 }
 
 /// The drives that hold a disk, in the order of their BIOS numbers: the
-/// floppy drives, then the hard disks.
+/// floppy drives, then the hard disks. A disk is described as the Disks
+/// panel describes it.
 fn drives(disks: &DiskController) -> Vec<Drive> {
     let mut held: Vec<_> = disks.drives.iter().collect();
     held.sort_by_key(|(number, _)| *number);
     held.into_iter()
-        .map(|(number, image)| {
-            let bytes = image.total_bytes();
-            Drive {
-                name: drive_label(*number),
-                image: match image.backing_path() {
-                    // Windows spells a canonical path with a `\\?\` in
-                    // front, which says nothing to the reader.
-                    Some(path) => path
-                        .display()
-                        .to_string()
-                        .trim_start_matches(r"\\?\")
-                        .to_string(),
-                    None => "in memory".to_string(),
-                },
-                // A floppy is known by its size in KB, a hard disk in MB:
-                // the nearest one, since a hard disk is whole cylinders and
-                // ends a few sectors short of the size it was made for.
-                size: if *number < 0x80 {
-                    format!("{} KB", (bytes + (1 << 9)) >> 10)
-                } else {
-                    format!("{} MB", (bytes + (1 << 19)) >> 20)
-                },
-                access: if image.readonly {
-                    "read-only"
-                } else {
-                    "read-write"
-                },
-            }
+        .map(|(number, image)| Drive {
+            name: drive_label(*number),
+            image: image_place(image),
+            size: disk_size(*number, image.total_bytes()),
+            access: if image.readonly {
+                "read-only"
+            } else {
+                "read-write"
+            },
         })
         .collect()
 }

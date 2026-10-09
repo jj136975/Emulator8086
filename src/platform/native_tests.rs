@@ -1,8 +1,12 @@
-//! The command line, from its arguments to the machine they describe:
-//! every test parses a line as `options` parses the process's own and
-//! hands the result to `crate::machine`.
+//! The desktop's side of `platform`, as far as it goes without a window
+//! or a dialog: the command line, from its arguments to the machine they
+//! describe (a test parses a line as `options` parses the process's own and
+//! hands the result to `crate::machine`); the files a text or a disk is
+//! saved to; the wait; the tasks; and the thread a file dialog's answer
+//! comes from.
 
 use std::ffi::OsString;
+use std::sync::mpsc::TryRecvError;
 
 use clap::CommandFactory;
 
@@ -124,6 +128,50 @@ fn save_text_writes_the_file_and_says_where() {
     let error = save_text(&nowhere, "the text\n").unwrap_err();
     let named = format!("Cannot write {}: ", nowhere.display());
     assert!(error.starts_with(&named), "{error}");
+}
+
+/// What a disk is saved to holds its bytes as they are, every one of them,
+/// and the caller is told where; a file that cannot be written is an error
+/// that names it.
+#[test]
+fn save_bytes_writes_the_bytes_as_they_are() {
+    let file = std::env::temp_dir().join(format!("emu8086-save-bytes-{}.img", std::process::id()));
+    let bytes: Vec<u8> = (0..=255).rev().collect();
+    let saved = save_bytes(&file, &bytes);
+    let written = std::fs::read(&file);
+    let _ = std::fs::remove_file(&file);
+    assert_eq!(saved, Ok(format!("written to {}", file.display())));
+    assert_eq!(written.unwrap(), bytes);
+
+    let nowhere = file.with_extension("missing").join("disk.img");
+    let error = save_bytes(&nowhere, &bytes).unwrap_err();
+    let named = format!("Cannot write {}: ", nowhere.display());
+    assert!(error.starts_with(&named), "{error}");
+}
+
+/// A file dialog is waited for on a thread of its own: `answer_later`
+/// returns while the user is still choosing, and the files chosen come
+/// down the channel when the choice is made, by their paths.
+#[test]
+fn a_dialogs_answer_is_waited_for_on_a_thread_of_its_own() {
+    let (choose, chosen) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+    // The future stands for the dialog: it is ready when the test chooses.
+    let answer = answer_later(async move { chosen.recv().unwrap_or_default() });
+    assert_eq!(answer.try_recv(), Err(TryRecvError::Empty), "still open");
+
+    let files = vec![PathBuf::from("disk 1.img"), PathBuf::from("disk 2.img")];
+    choose.send(files.clone()).unwrap();
+    let paths = files.into_iter().map(HostFile::Path).collect();
+    assert_eq!(answer.recv_timeout(Duration::from_secs(10)), Ok(paths));
+}
+
+/// A dialog closed without a choice answers with no file: the channel
+/// holds that answer, and does not close without one, which would say that
+/// no dialog could be shown.
+#[test]
+fn a_dialog_closed_without_a_choice_answers_with_no_file() {
+    let answer = answer_later(async { paths(None) });
+    assert_eq!(answer.recv_timeout(Duration::from_secs(10)), Ok(Vec::new()));
 }
 
 /// The desktop can wait: `wait` lets the time go by and says so.

@@ -26,6 +26,7 @@
 //!   down when the overlay is shown, and the input they leave behind is
 //!   dropped on the spot.
 
+mod disk_tools;
 mod keys;
 mod meter;
 mod overlay;
@@ -177,6 +178,7 @@ impl ApplicationHandler for EmulatorApp {
             PhysicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
         ));
         let egui = OverlayInput::new(self.session.overlay.context().clone(), &window);
+        self.session.shown_in(&window);
 
         // The renderer's start-up ends when the host lets it, and leaves
         // the renderer in this channel: `adopt_renderer` looks there.

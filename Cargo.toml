@@ -26,6 +26,10 @@ bytemuck.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
 egui-wgpu.workspace = true
 
+# The host's file dialogs, for the disk tools (src/platform): those of the
+# desktop's system, and in a browser the page's file picker.
+rfd.workspace = true
+
 # What only a desktop has (src/platform/native.rs): a command line, a
 # stderr to log to, a thread that may block on the GPU's start-up.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -101,6 +105,9 @@ bytemuck = { version = "1", features = ["derive"] }
 egui = { version = "0.36", default-features = false }
 egui-wgpu = { version = "0.36", default-features = false }
 egui-winit = { version = "0.36", default-features = false }
+# With its default features, which only Linux and the BSDs have a use for:
+# the dialogs of the desktop portal, parented to a Wayland window as well.
+rfd = "0.17"
 web-time = "1.1.0"
 # The browser build (wasm32-unknown-unknown). The four of wasm-bindgen move
 # together, and trunk fetches the wasm-bindgen CLI of the version that is
