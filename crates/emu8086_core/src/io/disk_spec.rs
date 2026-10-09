@@ -180,22 +180,33 @@ pub fn parse_boot_order(spec: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// The drives of a machine that is about to start, as `open_drives` made
+/// them of the command line.
+pub struct OpenedDrives {
+    pub controller: DiskController,
+    /// What the user is to be told of the opening, a line each: an image
+    /// that was created, a disk the guest cannot use in full. Nothing here
+    /// prints: the caller knows where its user reads.
+    pub notes: Vec<String>,
+}
+
 /// Opens the images named on the command line and attaches them to a new
 /// controller: `disk_specs` to their floppy drives, `hd_specs` to hard
 /// disks 0, 1, ... in the order given.
 ///
 /// The image for floppy drive A: has to exist. An image for another floppy
 /// drive or for a hard disk is created when its file does not exist. That,
-/// and a hard disk image too large to be used in full, is reported on
-/// stderr. A floppy held in memory is formatted, at the time `clock` shows.
-/// The disks a machine starts with are no change to a guest that has not
-/// booted: no reboot is due on the controller.
+/// and a hard disk image too large to be used in full, is among the notes
+/// returned. A floppy held in memory is formatted, at the time `clock`
+/// shows. The disks a machine starts with are no change to a guest that
+/// has not booted: no reboot is due on the controller.
 pub fn open_drives(
     disk_specs: Vec<DiskSpec>,
     hd_specs: &[String],
     clock: &dyn WallClock,
-) -> Result<DiskController, String> {
+) -> Result<OpenedDrives, String> {
     let mut controller = DiskController::new();
+    let mut notes = Vec::new();
 
     for spec in disk_specs {
         let label = drive_label(spec.drive);
@@ -203,7 +214,7 @@ pub fn open_drives(
             DiskSource::Memory(size) => {
                 let mut image = DiskImage::new_in_memory_sized(size, spec.readonly);
                 if let Err(error) = image.format_fat(clock) {
-                    eprintln!("Warning: could not format floppy: {}", error);
+                    notes.push(format!("Warning: could not format floppy: {}", error));
                 }
                 image
             }
@@ -228,11 +239,11 @@ pub fn open_drives(
                     )
                 })?;
                 image.readonly = spec.readonly;
-                eprintln!(
+                notes.push(format!(
                     "{} new blank 1.44M image created: {}",
                     label,
                     path.display()
-                );
+                ));
                 image
             }
         };
@@ -258,7 +269,7 @@ pub fn open_drives(
                     )
                 })?;
                 if let Some(note) = image.capacity_note() {
-                    eprintln!("Warning: {} ({}): {}", label, path.display(), note);
+                    notes.push(format!("Warning: {} ({}): {}", label, path.display(), note));
                 }
                 image
             }
@@ -272,12 +283,12 @@ pub fn open_drives(
                             error
                         )
                     })?;
-                eprintln!(
+                notes.push(format!(
                     "{}: new blank {} MB image created: {}",
                     label,
                     HD_DEFAULT_SIZE_MB,
                     path.display()
-                );
+                ));
                 image
             }
         };
@@ -286,7 +297,7 @@ pub fn open_drives(
     }
 
     controller.bootstrap_starts();
-    Ok(controller)
+    Ok(OpenedDrives { controller, notes })
 }
 
 #[cfg(test)]

@@ -83,6 +83,13 @@ pub fn fail(message: &str) {
     std::process::exit(1);
 }
 
+/// Tells the user what a start did that they did not ask for in so many
+/// words: on stderr, where `fail` tells its errors, whatever the level of
+/// the log.
+pub fn notice(message: &str) {
+    eprintln!("{}", message);
+}
+
 /// Runs `app` in the host's event loop until its window is closed.
 pub fn run_app(mut app: impl ApplicationHandler + 'static) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");

@@ -127,6 +127,13 @@ pub fn fail(message: &str) {
     console::error_1(&JsValue::from_str(&format!("error: {message}")));
 }
 
+/// Tells the user what a start did that they did not ask for in so many
+/// words: on the console, where `fail` tells its errors, whatever the
+/// level of the log.
+pub fn notice(message: &str) {
+    console::warn_1(&JsValue::from_str(message));
+}
+
 /// Runs `app` in the page's event loop and returns to the page at once: the
 /// loop goes on for as long as the page is open.
 pub fn run_app(app: impl ApplicationHandler + 'static) {

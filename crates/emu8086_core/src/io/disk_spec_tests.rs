@@ -217,6 +217,8 @@ fn missing_boot_floppy_is_an_error_that_names_the_file() {
     );
 }
 
+/// An image that is created is among the notes for the user, a line each,
+/// and nothing else is: an image that exists is opened without a word.
 #[test]
 fn images_for_other_drives_are_created_when_missing() {
     let dir = ScratchDir::new("create");
@@ -225,7 +227,8 @@ fn images_for_other_drives_are_created_when_missing() {
         dir.spec("b", "new.img"),
         parse_disk_spec("a:memory").unwrap(),
     ];
-    let mut controller = open_drives(specs, std::slice::from_ref(&hd), &FixedClock).unwrap();
+    let opened = open_drives(specs, std::slice::from_ref(&hd), &FixedClock).unwrap();
+    let mut controller = opened.controller;
 
     assert_eq!(
         std::fs::metadata(dir.path("new.img")).unwrap().len(),
@@ -238,33 +241,70 @@ fn images_for_other_drives_are_created_when_missing() {
     assert!(controller.find_drive(0x00).is_some());
     assert!(controller.find_drive(0x01).is_some());
     assert!(controller.find_drive(0x80).is_some());
+    assert_eq!(
+        opened.notes,
+        [
+            format!(
+                "B: new blank 1.44M image created: {}",
+                dir.path("new.img").display()
+            ),
+            format!("HD0: new blank 32 MB image created: {}", hd),
+        ]
+    );
 
     // The second time the files exist and are opened as they are.
     std::fs::write(dir.path("new.img"), vec![0x5Au8; 737_280]).unwrap();
-    let mut controller = open_drives(
+    let opened = open_drives(
         vec![dir.spec("b", "new.img:ro")],
         &[format!("{}:ro", hd)],
         &FixedClock,
     )
     .unwrap();
+    let mut controller = opened.controller;
     let floppy = controller.find_drive(0x01).unwrap();
     assert!(floppy.readonly);
     assert_eq!((floppy.cylinders, floppy.sectors_per_track), (80, 9));
     assert!(controller.find_drive(0x80).unwrap().readonly);
+    assert!(opened.notes.is_empty(), "{:?}", opened.notes);
+}
+
+/// A hard disk image the guest cannot reach in full is opened all the same,
+/// and the notes say what the guest will see of it.
+#[test]
+fn a_hard_disk_too_large_to_use_in_full_is_among_the_notes() {
+    let dir = ScratchDir::new("large");
+    let large = dir.path("large.vhd");
+    // 1030 cylinders. The file is only given its size, nothing is written
+    // to it; without room for it there is nothing to test.
+    let sized = std::fs::File::create(&large).and_then(|file| file.set_len(1030 * 16 * 63 * 512));
+    if let Err(error) = sized {
+        eprintln!("skipped: cannot make a scratch file of 506 MB: {}", error);
+        return;
+    }
+
+    let opened = open_drives(Vec::new(), &[large.display().to_string()], &FixedClock).unwrap();
+    let [note] = opened.notes.as_slice() else {
+        panic!("one note: {:?}", opened.notes);
+    };
+    assert!(
+        note.starts_with(&format!("Warning: HD0 ({}): ", large.display())),
+        "{note}"
+    );
+    assert!(note.contains("506 MB") && note.contains("504 MB"), "{note}");
 }
 
 /// The disks a machine starts with are no change behind the back of a
 /// guest: there is none yet, and its first bootstrap reads them all.
 #[test]
 fn the_drives_a_machine_starts_with_leave_no_reboot_due() {
-    let controller = open_drives(
+    let opened = open_drives(
         vec![parse_disk_spec("a:memory").unwrap()],
         &["memory".to_string(), "memory".to_string()],
         &FixedClock,
     )
     .unwrap();
-    assert_eq!(controller.drives.len(), 3);
-    assert!(!controller.reboot_due());
+    assert_eq!(opened.controller.drives.len(), 3);
+    assert!(!opened.controller.reboot_due());
 }
 
 /// One image file is one disk in one drive: a second drive on the same file

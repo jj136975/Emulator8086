@@ -34,7 +34,7 @@ use crate::vm::instructions::process;
 use crate::vm::memory::{Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
-use log::debug;
+use log::{debug, warn};
 use std::cell::{Cell, Ref, RefCell};
 use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
@@ -196,6 +196,11 @@ impl Runtime {
     /// `keyboard` holds the receiving end of the channel the window sends
     /// its key events down. `clock` is the host's wall clock, for the disks
     /// that are formatted here.
+    ///
+    /// What the opening of the disks has to tell the user (`OpenedDrives`)
+    /// goes to the log here. A caller with a better place for it opens the
+    /// drives itself (`open_drives`) and builds the machine around them
+    /// (`with_drives`).
     pub fn new(
         disk_specs: Vec<DiskSpec>,
         hd_specs: Vec<String>,
@@ -204,15 +209,33 @@ impl Runtime {
         keyboard: KeyboardController,
         clock: &dyn WallClock,
     ) -> Result<Self, String> {
-        let mut disk_ctrl = open_drives(disk_specs, &hd_specs, clock)?;
+        let opened = open_drives(disk_specs, &hd_specs, clock)?;
+        for note in &opened.notes {
+            warn!("{}", note);
+        }
+        Ok(Self::with_drives(
+            opened.controller,
+            boot_order,
+            trace,
+            keyboard,
+        ))
+    }
 
+    /// Builds the machine around drives that are open already: `drives`,
+    /// which the bootstrap tries in `boot_order` if one is given.
+    pub fn with_drives(
+        mut drives: DiskController,
+        boot_order: Option<Vec<u8>>,
+        trace: bool,
+        keyboard: KeyboardController,
+    ) -> Self {
         if let Some(order) = boot_order {
-            disk_ctrl.set_boot_order(order);
+            drives.set_boot_order(order);
         }
 
-        let mut vm = Self::with_devices(disk_ctrl, keyboard);
+        let mut vm = Self::with_devices(drives, keyboard);
         vm.trace = trace;
-        Ok(vm)
+        vm
     }
 
     /// Builds a machine with the full device set wired to the port bus.

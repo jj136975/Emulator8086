@@ -12,6 +12,8 @@
 //!   desktop's command line, and nothing in a browser.
 //! - `fail`: tells the user of an error at start-up, and ends the process
 //!   where there is one.
+//! - `notice`: tells the user what a start did unasked, such as creating a
+//!   disk image, where `fail` tells its errors.
 //! - `run_app`: runs the winit application in the host's event loop: to its
 //!   end on a desktop; in a browser the loop is the page's, and the call
 //!   returns at once.
