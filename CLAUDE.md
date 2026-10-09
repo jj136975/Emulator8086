@@ -300,14 +300,19 @@ hands files over as their contents (`gui::disk_tools::tests`,
 more than WebGL2 guarantees
 (`gui::renderer::tests::the_frame_is_drawn_within_the_limits_of_webgl2`;
 with `WGPU_BACKEND=gl` it runs on the backend WebGL2 shares its shader
-translation with). `platform/web.rs` and the page are compile-checked
-only, the file picker and the download among them.
+translation with). `platform/web.rs` and the page are outside the suite,
+the file picker and the download among them.
 The page is looked at through the Playwright MCP server alone (tools named
 `mcp__playwright__*`), never through another browser: serve it with
-`trunk serve --address 0.0.0.0`, and the server's browser, which runs in a
-container, reaches it at `http://host.docker.internal:8080`. That browser
-has no GPU, so what it shows is the WebGL2 path; WebGPU needs the user's
-own browser. Without those tools, say that the page was not looked at.
+`trunk serve` on its default address (with `--address 0.0.0.0`, trunk 0.21
+was seen to log a listening server and hold no socket), and the server's
+browser, which runs in a container, reaches it through Docker Desktop at
+`http://host.docker.internal:8080`. That browser has no GPU, so what it
+shows is the WebGL2 path; WebGPU needs the user's own browser. The overlay
+is drawn in the canvas, which a snapshot of the page shows empty: it is
+driven by coordinates, `page.mouse` and `page.keyboard` in
+`browser_run_code_unsafe`. Without those tools, say that the page was not
+looked at.
 
 Known trap of the browser build: `DiskImage::save_to_file` in the core
 names its temporary file with `std::process::id()`, which panics on wasm32.
