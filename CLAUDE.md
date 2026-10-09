@@ -34,15 +34,16 @@ The app, in `src/`:
 
 | path | role |
 |---|---|
-| `main.rs` | start-up: `Options`, what a start asks of the machine (the host says what: `platform::options`); builds the machine they describe and loads its ROM, the image they name or the core's `BIOS_ROM` |
-| `platform/mod.rs` | THE names for what depends on the host, each defined by both sides with one meaning (the list is in its header), and `OverlaySwitch` |
-| `platform/native.rs` | the desktop side: the command line (`Cli`; its doc comments are the `--help` text), env_logger, the blocking event loop, the sleep, the files, egui-winit |
-| `platform/web.rs` | the browser side: the console logger and the panic hook, the spawned event loop, the canvas in the page, the download, the page's `Date` |
+| `main.rs` | start-up: `Options`, what a start asks of the machine (the host says what: `platform::options`); builds the machine they describe and loads its ROM, the image they name or the core's `BIOS_ROM`; tells the user what opening the drives did (`platform::notice`) |
+| `platform/mod.rs` | THE names for what depends on the host, each defined by both sides with one meaning (the list is in its header), and the types they share: `OverlaySwitch`, and for files `FileAccess`, `FileQuestion`, `Wanted` |
+| `platform/native.rs` | the desktop side: the command line (`Cli`; its doc comments are the `--help` text), env_logger, the blocking event loop, the sleep, the files, the system's file dialogs (rfd's, each waited for on a thread of its own), egui-winit |
+| `platform/web.rs` | the browser side: the console logger and the panic hook, the spawned event loop, the canvas in the page, the file picker (rfd's), the download of a text or a disk, the page's `Date` |
 | `platform/egui_events.rs`, `fat_stamp.rs` | the parts of the browser side that know nothing of a browser, built on the desktop for their tests alone: winit's events as egui's input (egui-winit does not build for wasm32), and a `Date` as a FAT time stamp |
 | `platform/tests.rs` | the rule of `platform` as a test: a sweep of the app's sources |
 | `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, as `platform::fat_options` carries it |
 | `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw |
-| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard and the overlay, without a window. Decides whose a key is, and carries out the overlay's `Command`s on the machine |
+| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the disk tools and the overlay, without a window. Decides whose a key is, and carries out the overlay's `Command`s on the machine |
+| `gui/disk_tools.rs` | `DiskTools`, the session's side of the Disks panel: a `DiskCommand` becomes an operation of the core (`io::disk_ops`), carried out at once or once the host's file dialog has answered (`poll`, at the start of every frame); `FileHost`, the host as the tools reach it: `platform`, or a test's hand-made answers |
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause; what each slice did with its time (`Slice`) |
 | `gui/meter.rs` | measuring the emulation: `Meter`, told of each frame by the session (the pacer's `Slice`, the machine's `Counts`), averages over about a second the guest's speed (with the last minute of it), the frames and how their host time divides, the guest's time (its clock, the time owed and dropped, the share spent halted) and the interrupts per line. It reads no clock |
 | `gui/renderer.rs` | wgpu: `FrameBlit` (frame texture and blit pipeline), `OverlayPass` (egui's meshes), `record_frame` (both in one render pass, no surface needed) and `Renderer` (the window's surface) |
@@ -50,6 +51,7 @@ The app, in `src/`:
 | `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on |
 | `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
 | `gui/overlay/about.rs` | the About panel; every panel has a file like it |
+| `gui/overlay/disks.rs` | the Disks panel: every drive with its disk (`image_place`, `disk_size`, which the About panel shares), the buttons that ask the app for a `DiskCommand` on the drive chosen, what the host cannot do left out (`platform::FILE_ACCESS`), and a reboot that is due shown with the reset |
 | `gui/overlay/stats.rs` | the Stats panel: whether the guest keeps up with real time and where the host's time goes, from the `Meter` the shell is lent (`Cx::meter`); the chart of the last minute, drawn with egui's painter; and the guest's speed at the right end of the menu bar (`readout`) |
 | `gui/overlay/memory.rs` | the Memory panel: a hex view of guest memory, the address field (`parse_address`), the jumps to where the register pairs point and to the landmarks of the first megabyte |
 | `gui/overlay/pic.rs`, `pit.rs`, `vga.rs`, `keyboard.rs`, `debug_port.rs` | the device panels: the 8259A, the 8253, the VGA and its DAC, the 8255's keyboard interface, the port E9h log |
@@ -62,16 +64,16 @@ The core, in `crates/emu8086_core/`:
 | path | role |
 |---|---|
 | `src/lib.rs` | the two rules of the crate, its public modules, `BIOS_ROM`, the crate-level test modules |
-| `src/vm/runtime.rs` | the machine: the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM loader, the loans of the devices the app reads (`pit`, `keyboard`, `debug_console`), and the account of the guest's time it keeps for whoever measures it (`guest_time`: timer clocks handed over, of them while halted, owed, dropped) |
+| `src/vm/runtime.rs` | the machine, built from what the command line names (`Runtime::new`) or around drives opened already (`with_drives`): the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM loader, the loans of the devices the app reads (`pit`, `keyboard`, `debug_console`), and the account of the guest's time it keeps for whoever measures it (`guest_time`: timer clocks handed over, of them while halted, owed, dropped) |
 | `src/vm/instructions/` | the CPU: `process()` in `mod.rs` is the opcode table, one line per opcode; the bodies live in the domain modules beside it (`alu`, `bcd`, `control`, `shift`, `stack`, `string`, `transfer`) |
 | `src/vm/modrm.rs` | `decode_rm`, the only effective-address decoder, and the `ModRM` operand widths |
 | `src/vm/registers.rs`, `memory.rs`, `cpu.rs` | the register file and the raw-pointer operand wrappers, the 1 MB memory with its ROM protection, the `Cpu` (which also holds the 8259A) |
 | `src/utils/number.rs` | `SpecialOps`: the arithmetic the instruction code is written once with for `u8` and `u16` |
-| `src/vm/cli.rs` | the monitor's disk commands (swap, new, move, save, eject, put, reset); compiled for tests only until the overlay's disk panel calls them |
 | `src/io/bus.rs` | `IoDevice` and the port bus |
 | `src/io/pic.rs`, `pit.rs`, `keyboard.rs`, `dma.rs`, `fdc.rs`, `hdc.rs`, `console.rs` | 8259A, 8253, the XT keyboard on the 8255, the 8237 as registers, two controller stand-ins, debug port E9h (which keeps its last lines). The first three and the console describe themselves to a reader without a port access: `Pic::view`, `Pit::channels`, `KeyboardController::view`, `DebugConsole::lines`; `Pic::acknowledged` tallies the interrupts acknowledged on each line |
 | `src/io/vga.rs`, `raster.rs`, `font_cp437.rs` | the VGA registers (`VgaDevice::registers` and `dac_colour` for a reader), the CPU-side rasterisers the window uploads, the 8x16 font |
-| `src/io/disk/`, `src/io/disk_spec.rs` | disk images, the host side of INT 13h, host-side FAT access and the `WallClock` its callers pass; the spellings of drives and images on the command line and in the monitor |
+| `src/io/disk/`, `src/io/disk_spec.rs` | disk images (in a host file, or in memory, made of a host's bytes and given back as them), the controller with the change lines and the reboot due after a hard disk changed (`reboot_due`), the host side of INT 13h, host-side FAT access and the `WallClock` its callers pass; the spellings of drives and images on the command line, and `open_drives`, which opens what the command line names and returns what the user is to be told of it (`OpenedDrives`) |
+| `src/io/disk_ops.rs` | the disk tools' operations (`Operation`: insert, create, move, save, eject, put; `apply`; `contents`, a disk as its bytes), each answering with an `Outcome`: words for the user, and whether the guest must be rebooted. A file comes as a `HostFile`, by its path or by its name and contents |
 | `build.rs` | reassembles `assets/rom/bios.bin` when a ROM source is newer and patches its checksum |
 | `src/bios_tests.rs` | tests that boot the real ROM on a fully wired machine (the `Machine` harness) |
 | `src/cpu_tests.rs` | the CPU against 608,000 vectors captured from real hardware (`8086/` submodule) |
@@ -143,8 +145,8 @@ box is never replaced).
   built under `cfg(any(target_arch = "wasm32", test))` and tested on the
   desktop (`egui_events.rs`, `fat_stamp.rs`); where the two hosts differ in
   what a caller does next, the name says so in what it returns
-  (`platform::wait`) and a test puts the other host's answer in its place
-  (`Pacer::waiting_with`).
+  (`platform::wait`, `platform::FILE_ACCESS`) and a test puts the other
+  host's answer in its place (`Pacer::waiting_with`, `DiskTools::on`).
 - **Keys**: the window sends `EmulatorEvent`s down a channel to
   `KeyboardController`: the scancode of the physical key (`src/gui/keys.rs`),
   so the layout is the guest's business. The overlay's switch is the
@@ -186,7 +188,26 @@ box is never replaced).
   `Session::execute` (`src/gui/session.rs`), which reports through
   `Overlay::messages`. What touches the host goes from the session to
   `platform` (the VGA dump: `platform::save_text`, a file on a desktop and a
-  download in a browser), never from the overlay.
+  download in a browser; the disk tools' dialogs), never from the overlay.
+- **A disk tool**: an `Operation` of the core's `io::disk_ops` (what it
+  does to the drives, the rules it keeps, its words for the user and
+  whether the guest must be rebooted, in its `Outcome`), a `DiskCommand`
+  the Disks panel asks for (`src/gui/overlay/disks.rs`), and its arm in
+  `DiskTools::execute` (`src/gui/disk_tools.rs`), which carries it out at
+  once or asks the host for a file first. A file dialog never blocks:
+  `platform::FileDialogs::ask` returns a channel at once, a desktop waits
+  for the dialog on a thread of its own and a browser in a task of the
+  page, and the session takes up the answers at the start of every frame,
+  shown or hidden (`DiskTools::poll`). On a desktop a file comes by its
+  path and an image stays in its file; in a browser a file comes as its
+  name and bytes (`HostFile::Contents`), an image lives in memory and a
+  disk goes back as a download (`disk_ops::contents`,
+  `platform::save_bytes`). `platform::FILE_ACCESS` says which, and the
+  panel offers nothing the host cannot do. A floppy changed from the host
+  has its change line raised; a hard disk leaves
+  `DiskController::reboot_due` set until the guest's bootstrap runs again
+  (INT 19h writes port B1h), and the panel shows it with the reset. A
+  test answers the dialogs by hand (`FileHost`, `disk_tools_tests.rs`).
 - **A colour of the overlay**: a slot of `PALETTE` in
   `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
   under `src/gui/overlay/` spells a colour.
@@ -250,22 +271,28 @@ offscreen on a real adapter and read the pixels back; without an adapter
 they print why and pass (`--nocapture` shows the adapter, and
 `WGPU_BACKEND=dx12|vulkan|gl` picks the backend). The overlay's logic and
 the session's (the menus, the commands, pause, whose a key is) run without
-a window on hand-made input (`gui::overlay::tests`, `gui::session::tests`).
-The pacer runs on the host's real clock in `gui::pacer::tests`. The window
-itself is compile-checked only and needs the user's eyes: the surface and
-its presentation, the winit event loop, and `gui/mod.rs`, which is where
-the window's events become egui's input and where the overlay's switch is
-picked out.
+a window on hand-made input (`gui::overlay::tests`, `gui::session::tests`),
+and the disk tools on a host whose dialogs the test answers
+(`gui::disk_tools::tests`). The pacer runs on the host's real clock in
+`gui::pacer::tests`. The window itself is compile-checked only and needs
+the user's eyes: the surface and its presentation, the winit event loop,
+`gui/mod.rs`, which is where the window's events become egui's input and
+where the overlay's switch is picked out, and the system's file dialogs
+(`platform::FileDialogs::ask` on a desktop; the thread their answers come
+from is tested, `answer_later`).
 
 Of the browser build the suite covers, on the desktop, what needs no
 browser: the pacer on a host that cannot wait (`gui::pacer::tests`), the
 window's events as egui's input (`platform::egui_events::tests`), the FAT
 stamp of a date (`platform::fat_stamp::tests`), the overlay's button
-(`gui::session::tests`), and the frame drawn on a device that has no more
-than WebGL2 guarantees
+(`gui::session::tests`), the disk tools and the Disks panel on a host that
+hands files over as their contents (`gui::disk_tools::tests`,
+`gui::overlay::disks::tests`), and the frame drawn on a device that has no
+more than WebGL2 guarantees
 (`gui::renderer::tests::the_frame_is_drawn_within_the_limits_of_webgl2`;
 with `WGPU_BACKEND=gl` it runs on the backend WebGL2 shares its shader
-translation with). `platform/web.rs` and the page are compile-checked only.
+translation with). `platform/web.rs` and the page are compile-checked
+only, the file picker and the download among them.
 The page is looked at through the Playwright MCP server alone (tools named
 `mcp__playwright__*`), never through another browser: serve it with
 `trunk serve --address 0.0.0.0`, and the server's browser, which runs in a
@@ -275,8 +302,13 @@ own browser. Without those tools, say that the page was not looked at.
 
 Known trap of the browser build: `DiskImage::save_to_file` in the core
 names its temporary file with `std::process::id()`, which panics on wasm32.
-Nothing in a browser reaches it yet; whatever saves a disk there must not
-go through it.
+A browser never reaches it: `disk_ops::Operation::Save` takes a path, which
+a browser's file picker never gives, and where files come as their
+contents the disk tools take a disk back as its bytes
+(`disk_ops::contents`, `DiskImage::contents`) and hand those to
+`platform::save_bytes`, a download
+(`gui::disk_tools::tests::a_disk_is_handed_over_as_its_contents_where_files_have_no_paths`).
+Whatever else saves a disk in a browser goes the same way.
 
 ## Writing conventions
 
@@ -368,8 +400,8 @@ not listed has not been asked: ask first, and add the answer here.
 |---|---|---|---|
 | 2026-10-04 | `wgpu` 24 → 30, `winit` 0.30.13 | approved | the window; the versions `egui-wgpu` 0.36 requires |
 | 2026-10-04 | `egui` 0.36, `egui-wgpu`, `egui-winit` | approved | the overlay in the window. In use, in the app only, with egui's `default_fonts` and no other feature: no system clipboard (`arboard`), no screen-reader adapter (`accesskit_winit`), no opening of links (`webbrowser`), none of which a browser has. `egui-winit` is a dependency of the native targets only: 0.36.2 does not build for wasm32 (see below) |
-| 2026-10-04 | `rfd` 0.17 | approved | file dialogs, native and in the browser |
-| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other |
+| 2026-10-04 | `rfd` 0.17 | approved | file dialogs, native and in the browser. In use, in the app on both hosts (`src/platform`): the system's dialogs on a desktop, the file picker in a browser. With its default features, which only Linux and the BSDs build (the desktop portal's dialogs, parented to a Wayland window too). In a browser it brings `web-sys` features of its own (the file input and its reader, the user's activation), which cargo adds to those the root manifest lists |
+| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other (beside those `rfd` asks for itself) |
 | 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate. In use: 0.21, with `index.html` at the root |
 | 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
 

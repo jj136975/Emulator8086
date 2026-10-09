@@ -8,7 +8,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
-- A tools overlay in the window (F12): pause and resume, reset, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the machine's drives at a glance
+- A tools overlay in the window (F12): pause and resume, reset, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, and the drives: put disks in and take them out, save them, copy host files onto them
 - Runs in a browser as well: the same application built for WebAssembly, drawn with WebGPU or WebGL2
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
@@ -83,6 +83,7 @@ F12 puts a menu bar over the picture; for the first seconds after start a hint i
 | Machine | Reset | Reboots the guest |
 | Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory (in a browser: offers it as a download) |
 | View | About | A panel with the key bindings, the version, and the machine: the image in each drive, whether it can be written, and the boot order |
+| View | Disks | Every drive with the disk it holds: where its image lives (a file, or memory), its size, its cylinders, heads and sectors, and whether it can be written. For the drive chosen in the list: put in an image file, a blank disk held in memory (a formatted floppy of a standard size, or a blank 32 MB hard disk) or a new image file (a formatted 1.44 MB floppy, or a blank 32 MB hard disk), write-protected if the box is ticked; take the disk out, move it to another drive, save it to a file, or copy host files or a whole folder onto it |
 | View | Stats | Whether the guest keeps up with real time, and where the host's time goes: the guest's speed with a chart of its last minute, how a frame divides between running the guest, idling and drawing, the guest's clock and its timer against real time, the time owed and the time dropped, the share spent halted, and the interrupts taken on each line. The menu bar shows the speed at its right end |
 | View | Memory | A hex view of guest memory with an ASCII column: an address field (`B8000` or `B800:0000`), jumps to where the registers point and to the vector table, the BIOS data area, video memory and the ROM |
 | View | Interrupts (8259A) | Each interrupt line's request, in-service and mask bits, the vector base and the modes in force |
@@ -95,7 +96,7 @@ A panel is a window over the picture that can be moved and closed. What a tool d
 
 While the overlay is shown the keys still go to the guest, except that Tab moves between the overlay's controls, and that the keys are the overlay's own for as long as one of its menus is open or one of its controls has the keyboard focus (Escape closes the menu and gives the focus up). Whatever the guest was holding at that moment is released.
 
-Disk tools (swapping and saving disks, copying host files onto them) are to come as panels of the overlay; until then, disks are chosen on the command line.
+The Disks panel asks for files in the system's own file dialogs, and the guest runs on while one is open. An image file put into a drive is the disk itself: what the guest writes goes straight to the file. A blank disk lives in memory until it is saved. One image file is in one drive at most, putting an image in never creates a file, and a new image file never replaces one. DOS notices a floppy change by itself. It does not notice a change to a hard disk, and writes what it holds in memory over it: after a hard disk was put in, taken out, moved or written to, the guest has to be rebooted before it uses the drive, which the panel says, with a button that resets the machine. To copy files onto a hard disk without a reboot, put them on a floppy and `COPY` them in DOS.
 
 ### Keyboard Layouts
 
@@ -133,9 +134,12 @@ The picture is drawn with WebGPU where the browser has a working one, and with W
 
 | | On a desktop | In a browser |
 |---|---|---|
-| The machine at start | What the command line asks for | The built-in BIOS and no disk: the BIOS reports that there is nothing to boot |
+| The machine at start | What the command line asks for | The built-in BIOS and no disk: the BIOS reports that there is nothing to boot and waits for a key. Put a disk in with the Disks panel, then press a key |
 | The tools overlay | F12 | A right-click on the picture. F12 stays the browser's key, for its developer tools; the hint and the About panel name the right-click |
 | Machine > Dump VGA state | Writes `vga_dump.txt` | Offers `vga_dump.txt` as a download |
+| An image file put into a drive | Is the disk: the guest writes to the file | Is copied into the page and held in memory: the file stays as it was |
+| Saving a disk | To a file named in a dialog | As a download |
+| A new image file, a folder of host files | Offered | Not offered: a page can create no file and read no folder |
 | The log, and errors | stderr, at the levels `RUST_LOG` names | The browser's console, from the `info` level up. A panic is told there too |
 | Time stamps on FAT volumes | The local time of the host | The local time of the browser |
 
@@ -143,7 +147,7 @@ The keys go to the guest while the picture has the keyboard: click it once. The 
 
 The machine runs with the frames of the page. An idle or paused guest gives the page its thread back until the next frame. A tab in the background gets no frames: the machine stands still until the tab is shown again, and the guest's timer is then owed a quarter of a second at most, as after any stall.
 
-Not in the browser yet: disks. A page has no command line to name images on; loading them through the overlay is to come with its disk tools.
+Disks get into the browser through the Disks panel: an image file chosen in the browser's file picker is copied into the page, where it lives in memory and takes the guest's writes, and Download gives the disk back as a file. A blank disk can be put in as on a desktop, and files chosen in the picker copied onto a disk. A browser opens its file picker only right after a click or a key: when it will not, a small form in the page asks for the file instead.
 
 ## Technical Details
 
@@ -210,7 +214,7 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 ### Testing
 
-The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking through it with hand-made input. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, the time stamps, and the frame drawn within the limits WebGL2 guarantees. The page itself is outside the suite.
+The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking through it with hand-made input, and the disk tools with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, the time stamps, the disk tools on a host that hands files over as their contents, and the frame drawn within the limits WebGL2 guarantees. The page itself is outside the suite, and so are the system's file dialogs and the browser's file picker.
 
 ```bash
 # Fetch the CPU test vectors (git submodule)
