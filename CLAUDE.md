@@ -45,7 +45,8 @@ The app, in `src/`:
 | `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw |
 | `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the fingers on the screen, the disk tools and the overlay, without a window. Decides whose a key is and when a finger held on the picture works the overlay's switch, and carries out the overlay's `Command`s on the machine; times the overlay's pass and passes the window's `Drawn` on to the meter |
 | `gui/hold.rs` | the overlay's switch on a touch screen: `Hold`, told of the fingers and of the time, says when a finger held still on the picture is due |
-| `gui/disk_tools.rs` | `DiskTools`, the session's side of the Disks panel: a `DiskCommand` becomes an operation of the core (`io::disk_ops`), carried out at once or once the host's file dialog has answered (`poll`, at the start of every frame); `FileHost`, the host as the tools reach it: `platform`, or a test's hand-made answers |
+| `gui/disk_tools.rs` | `DiskTools`, the session's side of the Disks panel: a `DiskCommand` becomes an operation of the core (`io::disk_ops`), carried out at once or once the host's file dialog has answered (`poll`, at the start of every frame) |
+| `gui/host/` | the host as the session's tools reach it. `mod.rs`: `FileHost` (its dialogs, what it lets out), `Platform` (the host the app runs on), and `Awaited`, the questions whose answers are on their way down channels, each with what it was asked for; `testing.rs`: `ByHand`, a host whose answers a test gives by hand |
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause; what each slice did with its time (`Slice`) |
 | `gui/meter.rs` | measuring the emulation: `Meter`, told of each frame by the session (the pacer's `Slice`, the machine's `Counts`) and of what the frame spent outside its slice (the overlay's pass, the window's `Drawn`), averages over about a second the guest's speed (with the last minute of it), the frames and how their host time divides into five (running, idle, the overlay, the drawing, the wait for the display), the guest's time (its clock, the time owed and dropped, the share spent halted) and the interrupts per line. It reads no clock |
 | `gui/renderer/` | wgpu. `mod.rs`: `record_frame` (the picture and the overlay in one render pass, no surface needed) and what asks for a device; `blit.rs`: `FrameBlit` (frame texture and blit pipeline, the whole-number viewport, the WGSL); `overlay_pass.rs`: `OverlayPass` (egui's meshes); `surface.rs`: `Renderer` (the window's surface), whose `render` returns a `Drawn`: how long the surface kept it waiting for a frame to draw on, and how long the rest took |
@@ -244,8 +245,9 @@ box is never replaced).
   panel offers nothing the host cannot do. A floppy changed from the host
   has its change line raised; a hard disk leaves
   `DiskController::reboot_due` set until the guest's bootstrap runs again
-  (INT 19h writes port B1h), and the panel shows it with the reset. A
-  test answers the dialogs by hand (`FileHost`, `disk_tools_tests.rs`).
+  (INT 19h writes port B1h), and the panel shows it with the reset. The
+  host is a `FileHost` (`src/gui/host/`), and a test answers its dialogs
+  by hand (`host::testing::ByHand`, `disk_tools_tests.rs`).
 - **A colour of the overlay**: a slot of `PALETTE` in
   `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
   under `src/gui/overlay/` spells a colour.

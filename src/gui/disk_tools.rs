@@ -5,10 +5,11 @@
 //! it in the host's dialog, and is carried out when the answer is there.
 //! Either way the overlay's messages say what came of it.
 //!
-//! The host is reached through `FileHost` and no other way: `platform` for
-//! the app, hand-made answers for a test. How its files come, by their
-//! paths or by their contents (`FileAccess`), decides what a command does:
-//! a disk is saved to a file the user names, or handed over as a download.
+//! The host is reached through `FileHost` and no other way (`gui::host`):
+//! `platform` for the app, hand-made answers for a test. How its files
+//! come, by their paths or by their contents (`FileAccess`), decides what a
+//! command does: a disk is saved to a file the user names, or handed over
+//! as a download.
 //!
 //! The invariant: nothing here waits for the user. A dialog is asked for
 //! and the frame goes on with the guest running; the answer arrives through
@@ -18,7 +19,6 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 use winit::window::Window;
 
@@ -26,40 +26,14 @@ use emu8086_core::io::disk_ops::{self, Disk, HostFile, Operation};
 use emu8086_core::io::disk_spec::drive_label;
 use emu8086_core::vm::runtime::Runtime;
 
+use super::host::{Awaited, FileHost, Platform};
 use super::overlay::{DiskCommand, Messages};
-use crate::platform::{self, FileAccess, FileDialogs, FileQuestion, Wanted};
+use crate::platform::{self, FileAccess, FileQuestion, Wanted};
 use crate::wall_clock::HostClock;
 
 /// What a message says after an operation that changed a hard disk. The
 /// Disks panel says it at length, and for as long as it holds.
 const REBOOT: &str = "Reboot the guest before it uses the drive";
-
-/// The host, as the disk tools reach it.
-pub(super) trait FileHost {
-    /// Asks the user `question` in a dialog of the host's, and returns at
-    /// once: the files chosen come down the channel, none if the user chose
-    /// nothing. A channel that closes with nothing in it says that no
-    /// dialog could be shown.
-    fn ask(&mut self, question: FileQuestion) -> Receiver<Vec<HostFile>>;
-
-    /// Hands the user `bytes` as a file named as `file` is, where the host
-    /// lets a file out (`platform::save_bytes`), and says what was done
-    /// with them, or why it could not be done.
-    fn save_bytes(&mut self, file: &Path, bytes: &[u8]) -> Result<String, String>;
-}
-
-/// The host the app runs on.
-struct Platform(FileDialogs);
-
-impl FileHost for Platform {
-    fn ask(&mut self, question: FileQuestion) -> Receiver<Vec<HostFile>> {
-        self.0.ask(question)
-    }
-
-    fn save_bytes(&mut self, file: &Path, bytes: &[u8]) -> Result<String, String> {
-        platform::save_bytes(file, bytes)
-    }
-}
 
 /// What a dialog was opened for: the operation its answer completes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,12 +44,6 @@ enum Purpose {
     Put { drive: u8 },
 }
 
-/// A dialog that is open, or was: its answer has not been taken up.
-struct Asked {
-    purpose: Purpose,
-    answer: Receiver<Vec<HostFile>>,
-}
-
 /// What carries out the Disks panel's commands: the host it asks for files,
 /// and the dialogs whose answers it waits for.
 pub struct DiskTools {
@@ -83,17 +51,14 @@ pub struct DiskTools {
     /// How the host's files come, which decides what a command does.
     access: FileAccess,
     /// The dialogs asked for whose answers have not been taken up.
-    asked: Vec<Asked>,
+    asked: Awaited<Purpose, Vec<HostFile>>,
 }
 
 impl DiskTools {
     /// The tools on the host the app runs on. Their dialogs belong to no
     /// window until one is named (`set_window`).
     pub fn new() -> Self {
-        Self::on(
-            Box::new(Platform(FileDialogs::windowless())),
-            platform::FILE_ACCESS,
-        )
+        Self::on(Box::new(Platform::windowless()), platform::FILE_ACCESS)
     }
 
     /// The tools on `host`, whose files come by `access`.
@@ -101,14 +66,14 @@ impl DiskTools {
         Self {
             host,
             access,
-            asked: Vec::new(),
+            asked: Awaited::default(),
         }
     }
 
     /// Names the window the machine is shown in: the dialogs asked for
     /// from now on belong to it.
     pub fn set_window(&mut self, window: &Arc<Window>) {
-        self.host = Box::new(Platform(FileDialogs::new(window)));
+        self.host = Box::new(Platform::of(window));
     }
 
     /// Carries `command` out on the drives of `runtime`, or asks the user
@@ -188,19 +153,11 @@ impl DiskTools {
     /// carries out what each dialog was opened for. A dialog the user
     /// closed without choosing asked for nothing.
     pub fn poll(&mut self, runtime: &mut Runtime, messages: &mut Messages) {
-        let mut answered = Vec::new();
-        self.asked.retain(|asked| match asked.answer.try_recv() {
-            Ok(files) => {
-                answered.push((asked.purpose, files));
-                false
-            }
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => {
+        for (purpose, files) in self.asked.answered() {
+            let Some(files) = files else {
                 messages.failed("The file dialog could not be shown");
-                false
-            }
-        });
-        for (purpose, files) in answered {
+                continue;
+            };
             if let Some(operation) = operation(purpose, files, messages) {
                 apply(operation, runtime, messages);
             }
@@ -210,7 +167,7 @@ impl DiskTools {
     /// Opens a dialog headed `title` for `wanted`, to be answered later.
     fn ask(&mut self, purpose: Purpose, title: String, wanted: Wanted) {
         let answer = self.host.ask(FileQuestion { title, wanted });
-        self.asked.push(Asked { purpose, answer });
+        self.asked.push(purpose, answer);
     }
 
     /// Hands the disk in `drive` to the user. Where files have paths, the

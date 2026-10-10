@@ -5,67 +5,19 @@
 //! (`emu8086_core::io::disk_ops`); the panel that asks for the commands is
 //! tested beside it (`overlay::disks`).
 
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
 use egui::accesskit::Role;
 use winit::event::ElementState;
 
 use super::*;
+use crate::gui::host::testing::ByHand;
 use crate::gui::overlay::testing::Driver;
 use crate::gui::session::Session;
 use emu8086_core::io::disk::DiskImage;
 use emu8086_core::io::disk_spec::parse_disk_specs;
 use emu8086_core::io::keyboard::KeyboardController;
-
-/// What a host was asked: the dialogs it was to show, each with the end of
-/// the channel its answer goes down, and the files it was handed to let
-/// out.
-#[derive(Default)]
-struct Desk {
-    questions: Vec<(FileQuestion, Sender<Vec<HostFile>>)>,
-    handed_out: Vec<(PathBuf, Vec<u8>)>,
-}
-
-/// A host whose dialogs the test answers, through the ends their answers
-/// go down. It keeps what it is asked on a desk the test reads.
-#[derive(Clone, Default)]
-struct ByHand(Rc<RefCell<Desk>>);
-
-impl ByHand {
-    /// The dialogs asked for since the last look.
-    fn questions(&self) -> Vec<(FileQuestion, Sender<Vec<HostFile>>)> {
-        std::mem::take(&mut self.0.borrow_mut().questions)
-    }
-
-    /// The one dialog asked for since the last look.
-    fn question(&self) -> (FileQuestion, Sender<Vec<HostFile>>) {
-        let mut questions = self.questions();
-        assert_eq!(questions.len(), 1, "one dialog");
-        questions.remove(0)
-    }
-
-    /// The files handed out since the last look, by name.
-    fn handed_out(&self) -> Vec<(PathBuf, Vec<u8>)> {
-        std::mem::take(&mut self.0.borrow_mut().handed_out)
-    }
-}
-
-impl FileHost for ByHand {
-    fn ask(&mut self, question: FileQuestion) -> Receiver<Vec<HostFile>> {
-        let (answer, receiver) = channel();
-        self.0.borrow_mut().questions.push((question, answer));
-        receiver
-    }
-
-    fn save_bytes(&mut self, file: &Path, bytes: &[u8]) -> Result<String, String> {
-        let mut desk = self.0.borrow_mut();
-        desk.handed_out.push((file.to_path_buf(), bytes.to_vec()));
-        Ok(format!("offered as the download {}", file.display()))
-    }
-}
 
 fn question(title: &str, wanted: Wanted) -> FileQuestion {
     FileQuestion {
@@ -287,7 +239,7 @@ fn a_dialog_closed_without_a_choice_does_nothing() {
         bench.poll();
         assert_eq!(bench.said(), [], "{command:?}");
         assert_eq!(bench.held(), [0x00], "{command:?}");
-        assert!(bench.tools.asked.is_empty(), "{command:?}");
+        assert_eq!(bench.tools.asked.waiting(), 0, "{command:?}");
     }
 }
 
@@ -344,7 +296,7 @@ fn each_dialog_is_carried_out_when_its_own_answer_comes() {
         (Some(368_640), Some(737_280))
     );
     assert_eq!(bench.said().len(), 2);
-    assert_eq!(bench.tools.asked.len(), 1, "the one never answered");
+    assert_eq!(bench.tools.asked.waiting(), 1, "the one never answered");
     drop(never);
 }
 

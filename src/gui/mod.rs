@@ -32,6 +32,7 @@
 
 mod disk_tools;
 mod hold;
+mod host;
 mod keys;
 mod meter;
 mod overlay;
