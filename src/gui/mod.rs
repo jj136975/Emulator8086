@@ -19,7 +19,11 @@
 //!   it. Every other event goes to egui first: a key goes on to the guest
 //!   unless egui kept it or the overlay has the keyboard (`Session::key`),
 //!   and a button of the pointer that is the switch works it unless egui
-//!   kept the press (`Session::overlay_button`).
+//!   kept the press (`Session::overlay_button`). On every host a finger
+//!   held still on the picture works the switch as well: the session is
+//!   told of every finger (`Session::touch`), and asked at every frame
+//!   whether one's time is up (`Session::hold`), since a finger that rests
+//!   sends no event.
 //! - A hidden overlay costs a frame nothing: no input is gathered for it,
 //!   no pass run, nothing painted. Events still go through egui's window
 //!   state, so that it knows where the pointer is and which modifiers are
@@ -27,6 +31,7 @@
 //!   dropped on the spot.
 
 mod disk_tools;
+mod hold;
 mod keys;
 mod meter;
 mod overlay;
@@ -38,7 +43,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::PhysicalKey;
@@ -115,6 +120,19 @@ impl EmulatorApp {
         }
     }
 
+    /// `position`, in the window's physical pixels, in egui's points: the
+    /// pixels per point are the window's scale factor times egui's zoom.
+    /// `None` before there is a window.
+    fn points(&self, position: PhysicalPosition<f64>) -> Option<egui::Pos2> {
+        let front = self.front.as_ref()?;
+        let zoom = self.session.overlay.context().zoom_factor();
+        let pixels_per_point = front.window.scale_factor() as f32 * zoom;
+        Some(egui::pos2(
+            position.x as f32 / pixels_per_point,
+            position.y as f32 / pixels_per_point,
+        ))
+    }
+
     /// Hands `event` to egui. Returns whether egui kept it for itself, which
     /// only a shown overlay can.
     fn offer_to_overlay(&mut self, event: &WindowEvent) -> bool {
@@ -133,8 +151,12 @@ impl EmulatorApp {
 
     /// One frame: the session runs the guest and the overlay, the renderer
     /// draws both, and the next redraw is asked for. Without a renderer yet
-    /// there is no frame, only the asking.
+    /// there is no frame, only the asking. First, a finger held still on
+    /// the picture may have worked the overlay's switch since the last one.
     fn redraw(&mut self) {
+        let now = platform::Instant::now();
+        self.switch_overlay(|session| session.hold(now));
+
         let Some(front) = &mut self.front else {
             return;
         };
@@ -249,6 +271,13 @@ impl ApplicationHandler for EmulatorApp {
                 if OVERLAY_SWITCH.button == Some(button) =>
             {
                 self.switch_overlay(|session| session.overlay_button(state, kept));
+            }
+
+            WindowEvent::Touch(touch) => {
+                if let Some(at) = self.points(touch.location) {
+                    let now = platform::Instant::now();
+                    self.session.touch(touch.id, touch.phase, at, now);
+                }
             }
 
             WindowEvent::Focused(false) => self.session.focus_lost(),

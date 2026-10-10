@@ -4,12 +4,16 @@
 //! the app for the commands of the Machine menu, a panel for what it does
 //! itself (`Cx::messages`).
 //!
+//! A message takes no input: a click goes to what lies under it. It is
+//! part of what the overlay shows all the same, and a finger held on it is
+//! not on the picture (`covers`).
+//!
 //! The invariant: a message's time starts when it is first shown, not when
 //! it is reported. Time is egui's input time, which only a pass tells, so a
 //! message reported between two passes, or while the overlay is hidden, is
 //! still read for its whole time once it is on the screen.
 
-use egui::{Align, Align2, Area, Frame, Id, Layout, Order, Pos2};
+use egui::{Align, Align2, Area, Frame, Id, Layout, Order, Pos2, Rect};
 
 use super::theme::PALETTE;
 
@@ -33,6 +37,9 @@ struct Message {
 #[derive(Default)]
 pub struct Messages {
     shown: Vec<Message>,
+    /// Where the last pass drew the messages, if it drew any. They take no
+    /// input, so egui's layers do not have them.
+    drawn: Option<Rect>,
 }
 
 impl Messages {
@@ -73,15 +80,21 @@ impl Messages {
             .collect()
     }
 
+    /// Whether the last pass drew a message at `at`.
+    pub(super) fn covers(&self, at: Pos2) -> bool {
+        self.drawn.is_some_and(|drawn| drawn.contains(at))
+    }
+
     /// Draws the messages with their top right corner at `corner`, at input
     /// time `now`, and drops those whose time is over.
     pub(super) fn show(&mut self, ctx: &egui::Context, corner: Pos2, now: f64) {
+        self.drawn = None;
         self.shown
             .retain(|message| message.until.is_none_or(|until| now < until));
         if self.shown.is_empty() {
             return;
         }
-        Area::new(Id::new("overlay_messages"))
+        let drawn = Area::new(Id::new("overlay_messages"))
             .order(Order::Foreground)
             .pivot(Align2::RIGHT_TOP)
             .fixed_pos(corner)
@@ -106,5 +119,6 @@ impl Messages {
                     });
                 }
             });
+        self.drawn = Some(drawn.response.rect);
     }
 }

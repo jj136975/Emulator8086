@@ -71,7 +71,8 @@ pub use web::*;
 pub use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// How the user shows and hides the overlay on a host: with a key, with a
-/// button of the pointer, or with either.
+/// button of the pointer, or with either. A finger held still on the
+/// picture does it on every host besides (`gui::hold`).
 pub struct OverlaySwitch {
     /// The key that does it. It is the window's: neither the overlay nor
     /// the guest sees it.

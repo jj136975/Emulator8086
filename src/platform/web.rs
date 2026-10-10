@@ -64,11 +64,13 @@ const BROWSER_KEYS: [&str; 2] = ["F11", "F12"];
 /// pointer, on the picture. A page has no key for it: F12, the desktop's,
 /// is the browser's own (`BROWSER_KEYS`), and the keys a browser has no use
 /// for are the guest's. The pointer is free, since the machine has no
-/// mouse.
+/// mouse. A phone or a tablet has no secondary button: there a finger held
+/// still on the picture does it, which works on every host and which the
+/// name tells of here, since a phone reaches the app as a page.
 pub const OVERLAY_SWITCH: OverlaySwitch = OverlaySwitch {
     key: None,
     button: Some(MouseButton::Right),
-    name: "Right-click",
+    name: "Right-click or touch and hold",
 };
 
 /// Sends the log to the page's console, and has a panic told there too.

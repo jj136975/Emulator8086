@@ -165,6 +165,20 @@ impl Screen {
             .is_some_and(|control| !control.is_disabled())
     }
 
+    /// Where the running text `text` is.
+    pub fn text_rect(&self, text: &str) -> Rect {
+        let bounds = self
+            .nodes
+            .iter()
+            .filter(|node| node.role() == Role::Label && node.value() == Some(text))
+            .find_map(Node::bounds)
+            .unwrap_or_else(|| panic!("no text {text:?} on the screen: {:?}", self.texts()));
+        Rect::from_min_max(
+            pos2(bounds.x0 as f32, bounds.y0 as f32),
+            pos2(bounds.x1 as f32, bounds.y1 as f32),
+        )
+    }
+
     /// Where the control of `role` labelled `label` is.
     pub fn rect(&self, role: Role, label: &str) -> Rect {
         let bounds = self

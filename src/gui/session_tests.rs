@@ -12,6 +12,7 @@ use egui::accesskit::Role;
 use winit::keyboard::KeyCode;
 
 use super::*;
+use crate::gui::hold::HOLD;
 use crate::gui::overlay::testing::{Driver, Passes, SCREEN, input, key};
 use crate::wall_clock::HostClock;
 use EmulatorEvent::{ScanRelease, Scancode};
@@ -131,6 +132,102 @@ fn the_pointer_is_the_overlays_over_what_it_shows_and_not_on_the_picture() {
     session.wait(1.0);
     let panel = session.screen().rect(Role::Window, "About").center();
     assert!(kept_at(&mut session, panel), "over a panel");
+}
+
+/// The point in the middle of the picture, which nothing of the overlay
+/// covers while no panel is open.
+fn middle() -> egui::Pos2 {
+    egui::pos2(SCREEN[0] as f32 / 2.0, SCREEN[1] as f32 / 2.0)
+}
+
+/// A finger held still on the picture shows the overlay as soon as its time
+/// is up, before it lifts, and a finger held there again hides it. Nothing
+/// but the session's own frames is needed: a hidden overlay runs no pass
+/// for it.
+#[test]
+fn a_finger_held_still_on_the_picture_works_the_switch() {
+    let (mut session, _sent) = session_with(&BUSY_ROM);
+    let start = Instant::now();
+    session.touch(1, TouchPhase::Started, middle(), start);
+    session.hold(start + HOLD - Duration::from_millis(1));
+    assert!(!session.overlay.visible(), "not yet");
+    session.hold(start + HOLD);
+    assert!(session.overlay.visible(), "its time is up");
+    session.hold(start + 10 * HOLD);
+    assert!(session.overlay.visible(), "once per hold");
+
+    session.touch(1, TouchPhase::Ended, middle(), start + 10 * HOLD);
+    let again = start + 20 * HOLD;
+    session.touch(2, TouchPhase::Started, middle(), again);
+    session.hold(again + HOLD);
+    assert!(!session.overlay.visible());
+    assert!(
+        !session.frame(|| panic!("no input is gathered for an overlay that shows nothing")),
+        "the hint was over when the switch was found"
+    );
+}
+
+/// A finger held on what the overlay shows is the overlay's, however long it
+/// stays there: held on the menu bar or on the window of a panel, it leaves
+/// the overlay shown.
+#[test]
+fn a_finger_held_on_the_overlay_leaves_it_shown() {
+    let (mut session, _sent) = shown(&BUSY_ROM);
+    session.toggle_in_view_menu("About");
+    let bar = session.screen().rect(Role::Button, "View").center();
+    let panel = session.screen().rect(Role::Window, "About").center();
+
+    let start = Instant::now();
+    for (finger, at) in [(1, bar), (2, panel)] {
+        session.target.touch(finger, TouchPhase::Started, at, start);
+    }
+    session.target.hold(start + 10 * HOLD);
+    assert!(session.target.overlay.visible());
+}
+
+/// A finger that came down before the overlay showed something under it
+/// presses nothing there when it lifts: held on the picture where the
+/// Machine menu's button will be, it shows the overlay, and its lift does
+/// not open the menu.
+#[test]
+fn a_finger_down_before_the_overlay_showed_presses_nothing_when_it_lifts() {
+    let (mut session, _sent) = shown(&BUSY_ROM);
+    let machine = session.screen().rect(Role::Button, "Machine").center();
+    session.target.overlay_key(ElementState::Pressed, false);
+    assert!(!session.target.overlay.visible());
+
+    // While the overlay is hidden, the window drops what egui would make
+    // of the finger.
+    let start = Instant::now();
+    session.target.touch(1, TouchPhase::Started, machine, start);
+    session.target.hold(start + HOLD);
+    assert!(session.target.overlay.visible());
+    session.frame(Vec::new());
+
+    // The lift, as the window hands it to egui.
+    let finger = egui::TouchId(1);
+    session.frame(vec![
+        egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: finger,
+            phase: egui::TouchPhase::End,
+            pos: machine,
+            force: None,
+        },
+        egui::Event::PointerButton {
+            pos: machine,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        },
+        egui::Event::PointerGone,
+    ]);
+    session.frame(Vec::new());
+    assert!(session.screen().has(Role::Button, "Machine"));
+    assert!(
+        !session.screen().has(Role::Button, "Reset"),
+        "the menu is shut"
+    );
 }
 
 /// An overlay shown by its button with the focus where it was left has the

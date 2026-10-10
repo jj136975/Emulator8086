@@ -36,7 +36,9 @@ pub use disks::DiskCommand;
 pub use messages::Messages;
 pub use panels::Panel;
 
-use egui::{Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Vec2, Window, vec2};
+use egui::{
+    Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Pos2, Rect, Vec2, Window, vec2,
+};
 
 use super::meter::Meter;
 use crate::platform::OVERLAY_SWITCH;
@@ -115,6 +117,9 @@ pub struct Overlay {
     hint: Hint,
     /// The panels whose windows are open.
     open: Vec<Panel>,
+    /// What the menu bar left of the screen below it in the last pass that
+    /// drew it.
+    below_bar: Rect,
     messages: Messages,
     /// What the last pass drew, until `take_paint` hands it on.
     shapes: Vec<egui::epaint::ClippedShape>,
@@ -145,6 +150,7 @@ impl Overlay {
             visible: false,
             hint: Hint::Unstarted,
             open: Vec::new(),
+            below_bar: Rect::EVERYTHING,
             messages: Messages::default(),
             shapes: Vec::new(),
             pixels_per_point: 1.0,
@@ -182,6 +188,27 @@ impl Overlay {
     pub fn wants_keyboard(&self) -> bool {
         self.visible
             && (self.ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(&self.ctx))
+    }
+
+    /// Whether the overlay shows something at `at`, in points, as its last
+    /// pass laid it out: the menu bar, a window, an open menu or a message.
+    /// Anywhere else is the picture. A hidden overlay covers nothing: the
+    /// hint is not one to touch.
+    pub fn covers(&self, at: Pos2) -> bool {
+        if !self.visible {
+            return false;
+        }
+        if self.messages.covers(at) {
+            return true;
+        }
+        match self.ctx.layer_id_at(at) {
+            // The menu bar is drawn on egui's background layer, which is
+            // where the picture is too: there, the bar is what lies outside
+            // the room it left below it.
+            Some(layer) if layer.order == Order::Background => !self.below_bar.contains(at),
+            Some(_) => true,
+            None => false,
+        }
     }
 
     /// Where the app says what came of a command.
@@ -271,6 +298,7 @@ impl Overlay {
         // What the menu bar leaves of the window: the panels stay in it,
         // and the messages go to its corner.
         let below_bar = ui.available_rect_before_wrap();
+        self.below_bar = below_bar;
         for (index, panel) in Panel::ALL.into_iter().enumerate() {
             let mut is_open = open.contains(&panel);
             // A window takes the size of what its panel shows: a tool over

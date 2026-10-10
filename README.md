@@ -66,16 +66,17 @@ cargo run --release -- my-bios.bin --hd msdos.vhd --boot hd0
 
 ### In-Emulator Controls
 
-| Key | Action |
-|-----|--------|
+| Control | Action |
+|---------|--------|
 | F12 | Show or hide the tools overlay (in a browser: a right-click on the picture, see [Web build](#web-build)) |
+| Touch and hold | On a touch screen: a finger held still on the picture for half a second shows or hides the tools overlay, as soon as the time is up |
 | Any other key | Goes to the guest, with the exceptions below while the overlay is shown |
 
 Closing the window quits the emulator.
 
 ### The Tools Overlay
 
-F12 puts a menu bar over the picture; for the first seconds after start a hint in the corner names the key. The guest keeps running under it.
+F12, or a finger held on the picture, puts a menu bar over the picture; for the first seconds after start a hint in the corner names the switch. The guest keeps running under it.
 
 | Menu | Entry | What it does |
 |------|-------|--------------|
@@ -141,7 +142,7 @@ The picture is drawn with WebGPU where the browser has a working one, and with W
 | | On a desktop | In a browser |
 |---|---|---|
 | The machine at start | What the command line asks for | The built-in BIOS and no disk: the BIOS reports that there is nothing to boot and waits for a key. Put a disk in with the Disks panel, then press a key |
-| The tools overlay | F12 | A right-click on the picture. F12 stays the browser's key, for its developer tools; the hint and the About panel name the right-click |
+| The tools overlay | F12 | A right-click on the picture. F12 stays the browser's key, for its developer tools; the hint and the About panel say "Right-click or touch and hold" |
 | Machine > Dump VGA state | Writes `vga_dump.txt` | Offers `vga_dump.txt` as a download |
 | An image file put into a drive | Is the disk: the guest writes to the file | Is copied into the page and held in memory: the file stays as it was |
 | Saving a disk | To a file named in a dialog | As a download |
@@ -154,6 +155,12 @@ The keys go to the guest while the picture has the keyboard: click it once. The 
 The machine runs with the frames of the page. An idle or paused guest gives the page its thread back until the next frame. A tab in the background gets no frames: the machine stands still until the tab is shown again, and the guest's timer is then owed a quarter of a second at most, as after any stall.
 
 Disks get into the browser through the Disks panel: an image file chosen in the browser's file picker is copied into the page, where it lives in memory and takes the guest's writes, and Download gives the disk back as a file. A blank disk can be put in as on a desktop, and files chosen in the picker copied onto a disk. A browser opens its file picker only right after a click or a key: when it will not, a small form in the page asks for the file instead.
+
+### Phones and tablets
+
+On a touch screen a finger works the tools overlay as the mouse does: a tap is a click. There is no right-click to show the overlay with: a finger held still on the picture for half a second shows it or hides it, as soon as the time is up (on a desktop's touch screen as well). A finger held on the overlay itself, on its menu bar, a window or a message, is the overlay's however long it stays there. The page keeps the fingers on the picture for itself: the browser neither scrolls nor zooms it.
+
+A keyboard paired with the phone or the tablet reaches the guest as a desktop's keyboard does.
 
 ## Technical Details
 

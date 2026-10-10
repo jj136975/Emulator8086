@@ -8,7 +8,7 @@
 use egui::accesskit::Role;
 
 use super::messages::{DONE_SECONDS, FAILED_SECONDS};
-use super::testing::{Driver, Shell, key};
+use super::testing::{Driver, SCREEN, Shell, key};
 use super::*;
 use crate::wall_clock::HostClock;
 use emu8086_core::io::disk::DiskImage;
@@ -230,6 +230,46 @@ fn the_overlay_has_the_keyboard_with_an_open_menu_or_the_focus() {
 
     shell.target.overlay.toggle();
     assert!(!shell.target.overlay.wants_keyboard(), "hidden");
+}
+
+/// What the overlay covers, as its last pass laid it out: the menu bar from
+/// end to end, the window of a panel, an open menu and a message are the
+/// overlay's; the picture around them is not. A message covers the screen
+/// for as long as it is shown, and a hidden overlay covers nothing.
+#[test]
+fn the_overlay_covers_what_it_shows_and_not_the_picture() {
+    let mut shell = shown();
+    let covers = |shell: &Driver<Shell>, at: Pos2| shell.target.overlay.covers(at);
+    let machine = shell.screen().rect(Role::Button, "Machine").center();
+    let bar = egui::pos2(SCREEN[0] as f32 / 2.0, machine.y);
+    let corner = egui::pos2(SCREEN[0] as f32 - 2.0, SCREEN[1] as f32 - 2.0);
+    assert!(covers(&shell, machine));
+    assert!(covers(&shell, bar), "the bar between its menus and its end");
+    assert!(!covers(&shell, corner), "the picture");
+
+    shell.toggle_in_view_menu("About");
+    let about = shell.screen().rect(Role::Window, "About");
+    assert!(covers(&shell, about.center()));
+    assert!(!covers(&shell, about.right_bottom() + egui::vec2(4.0, 4.0)));
+
+    shell.click(Role::Button, "Machine");
+    assert!(covers(
+        &shell,
+        shell.screen().rect(Role::Button, "Reset").center()
+    ));
+    shell.frame(vec![key(egui::Key::Escape, true)]);
+    shell.frame(vec![key(egui::Key::Escape, false)]);
+
+    shell.target.overlay.messages().done("Machine reset");
+    settle(&mut shell);
+    let message = shell.screen().text_rect("Machine reset").center();
+    assert!(covers(&shell, message));
+    shell.wait(DONE_SECONDS);
+    assert!(!covers(&shell, message), "its time is over");
+
+    shell.target.overlay.toggle();
+    assert!(!covers(&shell, machine), "hidden");
+    assert!(!covers(&shell, about.center()), "hidden");
 }
 
 /// A key the guest gets is not a shortcut of the overlay as well. egui

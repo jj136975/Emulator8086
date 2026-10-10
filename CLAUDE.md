@@ -43,7 +43,8 @@ The app, in `src/`:
 | `platform/tests.rs` | the rule of `platform` as a test: a sweep of the app's sources |
 | `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, as `platform::fat_options` carries it |
 | `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw |
-| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the disk tools and the overlay, without a window. Decides whose a key is, and carries out the overlay's `Command`s on the machine; times the overlay's pass and passes the window's `Drawn` on to the meter |
+| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the fingers on the screen, the disk tools and the overlay, without a window. Decides whose a key is and when a finger held on the picture works the overlay's switch, and carries out the overlay's `Command`s on the machine; times the overlay's pass and passes the window's `Drawn` on to the meter |
+| `gui/hold.rs` | the overlay's switch on a touch screen: `Hold`, told of the fingers and of the time, says when a finger held still on the picture is due |
 | `gui/disk_tools.rs` | `DiskTools`, the session's side of the Disks panel: a `DiskCommand` becomes an operation of the core (`io::disk_ops`), carried out at once or once the host's file dialog has answered (`poll`, at the start of every frame); `FileHost`, the host as the tools reach it: `platform`, or a test's hand-made answers |
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause; what each slice did with its time (`Slice`) |
 | `gui/meter.rs` | measuring the emulation: `Meter`, told of each frame by the session (the pacer's `Slice`, the machine's `Counts`) and of what the frame spent outside its slice (the overlay's pass, the window's `Drawn`), averages over about a second the guest's speed (with the last minute of it), the frames and how their host time divides into five (running, idle, the overlay, the drawing, the wait for the display), the guest's time (its clock, the time owed and dropped, the share spent halted) and the interrupts per line. It reads no clock |
@@ -165,9 +166,21 @@ box is never replaced).
   the browser's key (the developer tools; `platform/web.rs` keeps F11 and
   F12, which no XT keyboard has, from the canvas), and the switch is the
   secondary button of the pointer: the press is offered to egui first and
-  works the switch only on the picture (`Session::overlay_button`). Every
-  other event of the window goes to egui first. A key then goes on to the
-  guest unless egui kept it (Tab) or the overlay has the keyboard: one of
+  works the switch only on the picture (`Session::overlay_button`). On
+  every host a finger held still on the picture for half a second works
+  the switch too (`gui/hold.rs`), as soon as its time is up: the window
+  tells the session of every finger (`Session::touch`) and asks at every
+  frame, hidden or shown, whether one's time is up (`Session::hold`),
+  since a finger that rests sends no event. What lies under the finger is
+  decided then, at the finger's own position, from what the overlay's last
+  pass laid out (`Overlay::covers`: egui's layers there, the menu bar,
+  which egui draws on its background layer, and the messages, which take
+  no input). What egui kept of a finger that just came down says nothing:
+  egui answers for where its pointer last was, which after a finger lifted
+  is nowhere. The browser's switch is named for both ("Right-click or
+  touch and hold"). Every other event of the window goes to egui first. A
+  key then goes on to the guest unless egui kept it (Tab) or the overlay
+  has the keyboard: one of
   its widgets has the focus or one of its menus is open
   (`Overlay::wants_keyboard`, `Session::key`). The guest gets the release
   of a key if and only if it got its press: when the overlay takes the
@@ -309,8 +322,9 @@ Of the browser build the suite covers, on the desktop, what needs no
 browser: the pacer on a host that cannot wait (`gui::pacer::tests`), the
 window's events as egui's input, the fingers on a touch screen among them
 (`platform::egui_events::tests`), the FAT
-stamp of a date (`platform::fat_stamp::tests`), the overlay's button
-(`gui::session::tests`), the disk tools and the Disks panel on a host that
+stamp of a date (`platform::fat_stamp::tests`), the overlay's button and
+the hold of a finger (`gui::session::tests`, `gui::hold::tests`), the disk
+tools and the Disks panel on a host that
 hands files over as their contents (`gui::disk_tools::tests`,
 `gui::overlay::disks::tests`), and the frame drawn on a device that has no
 more than WebGL2 guarantees

@@ -1,10 +1,11 @@
 //! A session of the emulator: the machine, the pacer that feeds it time,
-//! the meter that measures it, the guest's keyboard and the overlay. It is
-//! all of the app that needs no window: the window (`gui`) gathers the
-//! input and draws, and what the input means is decided here: whose a key
-//! is, and what a command of the overlay does to the machine. What the
-//! Disks panel asks for is carried out by `disk_tools`, which has the file
-//! dialogs to wait for.
+//! the meter that measures it, the guest's keyboard, the fingers on the
+//! screen and the overlay. It is all of the app that needs no window: the
+//! window (`gui`) gathers the input and draws, and what the input means is
+//! decided here: whose a key is, when a finger held on the picture works
+//! the overlay's switch (`hold`), and what a command of the overlay does to
+//! the machine. What the Disks panel asks for is carried out by
+//! `disk_tools`, which has the file dialogs to wait for.
 //!
 //! The invariant: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -17,7 +18,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use winit::event::ElementState;
+use winit::event::{ElementState, TouchPhase};
 use winit::keyboard::PhysicalKey;
 use winit::window::Window;
 
@@ -25,6 +26,7 @@ use emu8086_core::io::keyboard::EmulatorEvent;
 use emu8086_core::vm::runtime::Runtime;
 
 use super::disk_tools::DiskTools;
+use super::hold::Hold;
 use super::keys::GuestKeys;
 use super::meter::{Counts, Meter};
 use super::overlay::{Command, Overlay};
@@ -46,6 +48,9 @@ pub struct Session {
     /// What the frames measured of the emulation, which the overlay shows.
     meter: Meter,
     keys: GuestKeys,
+    /// The fingers on the screen, one of which held still on the picture
+    /// works the overlay's switch.
+    hold: Hold,
     pub overlay: Overlay,
     /// Where `Command::DumpVga` puts the dump.
     dump_file: PathBuf,
@@ -61,6 +66,7 @@ impl Session {
             pacer: Pacer::new(),
             meter: Meter::default(),
             keys: GuestKeys::new(kbd_tx),
+            hold: Hold::default(),
             overlay: Overlay::new(),
             dump_file: PathBuf::from(VGA_DUMP_FILE),
             disks: DiskTools::new(),
@@ -88,6 +94,25 @@ impl Session {
     /// Going down on the picture, the button shows the overlay or hides it.
     pub fn overlay_button(&mut self, state: ElementState, kept: bool) {
         if state == ElementState::Pressed && !kept {
+            self.toggle_overlay();
+        }
+    }
+
+    /// Finger `finger` came down, moved, lifted or was taken away by the
+    /// host, at `at`, in points, at `now`: the session watches for one held
+    /// still on the picture. The window offers the event to egui as well.
+    pub fn touch(&mut self, finger: u64, phase: TouchPhase, at: egui::Pos2, now: Instant) {
+        self.hold.touch(finger, phase, at, now);
+    }
+
+    /// Shows the overlay or hides it if, by `now`, a finger has been held
+    /// still on the picture long enough. A finger rests between its events:
+    /// this is asked at every frame, whether the overlay is shown or not,
+    /// and no pass is run for it. What lies under the finger is what the
+    /// overlay's last pass laid out there (`Overlay::covers`).
+    pub fn hold(&mut self, now: Instant) {
+        let overlay = &self.overlay;
+        if self.hold.due(now, |at| overlay.covers(at)) {
             self.toggle_overlay();
         }
     }
