@@ -39,14 +39,16 @@ const CONSOLE_LEVEL: log::LevelFilter = log::LevelFilter::Info;
 /// the page holds, and without the ring a browser draws around what has the
 /// keyboard. Its size is the style's alone: winit reports the size the
 /// style gives it as the window's, and the renderer makes the canvas's
-/// drawing buffer as large.
-const CANVAS_STYLE: [(&str, &str); 6] = [
+/// drawing buffer as large. A finger on it is the page's alone too: a
+/// browser that took it for a scroll or a zoom of its own would cancel it.
+const CANVAS_STYLE: [(&str, &str); 7] = [
     ("position", "fixed"),
     ("left", "0"),
     ("top", "0"),
     ("width", "100%"),
     ("height", "100%"),
     ("outline", "none"),
+    ("touch-action", "none"),
 ];
 
 /// How long the browser has to start reading a download before it is given

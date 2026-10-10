@@ -47,6 +47,45 @@ fn modifiers(state: ModifiersState) -> WindowEvent {
     WindowEvent::ModifiersChanged(WinitModifiers::from(state))
 }
 
+/// Finger `id` in `phase` at `x`, `y` physical pixels, pressing with
+/// `force`.
+fn finger_with(id: u64, phase: TouchPhase, x: f64, y: f64, force: Option<Force>) -> WindowEvent {
+    WindowEvent::Touch(Touch {
+        device_id: DeviceId::dummy(),
+        phase,
+        location: PhysicalPosition::new(x, y),
+        force,
+        id,
+    })
+}
+
+/// Finger `id` in `phase` at `x`, `y` physical pixels, on a screen that
+/// does not tell the force.
+fn finger(id: u64, phase: TouchPhase, x: f64, y: f64) -> WindowEvent {
+    finger_with(id, phase, x, y, None)
+}
+
+/// What egui is told of finger `id` in `phase` at `pos`, in points.
+fn touched(id: u64, phase: egui::TouchPhase, pos: Pos2) -> Event {
+    Event::Touch {
+        device_id: TouchDeviceId(egui::epaint::util::hash(DeviceId::dummy())),
+        id: TouchId(id),
+        phase,
+        pos,
+        force: None,
+    }
+}
+
+/// The primary button of the pointer going down or coming up at `pos`.
+fn primary(pos: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
 fn named(key: NamedKey) -> Key {
     Key::Named(key)
 }
@@ -189,6 +228,176 @@ fn the_wheel_turns_by_lines_or_by_points() {
             turned(MouseWheelUnit::Point, egui::vec2(5.0, 20.0)),
         ]
     );
+}
+
+/// Every finger reaches egui as a touch, in points. The first finger is the
+/// pointer too: it moves the pointer and presses the primary button where it
+/// comes down, moves the pointer where it moves, and releases the button
+/// where the pointer is when it lifts, after which the pointer is gone. A
+/// finger the host takes away releases nothing: the pointer is gone.
+#[test]
+fn the_first_finger_is_a_touch_and_the_pointer() {
+    let (mut events, _ctx) = events(2.0);
+    let (down, moved) = (egui::pos2(100.0, 50.0), egui::pos2(110.0, 60.0));
+    events.on_window_event(&finger(7, TouchPhase::Started, 200.0, 100.0));
+    assert_eq!(
+        taken(&mut events, 2.0),
+        [
+            touched(7, egui::TouchPhase::Start, down),
+            Event::PointerMoved(down),
+            primary(down, true),
+        ]
+    );
+
+    events.on_window_event(&finger(7, TouchPhase::Moved, 220.0, 120.0));
+    assert_eq!(
+        taken(&mut events, 2.0),
+        [
+            touched(7, egui::TouchPhase::Move, moved),
+            Event::PointerMoved(moved),
+        ]
+    );
+
+    // Where the finger lifts is a touch's own: the pointer is released
+    // where it last was.
+    events.on_window_event(&finger(7, TouchPhase::Ended, 230.0, 130.0));
+    assert_eq!(
+        taken(&mut events, 2.0),
+        [
+            touched(7, egui::TouchPhase::End, egui::pos2(115.0, 65.0)),
+            primary(moved, false),
+            Event::PointerGone,
+        ]
+    );
+
+    events.on_window_event(&finger(8, TouchPhase::Started, 40.0, 40.0));
+    events.on_window_event(&finger(8, TouchPhase::Cancelled, 40.0, 40.0));
+    let pos = egui::pos2(20.0, 20.0);
+    assert_eq!(
+        taken(&mut events, 2.0),
+        [
+            touched(8, egui::TouchPhase::Start, pos),
+            Event::PointerMoved(pos),
+            primary(pos, true),
+            touched(8, egui::TouchPhase::Cancel, pos),
+            Event::PointerGone,
+        ]
+    );
+}
+
+/// A finger that comes down while the first one is still down is a touch of
+/// its own and nothing more: the pointer stays with the first, until that
+/// one lifts.
+#[test]
+fn the_other_fingers_are_touches_only() {
+    let (mut events, _ctx) = events(1.0);
+    events.on_window_event(&finger(1, TouchPhase::Started, 10.0, 10.0));
+    taken(&mut events, 1.0);
+
+    events.on_window_event(&finger(2, TouchPhase::Started, 50.0, 60.0));
+    events.on_window_event(&finger(2, TouchPhase::Moved, 55.0, 65.0));
+    events.on_window_event(&finger(2, TouchPhase::Ended, 55.0, 65.0));
+    events.on_window_event(&finger(3, TouchPhase::Started, 90.0, 90.0));
+    events.on_window_event(&finger(3, TouchPhase::Cancelled, 90.0, 90.0));
+    assert_eq!(
+        taken(&mut events, 1.0),
+        [
+            touched(2, egui::TouchPhase::Start, egui::pos2(50.0, 60.0)),
+            touched(2, egui::TouchPhase::Move, egui::pos2(55.0, 65.0)),
+            touched(2, egui::TouchPhase::End, egui::pos2(55.0, 65.0)),
+            touched(3, egui::TouchPhase::Start, egui::pos2(90.0, 90.0)),
+            touched(3, egui::TouchPhase::Cancel, egui::pos2(90.0, 90.0)),
+        ]
+    );
+
+    events.on_window_event(&finger(1, TouchPhase::Ended, 10.0, 10.0));
+    let pos = egui::pos2(10.0, 10.0);
+    assert_eq!(
+        taken(&mut events, 1.0),
+        [
+            touched(1, egui::TouchPhase::End, pos),
+            primary(pos, false),
+            Event::PointerGone,
+        ]
+    );
+}
+
+/// The force of a finger reaches egui between 0 and 1: as the host reports
+/// it where it is normalized, as a share of the most there can be where it
+/// is calibrated, and not at all where the screen does not tell it.
+#[test]
+fn the_force_of_a_finger_is_a_share_of_the_most() {
+    let (mut events, _ctx) = events(1.0);
+    let calibrated = Force::Calibrated {
+        force: 3.0,
+        max_possible_force: 4.0,
+        altitude_angle: None,
+    };
+    for (force, expected) in [
+        (Some(Force::Normalized(0.25)), Some(0.25)),
+        (Some(calibrated), Some(0.75)),
+        (None, None),
+    ] {
+        events.on_window_event(&finger_with(5, TouchPhase::Moved, 1.0, 1.0, force));
+        let input = taken(&mut events, 1.0);
+        let Some(Event::Touch { force, .. }) = input.first() else {
+            panic!("no touch in {input:?}");
+        };
+        assert_eq!(*force, expected);
+    }
+}
+
+/// What a pass of egui makes of a finger: a tap on a button drawn by a pass
+/// clicks it, and while the finger presses the button, egui uses the
+/// pointer: the finger's moves and its lift are egui's. A finger on the
+/// rest of the screen is not. (Whether egui keeps a finger that comes down
+/// is answered, as egui-winit answers it, for where the last pass left the
+/// pointer: after a finger has lifted, that is nowhere.)
+#[test]
+fn a_tap_clicks_what_the_finger_lands_on() {
+    let (mut events, ctx) = events(2.0);
+    ctx.enable_accesskit();
+    let mut clicks = 0;
+    let pass = |events: &mut EguiEvents, clicks: &mut u32| {
+        let output = run(&ctx, events.take(SIZE, 2.0), |ui| {
+            egui::Window::new("Tool")
+                .fixed_pos(egui::pos2(100.0, 100.0))
+                .show(ui.ctx(), |ui| {
+                    if ui.button("Press").clicked() {
+                        *clicks += 1;
+                    }
+                });
+        });
+        let update = output.accesskit_update.unwrap();
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Button && node.label() == Some("Press"))
+            .and_then(|(_, node)| node.bounds())
+    };
+    pass(&mut events, &mut clicks);
+    let at = pass(&mut events, &mut clicks).expect("the button is on the screen");
+    // The middle of the button in physical pixels: twice its points.
+    let centre = (at.x0 + at.x1, at.y0 + at.y1);
+
+    // On the bare screen.
+    events.on_window_event(&finger(1, TouchPhase::Started, 1500.0, 1100.0));
+    pass(&mut events, &mut clicks);
+    assert!(!events.on_window_event(&finger(1, TouchPhase::Moved, 1400.0, 1000.0)));
+    assert!(!events.on_window_event(&finger(1, TouchPhase::Ended, 1400.0, 1000.0)));
+    pass(&mut events, &mut clicks);
+    assert_eq!(clicks, 0);
+
+    // On the button.
+    events.on_window_event(&finger(2, TouchPhase::Started, centre.0, centre.1));
+    pass(&mut events, &mut clicks);
+    assert!(
+        events.on_window_event(&finger(2, TouchPhase::Moved, centre.0, centre.1)),
+        "the finger presses the button"
+    );
+    assert!(events.on_window_event(&finger(2, TouchPhase::Ended, centre.0, centre.1)));
+    pass(&mut events, &mut clicks);
+    assert_eq!(clicks, 1);
 }
 
 /// A key reaches egui as egui's key, down and up, and a press that types

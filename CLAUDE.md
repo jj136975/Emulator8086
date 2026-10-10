@@ -307,7 +307,8 @@ from is tested, `answer_later`).
 
 Of the browser build the suite covers, on the desktop, what needs no
 browser: the pacer on a host that cannot wait (`gui::pacer::tests`), the
-window's events as egui's input (`platform::egui_events::tests`), the FAT
+window's events as egui's input, the fingers on a touch screen among them
+(`platform::egui_events::tests`), the FAT
 stamp of a date (`platform::fat_stamp::tests`), the overlay's button
 (`gui::session::tests`), the disk tools and the Disks panel on a host that
 hands files over as their contents (`gui::disk_tools::tests`,
@@ -448,8 +449,8 @@ egui-winit 0.36.2 does not compile for wasm32: its `NativeFile` implements
 `egui::DroppedFile::bytes`, which egui declares only off wasm32 (the trait
 has `bytes_async` there), and upstream's main branch was the same on
 2026-10-04. In a browser the app therefore turns winit's events into egui's
-input itself (`src/platform/egui_events.rs`: pointer, wheel, keys, text,
-modifiers, focus, cursor; no touch, IME, dropped files or clipboard). Once
+input itself (`src/platform/egui_events.rs`: pointer, wheel, touch, keys,
+text, modifiers, focus, cursor; no IME, dropped files or clipboard). Once
 an egui-winit builds for wasm32, that file can go and `OverlayInput` can be
 egui-winit's state on both hosts. A patched copy of egui-winit in the tree
 was not taken: it has not been asked.

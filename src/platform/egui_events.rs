@@ -3,23 +3,33 @@
 //! compile for wasm32: it implements `egui::DroppedFile::bytes`, which egui
 //! declares only off wasm32.) `EguiEvents` does there what
 //! `egui_winit::State` does on a desktop, for what the overlay uses: the
-//! pointer with its buttons and its wheel, the keys with their modifiers
-//! and the text they type, the focus, and the cursor a pass asks for. It
-//! knows winit's events and egui's input and nothing of a browser, which is
-//! what lets the tests drive it on a desktop.
+//! pointer with its buttons and its wheel, the fingers on a touch screen,
+//! the keys with their modifiers and the text they type, the focus, and the
+//! cursor a pass asks for. It knows winit's events and egui's input and
+//! nothing of a browser, which is what lets the tests drive it on a desktop.
 //!
-//! Left out: touch, the IME, dropped files, the clipboard, and the physical
-//! key beside the logical one.
+//! A finger is a touch of egui's, and the first finger is the pointer as
+//! well, as egui-winit makes it: it moves the pointer and presses its
+//! primary button, so that a tap is a click. The pointer's events of a
+//! finger follow its touch at once.
+//!
+//! Left out: the IME, dropped files, the clipboard, and the physical key
+//! beside the logical one.
 //!
 //! The invariant: egui's points are the window's physical pixels divided by
 //! the pixels per point of the pass, which is the window's scale factor
-//! times egui's zoom. A position of the pointer and the size of the screen
-//! are converted by that one factor (`pixels_per_point`): a click lands on
-//! what the picture shows under the pointer.
+//! times egui's zoom. A position of the pointer or of a finger and the size
+//! of the screen are converted by that one factor (`pixels_per_point`): a
+//! click or a touch lands on what the picture shows under it.
 
-use egui::{Event, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, ViewportId};
+use egui::{
+    Event, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, TouchDeviceId, TouchId,
+    ViewportId,
+};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{
+    ElementState, Force, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::CursorIcon;
 
@@ -47,6 +57,9 @@ pub struct EguiEvents {
     /// Where the pointer is, in points. `None` while it is outside the
     /// window.
     pointer: Option<Pos2>,
+    /// The finger that is the pointer as well, by winit's id of it: the one
+    /// that came down while no finger was.
+    pointer_finger: Option<u64>,
     /// The window's scale factor: physical pixels per logical pixel.
     scale_factor: f32,
     /// The cursor the window was last asked to show.
@@ -67,6 +80,7 @@ impl EguiEvents {
             },
             modifiers: Modifiers::default(),
             pointer: None,
+            pointer_finger: None,
             scale_factor: scale_factor as f32,
             cursor: None,
         }
@@ -108,6 +122,17 @@ impl EguiEvents {
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 self.wheel(*delta, *phase);
                 self.ctx.egui_wants_pointer_input()
+            }
+            WindowEvent::Touch(touch) => {
+                self.touch(touch);
+                // A finger that moves is egui's only while egui uses the
+                // pointer, as a moving pointer is.
+                match touch.phase {
+                    TouchPhase::Started | TouchPhase::Ended | TouchPhase::Cancelled => {
+                        self.ctx.egui_wants_pointer_input()
+                    }
+                    TouchPhase::Moved => self.ctx.egui_is_using_pointer(),
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers_changed(modifiers.state());
@@ -162,6 +187,58 @@ impl EguiEvents {
         }
     }
 
+    /// A finger came down, moved, lifted or was taken away by the host.
+    /// egui is told of every finger, by the device it is on and its own id.
+    /// The finger that is the pointer moves it too, presses its primary
+    /// button when it comes down and releases it when it lifts, and then
+    /// the pointer is gone: a finger that has lifted hovers over nothing. A
+    /// finger that comes down while no finger is the pointer becomes it; in
+    /// the meantime the pointer follows any finger's moves and lift, as
+    /// egui-winit has it.
+    fn touch(&mut self, touch: &Touch) {
+        let pixels_per_point = self.pixels_per_point();
+        self.input.events.push(Event::Touch {
+            device_id: TouchDeviceId(egui::epaint::util::hash(touch.device_id)),
+            id: TouchId::from(touch.id),
+            phase: egui_phase(touch.phase),
+            pos: egui::pos2(
+                touch.location.x as f32 / pixels_per_point,
+                touch.location.y as f32 / pixels_per_point,
+            ),
+            force: touch.force.map(|force| match force {
+                Force::Normalized(force) => force as f32,
+                Force::Calibrated {
+                    force,
+                    max_possible_force,
+                    ..
+                } => (force / max_possible_force) as f32,
+            }),
+        });
+
+        if self.pointer_finger.is_some_and(|finger| finger != touch.id) {
+            return;
+        }
+        match touch.phase {
+            TouchPhase::Started => {
+                self.pointer_finger = Some(touch.id);
+                self.pointer_moved(touch.location);
+                self.pointer_button(ElementState::Pressed, MouseButton::Left);
+            }
+            TouchPhase::Moved => self.pointer_moved(touch.location),
+            TouchPhase::Ended => {
+                self.pointer_finger = None;
+                self.pointer_button(ElementState::Released, MouseButton::Left);
+                self.pointer = None;
+                self.input.events.push(Event::PointerGone);
+            }
+            TouchPhase::Cancelled => {
+                self.pointer_finger = None;
+                self.pointer = None;
+                self.input.events.push(Event::PointerGone);
+            }
+        }
+    }
+
     /// The wheel turned: by lines, or by physical pixels.
     fn wheel(&mut self, delta: MouseScrollDelta, phase: TouchPhase) {
         let (unit, delta) = match delta {
@@ -174,12 +251,7 @@ impl EguiEvents {
         self.input.events.push(Event::MouseWheel {
             unit,
             delta,
-            phase: match phase {
-                TouchPhase::Started => egui::TouchPhase::Start,
-                TouchPhase::Moved => egui::TouchPhase::Move,
-                TouchPhase::Ended => egui::TouchPhase::End,
-                TouchPhase::Cancelled => egui::TouchPhase::Cancel,
-            },
+            phase: egui_phase(phase),
             modifiers: self.modifiers,
         });
     }
@@ -295,6 +367,15 @@ fn is_printable(character: char) -> bool {
         || ('\u{f0000}'..='\u{ffffd}').contains(&character)
         || ('\u{100000}'..='\u{10fffd}').contains(&character);
     !is_private_use && !character.is_ascii_control()
+}
+
+fn egui_phase(phase: TouchPhase) -> egui::TouchPhase {
+    match phase {
+        TouchPhase::Started => egui::TouchPhase::Start,
+        TouchPhase::Moved => egui::TouchPhase::Move,
+        TouchPhase::Ended => egui::TouchPhase::End,
+        TouchPhase::Cancelled => egui::TouchPhase::Cancel,
+    }
 }
 
 fn egui_button(button: MouseButton) -> Option<PointerButton> {
