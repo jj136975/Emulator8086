@@ -15,7 +15,9 @@
   Beside the page goes the BIOS, as rom/bios.bin: trunk copies the image
   in assets/rom into what it builds, and serves it with the page. The
   workflow that publishes the site checks that it is what its sources
-  assemble to (.github/workflows/pages.yml).
+  assemble to (.github/workflows/pages.yml). What goes beside the page is
+  what the application fetches from the site, and the table of it is the
+  application's (src/site.rs): a test reads the links below against it.
 -->
 <html lang="en">
   <head>

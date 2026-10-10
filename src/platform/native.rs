@@ -1,7 +1,7 @@
 //! The desktop side of `platform`: a host with a command line, a stderr,
-//! files, and a thread that may sleep. `Cli` is the command line (its doc
-//! comments are the `--help` text), which `options` turns into what the
-//! start asks of the machine.
+//! files, and a thread that may sleep, and no site. `Cli` is the command
+//! line (its doc comments are the `--help` text), which `options` turns
+//! into what the start asks of the machine.
 //!
 //! The invariant: every name here keeps the meaning `platform` gives it for
 //! all hosts. A caller that works with this side works with any other. That
@@ -23,7 +23,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::KeyCode;
 use winit::window::Window;
 
-use super::{FileAccess, FileQuestion, OverlaySwitch, Wanted};
+use super::{Fetched, FileAccess, FileQuestion, OverlaySwitch, Wanted};
 use crate::Options;
 use emu8086_core::io::disk_ops::HostFile;
 
@@ -302,6 +302,18 @@ fn answer_later(
     if let Err(error) = waiting {
         log::error!("No thread to wait for a file dialog on: {error}");
     }
+    receiver
+}
+
+/// The app came from no site: a desktop runs it as a program of its own.
+pub const HAS_SITE: bool = false;
+
+/// Asks the site for the file at `path` and returns at once. A desktop's
+/// program has no site: the answer, there at once, says so.
+pub fn fetch(path: &str) -> Receiver<Fetched> {
+    let (answer, receiver) = mpsc::channel();
+    // The receiver is still here: the answer cannot be lost.
+    let _ = answer.send(Err(format!("There is no site here to fetch {path} from")));
     receiver
 }
 

@@ -1,10 +1,10 @@
 //! The About panel: what the keys do, which version this is, and what the
-//! machine holds: the disk in each drive, whether it can be written, and the
-//! order in which the BIOS tries the drives. It only reads.
+//! machine holds: the ROM it runs, the disk in each drive, whether it can be
+//! written, and the order in which the BIOS tries the drives. It only reads.
 //!
-//! The invariant: the panel shows the machine as it is, asked of the disk
-//! controller on every frame, not what the command line said: a disk another
-//! tool puts into a drive is listed at once.
+//! The invariant: the panel shows the machine as it is, asked of the
+//! machine on every frame, not what the command line said: a ROM or a disk
+//! another tool puts in is listed at once.
 
 use egui::{Grid, Ui};
 
@@ -93,6 +93,7 @@ pub(super) fn body(ui: &mut Ui, cx: &mut Cx<'_>) {
 
     ui.add_space(gap);
     ui.strong("Machine");
+    ui.label(format!("ROM: {}", cx.runtime.rom().unwrap_or("none")));
     let disks = cx.runtime.disks.borrow();
     let drives = drives(&disks);
     if drives.is_empty() {

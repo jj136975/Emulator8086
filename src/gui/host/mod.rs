@@ -1,9 +1,9 @@
-//! The host as the session's tools reach it (`FileHost`): its file dialogs
-//! and what it lets out. `Platform` is the host the app runs on; a test puts
-//! hand-made answers in its place (`testing::ByHand`). A question to the
-//! host is answered later, down a channel: `Awaited` holds the questions on
-//! their way, each with what it was asked for, and hands over the answers
-//! that have come.
+//! The host as the session's tools reach it (`FileHost`): its file dialogs,
+//! what it lets out, and the files of the site the app came from.
+//! `Platform` is the host the app runs on; a test puts hand-made answers in
+//! its place (`testing::ByHand`). A question to the host is answered later,
+//! down a channel: `Awaited` holds the questions on their way, each with
+//! what it was asked for, and hands over the answers that have come.
 //!
 //! The invariant: nothing here waits. A question returns at once, and its
 //! answer is taken up by the first look after it came
@@ -18,7 +18,7 @@ use winit::window::Window;
 
 use emu8086_core::io::disk_ops::HostFile;
 
-use crate::platform::{self, FileDialogs, FileQuestion};
+use crate::platform::{self, Fetched, FileDialogs, FileQuestion};
 
 /// The host, as the session's tools reach it.
 pub(super) trait FileHost {
@@ -32,6 +32,12 @@ pub(super) trait FileHost {
     /// lets a file out (`platform::save_bytes`), and says what was done
     /// with them, or why it could not be done.
     fn save_bytes(&mut self, file: &Path, bytes: &[u8]) -> Result<String, String>;
+
+    /// Asks the site the app came from for the file at `path`, relative to
+    /// the page (`platform::fetch`), and returns at once: the file's bytes,
+    /// or why none came, come down the channel. A channel that closes with
+    /// nothing in it says that the site could not be asked.
+    fn fetch(&mut self, path: &str) -> Receiver<Fetched>;
 }
 
 /// The host the app runs on. Its dialogs belong to the window the machine
@@ -57,6 +63,10 @@ impl FileHost for Platform {
 
     fn save_bytes(&mut self, file: &Path, bytes: &[u8]) -> Result<String, String> {
         platform::save_bytes(file, bytes)
+    }
+
+    fn fetch(&mut self, path: &str) -> Receiver<Fetched> {
+        platform::fetch(path)
     }
 }
 

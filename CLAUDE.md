@@ -37,22 +37,25 @@ The app, in `src/`:
 | path | role |
 |---|---|
 | `main.rs` | start-up: `Options`, what a start asks of the machine (the host says what: `platform::options`); builds the machine they describe and loads its ROM, the image they name or the core's `BIOS_ROM`; tells the user what opening the drives did (`platform::notice`) |
-| `platform/mod.rs` | THE names for what depends on the host, each defined by both sides with one meaning (the list is in its header), and the types they share: `OverlaySwitch`, and for files `FileAccess`, `FileQuestion`, `Wanted` |
-| `platform/native.rs` | the desktop side: the command line (`Cli`; its doc comments are the `--help` text), env_logger, the blocking event loop, the sleep, the files, the system's file dialogs (rfd's, each waited for on a thread of its own), egui-winit |
-| `platform/web.rs` | the browser side: the console logger and the panic hook, the spawned event loop, the canvas in the page, the file picker (rfd's), the download of a text or a disk, the page's `Date` |
-| `platform/egui_events.rs`, `fat_stamp.rs` | the parts of the browser side that know nothing of a browser, built on the desktop for their tests alone: winit's events as egui's input (egui-winit does not build for wasm32), and a `Date` as a FAT time stamp |
+| `platform/mod.rs` | THE names for what depends on the host, each defined by both sides with one meaning (the list is in its header), and the types they share: `OverlaySwitch`, for files `FileAccess`, `FileQuestion`, `Wanted`, and for the site's `Fetched` |
+| `platform/native.rs` | the desktop side: the command line (`Cli`; its doc comments are the `--help` text), env_logger, the blocking event loop, the sleep, the files, the system's file dialogs (rfd's, each waited for on a thread of its own), egui-winit, and no site (`HAS_SITE` is false, and `fetch` says so at once) |
+| `platform/web.rs` | the browser side: the console logger and the panic hook, the spawned event loop, the canvas in the page, the file picker (rfd's), the download of a text or a disk, the fetch of a file of the site (relative to the page, in a task of the page), the page's `Date` |
+| `platform/egui_events.rs`, `fat_stamp.rs`, `site_answer.rs` | the parts of the browser side that know nothing of a browser, built on the desktop for their tests alone: winit's events as egui's input (egui-winit does not build for wasm32), a `Date` as a FAT time stamp, and what a site's answer to a fetch says of the file (`verdict`: a 404, or a page in the place of a file, is "The site has no ...") |
 | `platform/tests.rs` | the rule of `platform` as a test: a sweep of the app's sources |
 | `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, as `platform::fat_options` carries it |
+| `site.rs` | THE table of the files the site publishes beside the page (`FILES`: each one's path relative to the page, its `Kind`, its title); `site_tests.rs` sweeps `index.html` and the Pages workflow for each of them |
 | `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw |
-| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the fingers on the screen, the disk tools and the overlay, without a window. Decides whose a key is and when a finger held on the picture works the overlay's switch, and carries out the overlay's `Command`s on the machine; times the overlay's pass and passes the window's `Drawn` on to the meter |
+| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the fingers on the screen, the disk tools, the ROM loader and the overlay, without a window. Decides whose a key is and when a finger held on the picture works the overlay's switch, and carries out the overlay's `Command`s on the machine; times the overlay's pass and passes the window's `Drawn` on to the meter |
 | `gui/hold.rs` | the overlay's switch on a touch screen: `Hold`, told of the fingers and of the time, says when a finger held still on the picture is due |
 | `gui/disk_tools.rs` | `DiskTools`, the session's side of the Disks panel: a `DiskCommand` becomes an operation of the core (`io::disk_ops`), carried out at once or once the host's file dialog has answered (`poll`, at the start of every frame) |
-| `gui/host/` | the host as the session's tools reach it. `mod.rs`: `FileHost` (its dialogs, what it lets out), `Platform` (the host the app runs on), and `Awaited`, the questions whose answers are on their way down channels, each with what it was asked for; `testing.rs`: `ByHand`, a host whose answers a test gives by hand |
+| `gui/rom_loader.rs` | `RomLoader`, the session's side of Machine > Load ROM: a `RomCommand` becomes the image the machine restarts with, at once (the built-in BIOS) or once the host's file dialog or the site has answered (`poll`, at the start of every frame) |
+| `gui/host/` | the host as the session's tools reach it. `mod.rs`: `FileHost` (its dialogs, what it lets out, the files of its site), `Platform` (the host the app runs on), and `Awaited`, the questions whose answers are on their way down channels, each with what it was asked for; `testing.rs`: `ByHand`, a host whose dialogs and site a test answers by hand |
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause; what each slice did with its time (`Slice`) |
 | `gui/meter.rs` | measuring the emulation: `Meter`, told of each frame by the session (the pacer's `Slice`, the machine's `Counts`) and of what the frame spent outside its slice (the overlay's pass, the window's `Drawn`), averages over about a second the guest's speed (with the last minute of it), the frames and how their host time divides into five (running, idle, the overlay, the drawing, the wait for the display), the guest's time (its clock, the time owed and dropped, the share spent halted) and the interrupts per line. It reads no clock |
 | `gui/renderer/` | wgpu. `mod.rs`: `record_frame` (the picture and the overlay in one render pass, no surface needed) and what asks for a device; `blit.rs`: `FrameBlit` (frame texture and blit pipeline, the whole-number viewport, the WGSL); `overlay_pass.rs`: `OverlayPass` (egui's meshes); `surface.rs`: `Renderer` (the window's surface), whose `render` returns a `Drawn`: how long the surface kept it waiting for a frame to draw on, and how long the rest took |
 | `gui/keys.rs` | physical key to XT scancode; `GuestKeys` sends the codes and remembers which keys the guest holds, and whether the host's keyboard or the on-screen one holds each |
 | `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on; what the last pass covered of the screen (`covers`) and which panels it drew (`shows`) |
+| `gui/overlay/load_rom.rs` | Machine > Load ROM, a menu within the Machine menu: the built-in BIOS, the ROM images of the site where there is one (`platform::HAS_SITE`, `site::FILES`) and a file, each asked for with a `RomCommand` |
 | `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
 | `gui/overlay/about.rs` | the About panel; every panel has a file like it |
 | `gui/overlay/disks.rs` | the Disks panel: every drive with its disk (`image_place`, `disk_size`, which the About panel shares), the buttons that ask the app for a `DiskCommand` on the drive chosen, what the host cannot do left out (`platform::FILE_ACCESS`), and a reboot that is due shown with the reset |
@@ -112,6 +115,18 @@ box is never replaced).
 - **A BIOS service**: `assets/rom/intNN_*.inc`. INT 13h is a trap: the ROM
   writes to port B0h and the host serves the call in the core's
   `src/io/disk/int13.rs`. Port B1h hands the boot order to INT 19h.
+- **A ROM**: the socket is the core's. `Runtime::load_rom_image` takes an
+  image of 16 bytes to 64 KB, which ends at F000:FFFF, makes the rest of
+  the socket read 0xFF as an empty socket does (nothing of the ROM before
+  stays below a smaller one) and keeps the name the user knows it by
+  (`Runtime::rom`, which the About panel shows); `load_rom` reads a file,
+  and refuses one longer than an image unread. Nothing else is refused,
+  and an image refused is a message for the user that changes nothing.
+  The command line names a ROM for the start. At run time Machine > Load
+  ROM (`src/gui/overlay/load_rom.rs`) asks for one with a `RomCommand`, and
+  `RomLoader` (`src/gui/rom_loader.rs`) loads it, at once or when the
+  host's dialog or the site has answered, and restarts the machine at the
+  reset vector as Reset does, its memory, devices and drives as they are.
 - **Guest time**: the machine is told the time, it never reads a clock.
   `Runtime::credit_pit_time` turns host time into the 8253 clocks the guest
   is owed (the debt, its 250 ms cap) and `Runtime::run` pays them out, four
@@ -157,10 +172,11 @@ box is never replaced).
   same meaning, and called from the rest of the app without a `cfg`. Logic
   of the browser side that needs no browser goes in a file of its own,
   built under `cfg(any(target_arch = "wasm32", test))` and tested on the
-  desktop (`egui_events.rs`, `fat_stamp.rs`); where the two hosts differ in
-  what a caller does next, the name says so in what it returns
-  (`platform::wait`, `platform::FILE_ACCESS`) and a test puts the other
-  host's answer in its place (`Pacer::waiting_with`, `DiskTools::on`).
+  desktop (`egui_events.rs`, `fat_stamp.rs`, `site_answer.rs`); where the
+  two hosts differ in what a caller does next, the name says so in what it
+  returns (`platform::wait`, `platform::FILE_ACCESS`, `platform::HAS_SITE`)
+  and a test puts the other host's answer in its place
+  (`Pacer::waiting_with`, `DiskTools::on`, `RomLoader::on`).
 - **Keys**: the window sends `EmulatorEvent`s down a channel to
   `KeyboardController`: the scancode of the physical key (`src/gui/keys.rs`),
   so the layout is the guest's business. The overlay's switch is the
@@ -228,7 +244,10 @@ box is never replaced).
   `Session::execute` (`src/gui/session.rs`), which reports through
   `Overlay::messages`. What touches the host goes from the session to
   `platform` (the VGA dump: `platform::save_text`, a file on a desktop and a
-  download in a browser; the disk tools' dialogs), never from the overlay.
+  download in a browser; the dialogs of the disk tools and of the ROM
+  loader; the fetch of a file of the site), never from the overlay. Load
+  ROM is a menu of its own within the Machine menu
+  (`src/gui/overlay/load_rom.rs`).
 - **A disk tool**: an `Operation` of the core's `io::disk_ops` (what it
   does to the drives, the rules it keeps, its words for the user and
   whether the guest must be rebooted, in its `Outcome`), a `DiskCommand`
@@ -249,6 +268,20 @@ box is never replaced).
   (INT 19h writes port B1h), and the panel shows it with the reset. The
   host is a `FileHost` (`src/gui/host/`), and a test answers its dialogs
   by hand (`host::testing::ByHand`, `disk_tools_tests.rs`).
+- **A file of the site**: a row of THE table in `src/site.rs` (its path
+  relative to the page, its kind, its title), a `copy-file` link in
+  `index.html` that has trunk put it beside the page (so `trunk serve`
+  serves it too), and the Pages workflow's check of it in `dist/`.
+  `site_tests.rs` sweeps the page and the workflow for every row, and for
+  a file the page publishes that the table does not have. The app offers
+  the site's files only where `platform::HAS_SITE`, and fetches one
+  through `FileHost::fetch` (`platform::fetch`), which answers later down
+  a channel like a dialog: in a browser relative to the page, so the same
+  path works at the root of `trunk serve` and below `/Emulator8086/` on
+  Pages. An answer that is a 404, or a page in the place of the file (as
+  `trunk serve` answers a path it has no file for), is "The site has no
+  ..." (`platform/site_answer.rs`). A test answers the fetches by hand
+  (`host::testing::ByHand`).
 - **A colour of the overlay**: a slot of `PALETTE` in
   `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
   under `src/gui/overlay/` spells a colour.
@@ -360,12 +393,17 @@ driven with fingers as a host hands them to egui
 (`gui::overlay::on_screen_keyboard::tests`, and through the session to the
 guest's keyboard in `gui::session::tests`), the disk tools and the Disks
 panel on a host that hands files over as their contents
-(`gui::disk_tools::tests`, `gui::overlay::disks::tests`), and the frame
-drawn on a device that has no more than WebGL2 guarantees
+(`gui::disk_tools::tests`, `gui::overlay::disks::tests`), Machine > Load
+ROM on a host with a site and the ROM of the site loaded from answers
+given by hand (`gui::overlay::load_rom::tests`, `gui::rom_loader::tests`),
+what a site's answer to a fetch says (`platform::site_answer::tests`), the
+site's files against what the page and the workflow publish
+(`site::tests`), and the frame drawn on a device that has no more than
+WebGL2 guarantees
 (`gui::renderer::tests::the_frame_is_drawn_within_the_limits_of_webgl2`;
 with `WGPU_BACKEND=gl` it runs on the backend WebGL2 shares its shader
 translation with). `platform/web.rs` and the page are outside the suite,
-the file picker and the download among them.
+the file picker, the download and the fetch among them.
 The page is looked at through the Playwright MCP server alone (tools named
 `mcp__playwright__*`), never through another browser: serve it with
 `trunk serve` on its default address (with `--address 0.0.0.0`, trunk 0.21
@@ -479,7 +517,7 @@ not listed has not been asked: ask first, and add the answer here.
 | 2026-10-04 | `wgpu` 24 → 30, `winit` 0.30.13 | approved | the window; the versions `egui-wgpu` 0.36 requires |
 | 2026-10-04 | `egui` 0.36, `egui-wgpu`, `egui-winit` | approved | the overlay in the window. In use, in the app only, with egui's `default_fonts` and no other feature: no system clipboard (`arboard`), no screen-reader adapter (`accesskit_winit`), no opening of links (`webbrowser`), none of which a browser has. `egui-winit` is a dependency of the native targets only: 0.36.2 does not build for wasm32 (see below) |
 | 2026-10-04 | `rfd` 0.17 | approved | file dialogs, native and in the browser. In use, in the app on both hosts (`src/platform`): the system's dialogs on a desktop, the file picker in a browser. With its default features, which only Linux and the BSDs build (the desktop portal's dialogs, parented to a Wayland window too). In a browser it brings `web-sys` features of its own (the file input and its reader, the user's activation), which cargo adds to those the root manifest lists |
-| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other (beside those `rfd` asks for itself) |
+| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other (beside those `rfd` asks for itself). `Response` and `Headers` were added on 2026-10-10 with the fetch of the site's files (`platform::fetch`) |
 | 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate. In use: 0.21, with `index.html` at the root |
 | 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
 | 2026-10-10 | GitHub's own actions: `actions/checkout`, `actions/cache`, `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` | requested with the deployment (the user asked for the browser build to be built by CI and published on GitHub Pages), not asked one by one | `.github/workflows/pages.yml` alone. No action of a third party: the runner's rustup installs the toolchain, and trunk comes from its releases, checked against the checksum the workflow holds |
@@ -493,6 +531,10 @@ wgpu takes its `webgl` feature for wasm32 only (WebGPU is among its default
 features). chrono is a direct dependency of neither crate: on a desktop the
 app gets the local time through fatfs's `chrono` feature, which it turns on
 for the native targets only; in a browser the time is the page's `Date`.
+The fetch of a file of the site is `Window::fetch_with_str`, which needs no
+feature beyond `Window`; its answer needs `Response`, and the content type
+that tells a page from a file needs `Headers`. No `Request` or
+`RequestInit`: the fetch is a plain GET of a path relative to the page.
 
 egui-winit 0.36.2 does not compile for wasm32: its `NativeFile` implements
 `egui::DroppedFile::bytes`, which egui declares only off wasm32 (the trait

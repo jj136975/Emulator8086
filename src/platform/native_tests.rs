@@ -2,8 +2,8 @@
 //! or a dialog: the command line, from its arguments to the machine they
 //! describe (a test parses a line as `options` parses the process's own and
 //! hands the result to `crate::machine`); the files a text or a disk is
-//! saved to; the wait; the tasks; and the thread a file dialog's answer
-//! comes from.
+//! saved to; the wait; the tasks; the thread a file dialog's answer comes
+//! from; and the site a desktop does not have.
 
 use std::ffi::OsString;
 use std::sync::mpsc::TryRecvError;
@@ -175,6 +175,19 @@ fn a_dialogs_answer_is_waited_for_on_a_thread_of_its_own() {
 fn a_dialog_closed_without_a_choice_answers_with_no_file() {
     let answer = answer_later(async { paths(None) });
     assert_eq!(answer.recv_timeout(Duration::from_secs(10)), Ok(Vec::new()));
+}
+
+/// A desktop has no site: `HAS_SITE` says so, and a file asked of it comes
+/// back at once with the answer that there is no site to ask.
+#[test]
+fn a_desktop_has_no_site_to_fetch_from() {
+    const { assert!(!HAS_SITE) };
+    assert_eq!(
+        fetch("rom/bios.bin").try_recv(),
+        Ok(Err(
+            "There is no site here to fetch rom/bios.bin from".to_string()
+        ))
+    );
 }
 
 /// The desktop can wait: `wait` lets the time go by and says so.

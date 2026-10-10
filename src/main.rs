@@ -5,7 +5,8 @@
 //! image they name, or the core's built-in BIOS), and `run` hands that
 //! machine to the window (`gui`). The machine reads no clock: the window's
 //! pacer tells it the time that passes, and `wall_clock` is the clock its
-//! disks are formatted by. What depends on the host is in `platform`.
+//! disks are formatted by. What depends on the host is in `platform`, and
+//! `site` is the table of the files the site publishes beside the page.
 //!
 //! The invariant: whatever the user can fix (a bad option value, a disk
 //! image or ROM that cannot be used) is an `Err` from `run` carrying a
@@ -26,6 +27,7 @@ use crate::wall_clock::HostClock;
 
 mod gui;
 mod platform;
+mod site;
 mod wall_clock;
 
 /// What a start asks of the machine. The default asks for nothing: the

@@ -1,12 +1,12 @@
 //! The browser side of `platform`: a page, reached through wasm-bindgen.
 //! It has no command line, no files and no stderr, and one thread, which is
-//! the page's own.
+//! the page's own; it has the site that served it, whose files it fetches.
 //!
 //! The invariant: nothing here blocks. Whatever takes time (the GPU's
-//! start-up, the wait for the next frame, the user at a file picker) is a
-//! task or a callback of the page's event loop, and `wait` says that it
-//! cannot wait: a call that did not return would freeze the page with the
-//! machine in it.
+//! start-up, the wait for the next frame, the user at a file picker, a file
+//! on its way from the site) is a task or a callback of the page's event
+//! loop, and `wait` says that it cannot wait: a call that did not return
+//! would freeze the page with the machine in it.
 
 use std::future::Future;
 use std::path::Path;
@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
 use web_sys::console;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -25,8 +26,8 @@ use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys, Window
 use winit::window::Window;
 
 use super::egui_events::{CursorWish, EguiEvents};
-use super::fat_stamp;
-use super::{FileAccess, FileQuestion, OverlaySwitch, Wanted};
+use super::{Fetched, FileAccess, FileQuestion, OverlaySwitch, Wanted};
+use super::{fat_stamp, site_answer};
 use crate::Options;
 use emu8086_core::io::disk_ops::HostFile;
 
@@ -400,6 +401,55 @@ impl FileDialogs {
             let _ = answer.send(files);
         });
         receiver
+    }
+}
+
+/// The app came from the site that served the page.
+pub const HAS_SITE: bool = true;
+
+/// Asks the site that served the page for the file at `path`, relative to
+/// the page, and returns at once: the browser fetches it in a task of the
+/// page, and its bytes, or why none came, arrive later through the channel
+/// returned. Relative to the page, the path is the same wherever the site
+/// serves the page: at its root, or below a path as GitHub Pages does.
+pub fn fetch(path: &str) -> Receiver<Fetched> {
+    let (answer, receiver) = mpsc::channel();
+    let path = path.to_string();
+    spawn(async move {
+        // Whoever asked may have gone since.
+        let _ = answer.send(fetched(&path).await);
+    });
+    receiver
+}
+
+/// The file at `path` of the site, fetched: its bytes, once the site's
+/// answer says that it came (`site_answer::verdict`).
+async fn fetched(path: &str) -> Fetched {
+    let cannot = |error: JsValue| format!("Cannot fetch {path}: {}", reason(&error));
+    let window =
+        web_sys::window().ok_or_else(|| format!("Cannot fetch {path}: the page has no window"))?;
+    let response = JsFuture::from(window.fetch_with_str(path))
+        .await
+        .map_err(cannot)?;
+    let response: web_sys::Response = response.dyn_into().map_err(cannot)?;
+    let content_type = response.headers().get("content-type").ok().flatten();
+    site_answer::verdict(
+        path,
+        response.status(),
+        &response.status_text(),
+        content_type.as_deref(),
+    )?;
+    let body = response.array_buffer().map_err(cannot)?;
+    let body = JsFuture::from(body).await.map_err(cannot)?;
+    Ok(js_sys::Uint8Array::new(&body).to_vec())
+}
+
+/// Why the page did not keep a promise: the message of the error the
+/// browser rejected it with.
+fn reason(error: &JsValue) -> String {
+    match error.dyn_ref::<js_sys::Error>() {
+        Some(error) => String::from(error.message()),
+        None => error.as_string().unwrap_or_else(|| format!("{error:?}")),
     }
 }
 

@@ -48,7 +48,8 @@ egui-winit.workspace = true
 fatfs = { workspace = true, features = ["chrono"] }
 
 # What only a browser has (src/platform/web.rs): the page, reached through
-# wasm-bindgen.
+# wasm-bindgen, and the site that served it, whose files it fetches
+# (`Response`, `Headers`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Without `chrono`: there the wall clock is the page's `Date`.
 fatfs.workspace = true
@@ -63,11 +64,13 @@ web-sys = { workspace = true, features = [
     "Element",
     "Event",
     "EventTarget",
+    "Headers",
     "HtmlAnchorElement",
     "HtmlCanvasElement",
     "HtmlElement",
     "KeyboardEvent",
     "Node",
+    "Response",
     "Url",
     "Window",
     "console",

@@ -3,8 +3,9 @@
 //! seconds, the menu bar, the windows of the panels and the messages.
 //! `panels` is THE panel table, with a file per panel beside it (`about`,
 //! `disks`, `on_screen_keyboard`, `stats`, `memory`, and one per device:
-//! `pic`, `pit`, `vga`, `keyboard`, `debug_port`); `messages` is where a
-//! tool says what it did; `theme` is the look.
+//! `pic`, `pit`, `vga`, `keyboard`, `debug_port`); `load_rom` is the
+//! Machine menu's choice of ROMs; `messages` is where a tool says what it
+//! did; `theme` is the look.
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
@@ -23,6 +24,7 @@ mod about;
 mod debug_port;
 mod disks;
 mod keyboard;
+mod load_rom;
 mod memory;
 mod messages;
 mod on_screen_keyboard;
@@ -34,6 +36,7 @@ pub mod theme;
 mod vga;
 
 pub use disks::DiskCommand;
+pub use load_rom::RomCommand;
 pub use messages::Messages;
 pub use panels::Panel;
 
@@ -68,6 +71,9 @@ pub enum Command {
     Resume,
     /// Reboot the guest.
     Reset,
+    /// Restart the machine with another ROM image, as Machine > Load ROM
+    /// asks.
+    Rom(RomCommand),
     /// Put the state of the display where it can be read.
     DumpVga,
     /// Do to a drive what the Disks panel asks.
@@ -376,9 +382,10 @@ fn keyboard_taken(ctx: &egui::Context) -> bool {
     ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx)
 }
 
-/// The menu bar: the Machine menu, the View menu with a checkbox for every
-/// panel, and at the right end the guest's speed, beside the mark of a
-/// paused machine.
+/// The menu bar: the Machine menu, with the ROMs the machine can restart
+/// with in a menu of their own (`load_rom`), the View menu with a checkbox
+/// for every panel, and at the right end the guest's speed, beside the mark
+/// of a paused machine.
 fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, open: &mut Vec<Panel>) {
     ui.menu_button("Machine", |ui| {
         let (label, command) = if cx.paused {
@@ -392,6 +399,7 @@ fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, open: &mut Vec<Panel>) {
         if ui.button("Reset").clicked() {
             cx.commands.push(Command::Reset);
         }
+        load_rom::menu(ui, cx);
         ui.separator();
         if ui.button("Dump VGA state").clicked() {
             cx.commands.push(Command::DumpVga);

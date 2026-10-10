@@ -14,6 +14,7 @@ use crate::wall_clock::HostClock;
 use emu8086_core::io::disk::DiskImage;
 use emu8086_core::io::disk_spec::parse_disk_specs;
 use emu8086_core::io::keyboard::KeyboardController;
+use emu8086_core::{BIOS_ROM, BIOS_ROM_NAME};
 
 /// A shell as the app starts it: hidden, no frame run yet. Its machine has
 /// a floppy in A: and a hard disk, both in memory.
@@ -389,8 +390,8 @@ fn a_panel_closed_by_its_window_is_unticked_in_the_view_menu() {
 }
 
 /// The About panel shows the version, the keys and the machine as it is on
-/// that frame: its drives, their images and the boot order. A disk put in a
-/// drive while the panel is open is listed on the next frame.
+/// that frame: its ROM, its drives, their images and the boot order. A ROM
+/// or a disk put in while the panel is open is listed on the next frame.
 #[test]
 fn the_about_panel_shows_the_keys_and_the_machine_as_it_is() {
     let mut shell = shown();
@@ -401,6 +402,7 @@ fn the_about_panel_shows_the_keys_and_the_machine_as_it_is() {
         version.as_str(),
         "F12",
         "Shows or hides the tools",
+        "ROM: none",
         "A:",
         "in memory",
         "1440 KB",
@@ -415,8 +417,10 @@ fn the_about_panel_shows_the_keys_and_the_machine_as_it_is() {
 
     let floppy = DiskImage::new_in_memory_sized(720 * 1024, true);
     shell.target.runtime.disks.borrow_mut().attach(0x01, floppy);
+    let runtime = &mut shell.target.runtime;
+    runtime.load_rom_image(BIOS_ROM, BIOS_ROM_NAME).unwrap();
     let screen = shell.frame(Vec::new());
-    for text in ["B:", "720 KB", "read-only"] {
+    for text in ["B:", "720 KB", "read-only", "ROM: the built-in BIOS"] {
         assert!(screen.shows(text), "{text:?} in {:?}", screen.texts());
     }
 }

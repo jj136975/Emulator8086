@@ -35,14 +35,20 @@
 //! - `FileDialogs`: asks the user for files in the host's own dialog
 //!   (`FileQuestion`) and does not wait for the answer, which comes later,
 //!   down a channel, as `HostFile`s: paths, or names and contents.
+//! - `HAS_SITE`: whether the app came from a site that publishes files
+//!   beside it: a page did, a desktop's program did not.
+//! - `fetch`: asks the site for a file it publishes beside the page, by its
+//!   path relative to the page, and does not wait for it: the file's bytes,
+//!   or why none came, come later down a channel (`Fetched`). Where there is
+//!   no site, the answer says so at once.
 //!
 //! and the clocks, which are `web_time`'s on every host: `Instant`,
 //! `SystemTime`, `UNIX_EPOCH`. They are std's on a desktop and the page's
 //! in a browser, where std's panic.
 //!
-//! `egui_events` and `fat_stamp` are the parts of the browser's side that
-//! know nothing of a browser. They are built on a desktop too, for their
-//! tests alone.
+//! `egui_events`, `fat_stamp` and `site_answer` are the parts of the
+//! browser's side that know nothing of a browser. They are built on a
+//! desktop too, for their tests alone.
 //!
 //! The invariant: this directory is the only part of the app that knows
 //! which host it is built for. Outside it no source file names
@@ -60,6 +66,8 @@ mod web;
 mod egui_events;
 #[cfg(any(target_arch = "wasm32", test))]
 mod fat_stamp;
+#[cfg(any(target_arch = "wasm32", test))]
+mod site_answer;
 
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
@@ -111,7 +119,7 @@ pub struct FileQuestion {
 /// What a file dialog is to come back with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wanted {
-    /// One file that exists: a disk image.
+    /// One file that exists: an image, of a disk or of a ROM.
     Image,
     /// A disk image to write: a new file, or one to replace, which the
     /// dialog has the user confirm. `suggested` is the name it offers.
@@ -122,6 +130,10 @@ pub enum Wanted {
     /// A folder. Asked only where files have paths.
     Folder,
 }
+
+/// What became of a file asked of the site (`fetch`): its bytes, or why
+/// none came, in words for the user that name the file.
+pub type Fetched = Result<Vec<u8>, String>;
 
 #[cfg(test)]
 mod tests;

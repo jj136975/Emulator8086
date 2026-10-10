@@ -5,7 +5,8 @@
 //! decided here: whose a key is, when a finger held on the picture works
 //! the overlay's switch (`hold`), and what a command of the overlay does to
 //! the machine. What the Disks panel asks for is carried out by
-//! `disk_tools`, which has the file dialogs to wait for.
+//! `disk_tools`, and what Machine > Load ROM asks for by `rom_loader`: both
+//! have answers of the host's to wait for.
 //!
 //! The invariants: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -35,6 +36,7 @@ use super::meter::{Counts, Meter};
 use super::overlay::{Command, Overlay, Panel};
 use super::pacer::Pacer;
 use super::renderer::Drawn;
+use super::rom_loader::RomLoader;
 use crate::platform::{self, Instant};
 
 /// Host time the CPU runs for before each frame is drawn. The rest of the
@@ -59,6 +61,9 @@ pub struct Session {
     dump_file: PathBuf,
     /// What carries out `Command::Disk`, and the file dialogs it has open.
     pub(super) disks: DiskTools,
+    /// What carries out `Command::Rom`, and the dialogs and fetches it
+    /// waits for.
+    pub(super) roms: RomLoader,
 }
 
 impl Session {
@@ -73,13 +78,16 @@ impl Session {
             overlay: Overlay::new(),
             dump_file: PathBuf::from(VGA_DUMP_FILE),
             disks: DiskTools::new(),
+            roms: RomLoader::new(),
         }
     }
 
     /// The window the machine is shown in is there: the file dialogs of the
-    /// disk tools belong to it from now on. The session needs none.
+    /// disk tools and of the ROM loader belong to it from now on. The
+    /// session needs none.
     pub fn shown_in(&mut self, window: &Arc<Window>) {
         self.disks.set_window(window);
+        self.roms.set_window(window);
     }
 
     /// The overlay's key went down or came up. Going down, it shows the
@@ -150,16 +158,17 @@ impl Session {
         self.pacer.paused()
     }
 
-    /// One frame: the answers of the file dialogs that have come in, a
-    /// slice of the guest's time, which a paused guest lets go by, and the
-    /// meter told of it whether the overlay is shown or not; then a pass of
-    /// the overlay if it has anything to show. `input` is asked for only
-    /// then. Returns whether there was a pass: something to paint, and
-    /// wishes of egui for the window to heed.
+    /// One frame: the answers of the file dialogs and of the site that have
+    /// come in, a slice of the guest's time, which a paused guest lets go
+    /// by, and the meter told of it whether the overlay is shown or not;
+    /// then a pass of the overlay if it has anything to show. `input` is
+    /// asked for only then. Returns whether there was a pass: something to
+    /// paint, and wishes of egui for the window to heed.
     pub fn frame(&mut self, input: impl FnOnce() -> egui::RawInput) -> bool {
         // Shown or hidden, the overlay is told what came of them: a dialog
         // may be answered long after the tools were put away.
         self.disks.poll(&mut self.runtime, self.overlay.messages());
+        self.roms.poll(&mut self.runtime, self.overlay.messages());
         let slice = self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
         self.meter.frame(slice, Counts::read(&self.runtime));
         let draws = self.overlay.draws();
@@ -219,6 +228,10 @@ impl Session {
             Command::Reset => {
                 self.runtime.reset();
                 self.overlay.messages().done("Machine reset");
+            }
+            Command::Rom(command) => {
+                self.roms
+                    .execute(command, &mut self.runtime, self.overlay.messages());
             }
             Command::DumpVga => {
                 // The one place where the session hands a text to the host,

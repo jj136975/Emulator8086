@@ -8,7 +8,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
-- A tools overlay in the window (F12): pause and resume, reset, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the drives (put disks in and take them out, save them, copy host files onto them), and an on-screen PC keyboard
+- A tools overlay in the window (F12): pause and resume, reset, a restart with another ROM, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the drives (put disks in and take them out, save them, copy host files onto them), and an on-screen PC keyboard
 - Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2, on phones and tablets too
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
@@ -82,8 +82,9 @@ F12, or a finger held on the picture, puts a menu bar over the picture; for the 
 |------|-------|--------------|
 | Machine | Pause / Resume | Holds the guest still while the window goes on drawing. The menu bar and the window title say so. The guest's timer is not owed the time it stood paused |
 | Machine | Reset | Reboots the guest |
+| Machine | Load ROM | Restarts the machine with another ROM image, in place of the BIOS: the built-in BIOS, the BIOS the site publishes (in a browser, see [the site's files](#the-sites-files)), or an image file of 16 bytes to 64 KB chosen in a file dialog. The image ends at F000:FFFF and the rest of the ROM area reads 0xFF, as an empty socket does; the machine restarts at the reset vector, as Reset does, with its memory, its devices and its drives as they are. A message says which ROM runs then, or why the machine runs on with the one it had |
 | Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory (in a browser: offers it as a download) |
-| View | About | A panel with the key bindings, the version, and the machine: the image in each drive, whether it can be written, and the boot order |
+| View | About | A panel with the key bindings, the version, and the machine: the ROM it runs, the image in each drive, whether it can be written, and the boot order |
 | View | Disks | Every drive with the disk it holds: where its image lives (a file, or memory), its size, its cylinders, heads and sectors, and whether it can be written. For the drive chosen in the list: put in an image file, a blank disk held in memory (a formatted floppy of a standard size, or a blank 32 MB hard disk) or a new image file (a formatted 1.44 MB floppy, or a blank 32 MB hard disk), write-protected if the box is ticked; take the disk out, move it to another drive, save it to a file, or copy host files or a whole folder onto it |
 | View | On-screen keyboard | The 83 keys of the PC/XT keyboard, printed for the US and laid out like a keyboard without a numeric pad, as large as the screen allows: for a phone, or wherever no keyboard is at hand. A key is pressed with a finger or the mouse, several at once with several fingers, and sends what the physical key sends, so the guest's layout decides what it types. A key held repeats as an XT's does. Shift, Ctrl and Alt tapped alone (down and up again before they repeat, with no other key down) stay down until the next key comes up, and a second tap lets them go. The lock keys light up with the guest's Caps Lock, Num Lock and Scroll Lock |
 | View | Stats | Whether the guest keeps up with real time, and where the host's time goes: the guest's speed with a chart of its last minute, how a frame divides between running the guest, idling, the overlay, drawing and waiting for the display, the guest's clock and its timer against real time, the time owed and the time dropped, the share spent halted, and the interrupts taken on each line. The menu bar shows the speed at its right end |
@@ -136,13 +137,13 @@ trunk build --release --public-url /Emulator8086/
 
 ### The site's files
 
-Beside the page, the site publishes:
+Beside the page, the site publishes files the application fetches from it, each named in a table of the application's (`src/site.rs`):
 
-| Path | What it is |
-|------|------------|
-| `rom/bios.bin` | The BIOS. The workflow assembles it from its sources in `assets/rom` with NASM, and fails unless it is the image committed there, which is the one built into the application |
+| Path | What it is | Where the application offers it |
+|------|------------|---------------------------------|
+| `rom/bios.bin` | The BIOS. The workflow assembles it from its sources in `assets/rom` with NASM, and fails unless it is the image committed there, which is the one built into the application | Machine > Load ROM > BIOS from the site |
 
-`trunk build` and `trunk serve` put the same files beside the page, from the repository.
+`trunk build` and `trunk serve` put the same files beside the page, from the repository. A file is fetched by its path relative to the page, so it is found wherever the page is served from: at the root of `trunk serve`, or below `/Emulator8086/` on GitHub Pages. Where the server has no such file (a 404, or the page itself in its place, which is how `trunk serve` answers a path it has no file for), a message says that the site has no such file, and the machine runs on as it was.
 
 ### Browsers
 
@@ -155,6 +156,7 @@ The picture is drawn with WebGPU where the browser has a working one, and with W
 | The machine at start | What the command line asks for | The built-in BIOS and no disk: the BIOS reports that there is nothing to boot and waits for a key. Put a disk in with the Disks panel, then press a key |
 | The tools overlay | F12 | A right-click on the picture. F12 stays the browser's key, for its developer tools; the hint and the About panel say "Right-click or touch and hold" |
 | Machine > Dump VGA state | Writes `vga_dump.txt` | Offers `vga_dump.txt` as a download |
+| Machine > Load ROM | The built-in BIOS, or an image file chosen in a dialog | The built-in BIOS, the BIOS the site publishes (`rom/bios.bin`), or an image file chosen in the file picker |
 | An image file put into a drive | Is the disk: the guest writes to the file | Is copied into the page and held in memory: the file stays as it was |
 | Saving a disk | To a file named in a dialog | As a download |
 | A new image file, a folder of host files | Offered | Not offered: a page can create no file and read no folder |
@@ -240,7 +242,7 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 ### Testing
 
-The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking and touching through it with hand-made input, and the disk tools with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, touches among them, the time stamps, the disk tools on a host that hands files over as their contents, and the frame drawn within the limits WebGL2 guarantees. The page itself is outside the suite, and so are the system's file dialogs and the browser's file picker.
+The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking and touching through it with hand-made input, and the disk tools and the ROM loader with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, touches among them, the time stamps, the disk tools on a host that hands files over as their contents, the ROMs of the site offered and loaded with answers the tests give by hand, what a site's answer to a fetch says, and the frame drawn within the limits WebGL2 guarantees. The files the site publishes are checked against what the page and the workflow publish. The page itself is outside the suite, and so are the system's file dialogs, the browser's file picker and its fetch.
 
 ```bash
 # Fetch the CPU test vectors (git submodule)

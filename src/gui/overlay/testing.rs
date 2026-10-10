@@ -82,6 +82,12 @@ pub fn primary(pos: Pos2, pressed: bool) -> Event {
     }
 }
 
+/// The label of the button that opens a menu within a menu, as egui tells
+/// a screen reader of it: the menu's `title`, and the arrow at its end.
+pub fn submenu(title: &str) -> String {
+    format!("{title} ⏵")
+}
+
 /// What a host hands egui when the first finger, which is the pointer as
 /// well, comes down at `pos`: its touch, then the pointer moved there and
 /// its primary button pressed.

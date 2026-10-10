@@ -38,6 +38,7 @@ mod meter;
 mod overlay;
 mod pacer;
 mod renderer;
+mod rom_loader;
 mod session;
 
 use std::sync::Arc;
