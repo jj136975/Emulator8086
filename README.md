@@ -134,6 +134,16 @@ trunk build --release
 trunk build --release --public-url /Emulator8086/
 ```
 
+### The site's files
+
+Beside the page, the site publishes:
+
+| Path | What it is |
+|------|------------|
+| `rom/bios.bin` | The BIOS. The workflow assembles it from its sources in `assets/rom` with NASM, and fails unless it is the image committed there, which is the one built into the application |
+
+`trunk build` and `trunk serve` put the same files beside the page, from the repository.
+
 ### Browsers
 
 The picture is drawn with WebGPU where the browser has a working one, and with WebGL2 where it has not. Which of the two is in use is logged to the browser's console at start ("Drawing with ..."). A browser offers WebGPU to secure pages only: `http://127.0.0.1:8080` and `https` are, the same server reached over plain `http` from another machine is not, and is drawn with WebGL2.

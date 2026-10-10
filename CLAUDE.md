@@ -27,9 +27,10 @@ The root `Cargo.toml` is the version authority for every dependency
 profiles. `assets/rom/` (the BIOS sources and image) and `8086/` (the CPU
 vectors, a submodule) stay at the root of the repository; the core reaches
 them from its own directory. `index.html` at the root is the page trunk
-builds the browser build into; `dist/`, where trunk puts the result, is
-ignored. `.github/workflows/pages.yml` publishes the browser build on
-GitHub Pages ("Build & test").
+builds the browser build into, and has trunk copy the BIOS beside it as
+`rom/bios.bin`; `dist/`, where trunk puts the result, is ignored.
+`.github/workflows/pages.yml` assembles the BIOS and publishes the browser
+build with it on GitHub Pages ("Build & test").
 
 The app, in `src/`:
 
@@ -305,6 +306,19 @@ commit), and uses GitHub's own actions alone (the ledger below). Its
 deployment needs the repository's Settings > Pages to name "GitHub Actions"
 as the source of the site.
 
+The site publishes the BIOS beside the page, as `rom/bios.bin`, assembled
+on the runner. The workflow installs nasm from Ubuntu's packages and
+touches the sources in `assets/rom`, so that the core's build script, the
+one path that assembles the BIOS (nasm, then the checksum patch), assembles
+`bios.bin` again during the build that embeds it. trunk copies the image
+into `dist/rom/` (the `copy-file` link of `index.html`, which `trunk serve`
+serves too), in a pipeline that runs beside the build of the app, before or
+after the build script replaced the image. The run then fails unless
+`bios.bin` was assembled in it (it is newer than its sources), is the image
+committed (`git diff --exit-code`) and is what `dist/` publishes (`cmp`). A
+change to the BIOS's sources is committed with the `bios.bin` it assembles
+to; a nasm that assembled other bytes would fail the run as well.
+
 The CPU is validated against real hardware: a change under the core's
 `src/vm/` runs the suite with `--include-ignored`. Never judge a suite
 through a pipe (`cargo test | tail` hides the exit code): redirect to a log,
@@ -312,7 +326,8 @@ check the exit code, then read the log.
 
 `bios.bin` is a tracked build product. With `nasm` on PATH the core's build
 script reassembles it whenever a file in `assets/rom` is newer; commit it
-together with the source change that produced it.
+together with the source change that produced it. The Pages workflow checks
+that it was (above).
 
 The emulator binary opens a window: do not run it from an agent session.
 The machine is exercised through the test harness. The wgpu pipeline (frame
@@ -468,6 +483,7 @@ not listed has not been asked: ask first, and add the answer here.
 | 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate. In use: 0.21, with `index.html` at the root |
 | 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
 | 2026-10-10 | GitHub's own actions: `actions/checkout`, `actions/cache`, `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` | requested with the deployment (the user asked for the browser build to be built by CI and published on GitHub Pages), not asked one by one | `.github/workflows/pages.yml` alone. No action of a third party: the runner's rustup installs the toolchain, and trunk comes from its releases, checked against the checksum the workflow holds |
+| 2026-10-10 | `nasm`, from Ubuntu's packages on the runner | requested with the user's "compile + upload" of the BIOS on 2026-10-10 (CI assembles the BIOS and publishes it with the site), not asked apart | `.github/workflows/pages.yml` alone: the runner installs it with apt for the core's build script to assemble `assets/rom`. A build tool, not a dependency of either crate; a desktop build uses whatever nasm is on PATH, or none |
 
 Approved does not mean added: the manifests say what is in use, the root
 one at which version and each crate's own which of them it takes.

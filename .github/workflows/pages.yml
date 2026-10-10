@@ -9,6 +9,14 @@
 # repository's Settings > Pages must name "GitHub Actions" as the source of
 # the site, or the build stops at configure-pages.
 #
+# The site publishes the BIOS beside the page, as rom/bios.bin, assembled
+# here from its sources. nasm comes from Ubuntu's packages, and the sources
+# are made newer than the image the checkout wrote with them: the core's
+# build script (crates/emu8086_core/build.rs: nasm, then the checksum patch)
+# then assembles the image again during the build that embeds it. The run
+# fails if that image is not the one committed, which is then to be
+# assembled again and committed with its sources.
+#
 # trunk is the version the project is built with by hand (CLAUDE.md, "Build
 # & test"), downloaded from its releases and checked against the checksum
 # below: a new version changes both.
@@ -40,6 +48,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: nasm
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nasm
+
+      # A checkout dates every file alike: the build script would take the
+      # image for up to date.
+      - name: BIOS sources newer than the image
+        run: touch assets/rom/*.asm assets/rom/*.inc
 
       # The toolchain `rust-toolchain` pins, with the wasm32 target it lists.
       - name: Rust toolchain
@@ -74,6 +92,24 @@ jobs:
         run: trunk build --release --public-url "$PUBLIC_URL"
         env:
           PUBLIC_URL: ${{ steps.pages.outputs.base_path }}/
+
+      # The image is newer than its sources again only if this run assembled
+      # it. trunk copies it into dist/ (index.html) while the build runs,
+      # before or after the build script replaced it: what is published is
+      # compared with what was assembled, and that with what is committed.
+      - name: BIOS
+        run: |
+          for source in assets/rom/*.asm assets/rom/*.inc; do
+            if ! [ assets/rom/bios.bin -nt "$source" ]; then
+              echo "::error::assets/rom/bios.bin was not assembled in this run: $source is newer"
+              exit 1
+            fi
+          done
+          if ! git diff --exit-code --stat assets/rom/bios.bin; then
+            echo "::error::assets/rom/bios.bin is not what its sources assemble to: assemble it again and commit it"
+            exit 1
+          fi
+          cmp assets/rom/bios.bin dist/rom/bios.bin
 
       - uses: actions/upload-pages-artifact@v5
         with:
