@@ -39,6 +39,8 @@ use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
 use log::{debug, warn};
 use std::cell::{Cell, Ref, RefCell};
 use std::fmt::{Debug, Formatter};
+use std::fs::File;
+use std::io::Read;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -329,11 +331,24 @@ impl Runtime {
 
     /// Loads the ROM image in the file `path` (`load_rom_image`), known by
     /// its path. Fails, with a message for the user that names the file, if
-    /// the file cannot be read or holds no ROM image.
+    /// the file cannot be read or holds no ROM image. A file longer than a
+    /// ROM image is refused unread: it may be a disk image of gigabytes,
+    /// chosen by mistake.
     pub fn load_rom(&mut self, path: PathBuf) -> Result<(), String> {
-        let image = std::fs::read(&path)
-            .map_err(|error| format!("cannot read ROM image '{}': {}", path.display(), error))?;
-        self.load_rom_image(&image, path.display().to_string())
+        let name = path.display().to_string();
+        let unreadable = |error: std::io::Error| format!("{name} cannot be read: {error}");
+        let file = File::open(&path).map_err(unreadable)?;
+        let length = file.metadata().map_err(unreadable)?.len();
+        if length > ROM_MAX_SIZE as u64 {
+            return Err(misfit(&name, length));
+        }
+        // A file that grew since is read no further than one byte past the
+        // longest image, which is refused all the same.
+        let mut image = Vec::new();
+        file.take(ROM_MAX_SIZE as u64 + 1)
+            .read_to_end(&mut image)
+            .map_err(unreadable)?;
+        self.load_rom_image(&image, name)
     }
 
     /// Puts `image` in the ROM socket, the top 64 KB of the first megabyte,
@@ -354,13 +369,7 @@ impl Runtime {
     pub fn load_rom_image(&mut self, image: &[u8], name: impl Into<String>) -> Result<(), String> {
         let name = name.into();
         if !(ROM_MIN_SIZE..=ROM_MAX_SIZE).contains(&image.len()) {
-            let size = match image.len() {
-                0 => "empty".to_string(),
-                bytes => format!("{bytes} bytes"),
-            };
-            return Err(format!(
-                "{name} is {size}, and a ROM image is 16 bytes to 64 KB"
-            ));
+            return Err(misfit(&name, image.len() as u64));
         }
 
         let mut socket = vec![EMPTY_SOCKET; ROM_MAX_SIZE];
@@ -623,6 +632,16 @@ impl Runtime {
             &mut self.cpu.registers.ds
         }
     }
+}
+
+/// Why an image of `length` bytes, known to the user as `name`, cannot be
+/// a ROM image.
+fn misfit(name: &str, length: u64) -> String {
+    let size = match length {
+        0 => "empty".to_string(),
+        bytes => format!("{bytes} bytes"),
+    };
+    format!("{name} is {size}, and a ROM image is 16 bytes to 64 KB")
 }
 
 /// The timer clocks `nanos` of host time come to, rounded down.

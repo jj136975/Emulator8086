@@ -179,19 +179,35 @@ fn an_image_that_cannot_be_a_rom_changes_nothing() {
     }
 }
 
+/// A ROM file that cannot be read, or holds no ROM image, is an error that
+/// names the file. One longer than a ROM image is told by its own length,
+/// which it is refused for before a byte of it is read.
 #[test]
 fn unusable_rom_file_is_an_error_that_names_the_file() {
     let mut rt = Runtime::new_test();
     assert_eq!(rt.rom(), None, "no ROM yet");
 
     let error = rt.load_rom(PathBuf::from("no-such-rom.bin")).unwrap_err();
-    assert!(error.contains("no-such-rom.bin"), "{}", error);
+    assert!(
+        error.starts_with("no-such-rom.bin cannot be read: "),
+        "{error}"
+    );
 
     let path = std::env::temp_dir().join(format!("emu8086-rom-{}.bin", std::process::id()));
-    for size in [0usize, ROM_MAX_SIZE + 1] {
+    for size in [0usize, ROM_MAX_SIZE + 1, 0x100000] {
         std::fs::write(&path, vec![0xFFu8; size]).unwrap();
         let error = rt.load_rom(path.clone()).unwrap_err();
-        assert!(error.contains("emu8086-rom-"), "{}", error);
+        let length = match size {
+            0 => "empty".to_string(),
+            bytes => format!("{bytes} bytes"),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "{} is {length}, and a ROM image is 16 bytes to 64 KB",
+                path.display()
+            )
+        );
     }
     assert_eq!(rt.rom(), None, "nothing was loaded");
 
