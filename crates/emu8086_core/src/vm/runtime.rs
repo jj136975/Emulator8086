@@ -13,6 +13,8 @@
 //! single-step trap, which is sampled before the instruction runs. While the
 //! CPU runs, the 8253 gets only a few of the clocks it is owed (`pit_debt`)
 //! per instruction, so the guest has time to service every timer interrupt.
+//! The ROM socket, the top 64 KB of the first megabyte, holds one image and
+//! nothing of the one before it.
 //!
 //! The machine reads no clock. Time passes for the guest only when the
 //! owner of the machine says how much has passed on the host
@@ -31,7 +33,7 @@ use crate::io::pit::{self, Pit};
 use crate::io::vga::VgaDevice;
 use crate::vm::cpu::Cpu;
 use crate::vm::instructions::process;
-use crate::vm::memory::{Memory, Segment};
+use crate::vm::memory::{MEMORY_SIZE, Memory, Segment};
 use crate::vm::registers::Registers;
 use crate::vm::runtime::CpuFlag::{Carry, Interrupt, Overflow, Sign, Trap, Zero};
 use log::{debug, warn};
@@ -97,8 +99,18 @@ pub struct Prefixes {
 #[cfg(test)]
 const FRAME_INSTRUCTIONS: u64 = 50_000;
 
-/// Size of the ROM region, F000:0000-FFFF.
+/// Size of the ROM socket, F000:0000-FFFF: the most a ROM image can be.
 const ROM_MAX_SIZE: usize = 0x10000;
+/// Where the ROM socket starts.
+const ROM_START: usize = MEMORY_SIZE - ROM_MAX_SIZE;
+/// The least a ROM image can be: the 16 bytes from the reset vector at
+/// F000:FFF0, where the CPU fetches its first instruction, to the end of
+/// the first megabyte. A shorter image would leave the CPU to start in the
+/// empty socket below it.
+const ROM_MIN_SIZE: usize = 16;
+/// What the part of the socket an image leaves empty reads as: nothing
+/// answers there, and a PC reads 0xFF from an address nothing answers.
+const EMPTY_SOCKET: u8 = 0xFF;
 
 /// Input clock of the 8253 timer, in Hz.
 const PIT_CLOCK_HZ: u64 = pit::INPUT_HZ;
@@ -143,6 +155,9 @@ pub struct Runtime {
     pub vga: Option<Rc<RefCell<VgaDevice>>>,
     pit: Rc<RefCell<Pit>>,
     debug_console: Option<Rc<RefCell<DebugConsole>>>,
+    /// What the user knows the image in the ROM socket by, once there is
+    /// one (`load_rom_image`).
+    rom: Option<String>,
 
     /// Timer clocks owed to the 8253 for host time that has already passed.
     pit_debt: u64,
@@ -183,6 +198,7 @@ impl Runtime {
             vga: None,
             pit: Rc::new(RefCell::new(Pit::new())),
             debug_console: None,
+            rom: None,
             pit_debt: 0,
             pit_frac: 0,
             video_clock: Rc::new(Cell::new(0)),
@@ -288,6 +304,7 @@ impl Runtime {
             vga: Some(vga),
             pit,
             debug_console: Some(debug_console),
+            rom: None,
             pit_debt: 0,
             pit_frac: 0,
             video_clock,
@@ -310,31 +327,54 @@ impl Runtime {
         (vm, tx)
     }
 
-    /// Loads the ROM image in the file `path`. Fails, with a message for the
-    /// user, if the file cannot be read or is not a ROM of at most 64 KB.
+    /// Loads the ROM image in the file `path` (`load_rom_image`), known by
+    /// its path. Fails, with a message for the user that names the file, if
+    /// the file cannot be read or holds no ROM image.
     pub fn load_rom(&mut self, path: PathBuf) -> Result<(), String> {
-        let rom_data = std::fs::read(&path)
+        let image = std::fs::read(&path)
             .map_err(|error| format!("cannot read ROM image '{}': {}", path.display(), error))?;
-        if rom_data.is_empty() || rom_data.len() > ROM_MAX_SIZE {
+        self.load_rom_image(&image, path.display().to_string())
+    }
+
+    /// Puts `image` in the ROM socket, the top 64 KB of the first megabyte,
+    /// and write-protects the socket. The image ends at F000:FFFF, so that
+    /// the reset vector at F000:FFF0 lies in it, and the part of the socket
+    /// below it reads as an empty socket does, whatever image was there
+    /// before. `name` is what the user knows the image by (`rom`).
+    ///
+    /// Fails, with a message for the user that names the image, if it is
+    /// not 16 bytes to 64 KB long; the machine is then left as it was.
+    /// Nothing else is refused: the 8086 runs whatever it finds at the
+    /// reset vector, and a ROM is not known by what it holds. Its checksum
+    /// is a BIOS's test of itself, which a test ROM need not pass, and its
+    /// first instruction need not be a far jump.
+    ///
+    /// The CPU is left as it is: whoever swaps the ROM of a machine that
+    /// has run reboots it (`reset`).
+    pub fn load_rom_image(&mut self, image: &[u8], name: impl Into<String>) -> Result<(), String> {
+        let name = name.into();
+        if !(ROM_MIN_SIZE..=ROM_MAX_SIZE).contains(&image.len()) {
+            let size = match image.len() {
+                0 => "empty".to_string(),
+                bytes => format!("{bytes} bytes"),
+            };
             return Err(format!(
-                "ROM image '{}' is {} bytes; a ROM is 1 byte to 64 KB",
-                path.display(),
-                rom_data.len()
+                "{name} is {size}, and a ROM image is 16 bytes to 64 KB"
             ));
         }
-        self.load_rom_image(&rom_data);
+
+        let mut socket = vec![EMPTY_SOCKET; ROM_MAX_SIZE];
+        socket[ROM_MAX_SIZE - image.len()..].copy_from_slice(image);
+        Memory::copy_data(&mut self.cpu.memory, ROM_START, &socket);
+        self.cpu.memory.enable_rom_protection();
+        self.rom = Some(name);
         Ok(())
     }
 
-    /// Copies a ROM image to the top of the first megabyte, so that it ends
-    /// at F000:FFFF and contains the reset vector, and write-protects the
-    /// ROM region.
-    pub fn load_rom_image(&mut self, rom_data: &[u8]) {
-        assert!(rom_data.len() <= ROM_MAX_SIZE, "ROM image larger than 64KB");
-
-        let load_address = 0x100000 - rom_data.len();
-        Memory::copy_data(&mut self.cpu.memory, load_address, rom_data);
-        self.cpu.memory.enable_rom_protection();
+    /// What the user knows the image in the ROM socket by: the name it was
+    /// loaded under (`load_rom_image`), or `None` before one was.
+    pub fn rom(&self) -> Option<&str> {
+        self.rom.as_deref()
     }
 
     /// Runs the guest for at most `instructions` passes: one `process` call

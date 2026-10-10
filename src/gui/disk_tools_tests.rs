@@ -59,7 +59,7 @@ fn machine(disks: &[&str], hard_disks: &[&str]) -> Runtime {
         &HostClock,
     )
     .unwrap();
-    runtime.load_rom_image(&BUSY_ROM);
+    runtime.load_rom_image(&BUSY_ROM, "a busy loop").unwrap();
     runtime
 }
 

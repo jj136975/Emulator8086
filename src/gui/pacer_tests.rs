@@ -13,7 +13,7 @@ fn machine(rom: &[u8]) -> Runtime {
     let keyboard = KeyboardController::with_receiver(key_events);
     let mut rt = Runtime::new(vec![], vec![], None, false, keyboard, &HostClock)
         .expect("a machine without disks has nothing to open");
-    rt.load_rom_image(rom);
+    rt.load_rom_image(rom, "the test's ROM").unwrap();
     rt
 }
 

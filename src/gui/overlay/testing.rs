@@ -22,9 +22,9 @@ use egui::{
 use super::{Command, Overlay};
 use crate::gui::meter::Meter;
 use crate::wall_clock::HostClock;
-use emu8086_core::BIOS_ROM;
 use emu8086_core::io::keyboard::{EmulatorEvent, KeyboardController};
 use emu8086_core::vm::runtime::Runtime;
+use emu8086_core::{BIOS_ROM, BIOS_ROM_NAME};
 
 /// Size of the window the tests pretend to draw in: in points, and since
 /// they draw at one pixel per point, in pixels.
@@ -420,7 +420,7 @@ pub fn waiting_for_a_key() -> (Runtime, Sender<EmulatorEvent>) {
         &HostClock,
     )
     .expect("a machine without disks has nothing to open");
-    runtime.load_rom_image(BIOS_ROM);
+    runtime.load_rom_image(BIOS_ROM, BIOS_ROM_NAME).unwrap();
     for _ in 0..BOOT_BATCHES {
         runtime.run(50_000);
         if runtime.cpu.halted {

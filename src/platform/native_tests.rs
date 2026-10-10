@@ -79,7 +79,8 @@ fn missing_boot_disk_is_reported_with_its_path() {
 }
 
 /// Without a ROM argument the machine runs the BIOS built into the
-/// binary; with one, it runs the image in that file instead.
+/// binary; with one, it runs the image in that file instead, known by its
+/// path.
 #[test]
 fn rom_argument_replaces_the_built_in_bios() {
     let rom_region = |rt: &Runtime| -> Vec<u8> {
@@ -91,7 +92,8 @@ fn rom_argument_replaces_the_built_in_bios() {
     let (rt, _keys) = machine(args(&["emulator8086"])).unwrap();
     assert!(rom_region(&rt) == BIOS_ROM, "the built-in BIOS is loaded");
 
-    // An 8 KB image: it ends at the top of the region, nothing below it.
+    // An 8 KB image: it ends at the top of the region, which is an empty
+    // socket below it.
     let path = std::env::temp_dir().join(format!("emu8086-cli-rom-{}.bin", std::process::id()));
     std::fs::write(&path, [0x5A; 0x2000]).unwrap();
     let line = [
@@ -101,8 +103,9 @@ fn rom_argument_replaces_the_built_in_bios() {
     let (rt, _keys) = machine(Cli::try_parse_from(line).unwrap().into()).unwrap();
     let _ = std::fs::remove_file(&path);
     let region = rom_region(&rt);
-    assert!(region[..0xE000].iter().all(|&byte| byte == 0x00));
+    assert!(region[..0xE000].iter().all(|&byte| byte == 0xFF));
     assert!(region[0xE000..].iter().all(|&byte| byte == 0x5A));
+    assert_eq!(rt.rom(), Some(path.display().to_string().as_str()));
 }
 
 /// A ROM file that cannot be used is an error the user can read.

@@ -58,7 +58,7 @@ cargo run --release -- my-bios.bin --hd msdos.vhd --boot hd0
 
 | Option | Description |
 |--------|-------------|
-| `[ROM]` | Path to a BIOS ROM image to run in place of the built-in BIOS (optional) |
+| `[ROM]` | Path to a BIOS ROM image to run in place of the built-in BIOS (optional): 16 bytes to 64 KB, which end at F000:FFFF. The rest of the ROM area, F000:0000 up, reads 0xFF, as an empty socket does |
 | `--disk <SPEC>` | Floppy disk: `[DRIVE:]SOURCE`, with drive `a`–`d` (default `a`) and source an image file, `memory` or `memory:KB` (e.g. `a:image.img`, `b:memory`). Append `:ro` for read-only. The image for `a:` must exist; for the other drives a missing file is created as a blank 1.44 MB image |
 | `--hd <PATH>` | Hard disk image, or `memory` (creates a blank 32 MB image if the file doesn't exist) |
 | `--boot <ORDER>` | Boot order: `a,hd0` (default), `hd0,a`, etc. |

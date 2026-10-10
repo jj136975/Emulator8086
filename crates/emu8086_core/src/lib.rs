@@ -1,7 +1,8 @@
 //! The machine, as a library: `vm` is the CPU, its memory and the `Runtime`
 //! that wires the devices of `io` to them and runs them, and `BIOS_ROM` is
-//! the BIOS a machine runs unless it is given another. The crate-level test
-//! modules and the build script's tests are declared here.
+//! the BIOS a machine runs unless it is given another, known to the user as
+//! `BIOS_ROM_NAME`. The crate-level test modules and the build script's
+//! tests are declared here.
 //!
 //! The invariants, which let the crate build and run where there is neither
 //! a window nor a clock to read (a browser, a test):
@@ -41,3 +42,6 @@ mod build_script;
 /// The BIOS built into the crate: the image `build.rs` brings up to date
 /// with its sources in `assets/rom` before the crate compiles.
 pub const BIOS_ROM: &[u8] = include_bytes!("../../../assets/rom/bios.bin");
+
+/// What the user knows `BIOS_ROM` by in a machine (`Runtime::rom`).
+pub const BIOS_ROM_NAME: &str = "the built-in BIOS";

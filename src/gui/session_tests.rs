@@ -40,7 +40,7 @@ fn session_with(rom: &[u8]) -> (Session, Receiver<EmulatorEvent>) {
     let keyboard = KeyboardController::with_receiver(key_events);
     let mut runtime = Runtime::new(vec![], vec![], None, false, keyboard, &HostClock)
         .expect("a machine without disks has nothing to open");
-    runtime.load_rom_image(rom);
+    runtime.load_rom_image(rom, "the test's ROM").unwrap();
     let (kbd_tx, sent) = channel();
     (Session::new(runtime, kbd_tx), sent)
 }

@@ -67,8 +67,8 @@ The core, in `crates/emu8086_core/`:
 
 | path | role |
 |---|---|
-| `src/lib.rs` | the two rules of the crate, its public modules, `BIOS_ROM`, the crate-level test modules |
-| `src/vm/runtime.rs` | the machine, built from what the command line names (`Runtime::new`) or around drives opened already (`with_drives`): the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM loader, the loans of the devices the app reads (`pit`, `keyboard`, `debug_console`), and the account of the guest's time it keeps for whoever measures it (`guest_time`: timer clocks handed over, of them while halted, owed, dropped) |
+| `src/lib.rs` | the two rules of the crate, its public modules, `BIOS_ROM` and what the user knows it by (`BIOS_ROM_NAME`), the crate-level test modules |
+| `src/vm/runtime.rs` | the machine, built from what the command line names (`Runtime::new`) or around drives opened already (`with_drives`): the devices on the port bus (`Runtime::with_devices` IS the port map), the run loop (`run`), guest time (`credit_pit_time` and the debt owed to the 8253), interrupt delivery, reset, the ROM socket (`load_rom_image`: an image of 16 bytes to 64 KB at the top of the first megabyte, the socket below it empty, and the name the image is known by, `rom`), the loans of the devices the app reads (`pit`, `keyboard`, `debug_console`), and the account of the guest's time it keeps for whoever measures it (`guest_time`: timer clocks handed over, of them while halted, owed, dropped) |
 | `src/vm/instructions/` | the CPU: `process()` in `mod.rs` is the opcode table, one line per opcode; the bodies live in the domain modules beside it (`alu`, `bcd`, `control`, `shift`, `stack`, `string`, `transfer`) |
 | `src/vm/modrm.rs` | `decode_rm`, the only effective-address decoder, and the `ModRM` operand widths |
 | `src/vm/registers.rs`, `memory.rs`, `cpu.rs` | the register file and the raw-pointer operand wrappers, the 1 MB memory with its ROM protection, the `Cpu` (which also holds the 8259A) |

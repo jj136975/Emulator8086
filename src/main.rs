@@ -17,10 +17,10 @@
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
-use emu8086_core::BIOS_ROM;
 use emu8086_core::io::disk_spec::{open_drives, parse_boot_order, parse_disk_specs};
 use emu8086_core::io::keyboard::{EmulatorEvent, KeyboardController};
 use emu8086_core::vm::runtime::Runtime;
+use emu8086_core::{BIOS_ROM, BIOS_ROM_NAME};
 
 use crate::wall_clock::HostClock;
 
@@ -65,7 +65,7 @@ fn machine(options: Options) -> Result<(Runtime, Sender<EmulatorEvent>), String>
     let mut runtime = Runtime::with_drives(drives.controller, boot_order, options.trace, keyboard);
     match options.rom {
         Some(path) => runtime.load_rom(path)?,
-        None => runtime.load_rom_image(BIOS_ROM),
+        None => runtime.load_rom_image(BIOS_ROM, BIOS_ROM_NAME)?,
     }
     Ok((runtime, keys))
 }
@@ -98,6 +98,7 @@ mod tests {
             .map(|address| rt.cpu.memory.read_byte(address))
             .collect();
         assert!(rom == BIOS_ROM, "the built-in BIOS is loaded");
+        assert_eq!(rt.rom(), Some(BIOS_ROM_NAME));
         let disks = rt.disks.borrow();
         assert!(disks.drives.is_empty(), "no drive holds a disk");
         assert_eq!(disks.boot_order(), [0x00, 0x80], "A:, then HD0");

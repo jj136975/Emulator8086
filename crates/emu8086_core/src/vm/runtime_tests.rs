@@ -98,27 +98,91 @@ fn reset_restarts_the_cpu_at_the_reset_vector() {
     assert!(rt.prefixes.rep.is_none() && !rt.prefixes.pending);
 }
 
+/// The bytes of the ROM socket, F000:0000-FFFF.
+fn socket(rt: &Runtime) -> Vec<u8> {
+    (ROM_START..MEMORY_SIZE)
+        .map(|address| rt.cpu.memory.read_byte(address))
+        .collect()
+}
+
 /// A ROM shorter than 64 KB ends at the top of the first megabyte, so
-/// that the reset vector at F000:FFF0 lies inside it.
+/// that the reset vector at F000:FFF0 lies inside it, and the socket below
+/// it is empty: it reads 0xFF.
 #[test]
 fn short_rom_image_is_loaded_top_aligned() {
     let mut rt = Runtime::new_test();
     let mut rom = vec![0x90u8; 0x2000]; // 8 KB
     rom[0x1FF0] = 0xEA; // far jump at the reset vector
-    rt.load_rom_image(&rom);
+    rt.load_rom_image(&rom, "an 8 KB ROM").unwrap();
 
     assert_eq!(rt.cpu.memory.read_byte(0xFFFF0), 0xEA);
     assert_eq!(rt.cpu.memory.read_byte(0xFE000), 0x90);
-    assert_eq!(
-        rt.cpu.memory.read_byte(0xFDFFF),
-        0x00,
+    let socket = socket(&rt);
+    assert!(
+        socket[..0xE000].iter().all(|&byte| byte == EMPTY_SOCKET),
         "nothing below the image"
     );
+    assert_eq!(rt.rom(), Some("an 8 KB ROM"));
+}
+
+/// A ROM swapped for a smaller one leaves nothing of itself in the socket:
+/// below the new image it is empty, and the guest can no more write there
+/// than over the image.
+#[test]
+fn a_smaller_rom_leaves_nothing_of_the_one_before() {
+    let mut rt = Runtime::new_test();
+    rt.load_rom_image(&[0xAA; ROM_MAX_SIZE], "a 64 KB ROM")
+        .unwrap();
+    rt.load_rom_image(&[0x5A; 0x2000], "an 8 KB ROM").unwrap();
+
+    let socket = socket(&rt);
+    assert!(socket[..0xE000].iter().all(|&byte| byte == EMPTY_SOCKET));
+    assert!(socket[0xE000..].iter().all(|&byte| byte == 0x5A));
+    assert_eq!(rt.rom(), Some("an 8 KB ROM"));
+
+    rt.cpu.memory.write_byte(ROM_START, 0x00);
+    rt.cpu.memory.write_byte(0xFFFF0, 0x00);
+    assert_eq!(rt.cpu.memory.read_byte(ROM_START), EMPTY_SOCKET);
+    assert_eq!(rt.cpu.memory.read_byte(0xFFFF0), 0x5A);
+}
+
+/// An image that is not 16 bytes to 64 KB long is refused with a message
+/// that names it and says how long it is, and changes nothing: the socket
+/// holds the ROM it held, known by its name. The shortest image there can
+/// be holds the reset vector, and the longest fills the socket.
+#[test]
+fn an_image_that_cannot_be_a_rom_changes_nothing() {
+    let mut rt = Runtime::new_test();
+    rt.load_rom_image(&[0xAA; 0x4000], "the ROM before")
+        .unwrap();
+    let before = socket(&rt);
+
+    for (size, said) in [
+        (0, "empty"),
+        (ROM_MIN_SIZE - 1, "15 bytes"),
+        (ROM_MAX_SIZE + 1, "65537 bytes"),
+    ] {
+        let error = rt
+            .load_rom_image(&vec![0x5A; size], "disk.img")
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!("disk.img is {said}, and a ROM image is 16 bytes to 64 KB")
+        );
+        assert!(socket(&rt) == before, "{size} bytes");
+        assert_eq!(rt.rom(), Some("the ROM before"));
+    }
+
+    for size in [ROM_MIN_SIZE, ROM_MAX_SIZE] {
+        assert_eq!(rt.load_rom_image(&vec![0x5A; size], "a ROM"), Ok(()));
+        assert_eq!(rt.cpu.memory.read_byte(0xFFFF0), 0x5A, "{size} bytes");
+    }
 }
 
 #[test]
 fn unusable_rom_file_is_an_error_that_names_the_file() {
     let mut rt = Runtime::new_test();
+    assert_eq!(rt.rom(), None, "no ROM yet");
 
     let error = rt.load_rom(PathBuf::from("no-such-rom.bin")).unwrap_err();
     assert!(error.contains("no-such-rom.bin"), "{}", error);
@@ -129,10 +193,12 @@ fn unusable_rom_file_is_an_error_that_names_the_file() {
         let error = rt.load_rom(path.clone()).unwrap_err();
         assert!(error.contains("emu8086-rom-"), "{}", error);
     }
+    assert_eq!(rt.rom(), None, "nothing was loaded");
 
     std::fs::write(&path, vec![0xEAu8; ROM_MAX_SIZE]).unwrap();
     assert_eq!(rt.load_rom(path.clone()), Ok(()));
     assert_eq!(rt.cpu.memory.read_byte(0xF0000), 0xEA);
+    assert_eq!(rt.rom(), Some(path.display().to_string().as_str()));
     let _ = std::fs::remove_file(&path);
 }
 

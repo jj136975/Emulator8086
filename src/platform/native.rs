@@ -38,7 +38,8 @@ pub const OVERLAY_SWITCH: OverlaySwitch = OverlaySwitch {
 #[derive(Parser, Debug)]
 #[command(name = "emulator8086", about = "Intel 8086 emulator")]
 struct Cli {
-    /// Path to a BIOS ROM image to run in place of the built-in BIOS
+    /// Path to a BIOS ROM image to run in place of the built-in BIOS: 16 bytes to 64 KB, which
+    /// end at F000:FFFF
     rom: Option<PathBuf>,
     /// Floppy disk: SOURCE or DRIVE:SOURCE, with DRIVE a-d (default a) and SOURCE an image file,
     /// `memory` or `memory:KB` (e.g. a:boot.img, b:memory, a:C:\path\to\image.img).
