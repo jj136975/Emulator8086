@@ -172,6 +172,61 @@ fn release_all_lets_go_of_every_held_key_once() {
     assert_eq!(sent(&events), [Scancode(0x1E)]);
 }
 
+/// A key of the on-screen keyboard goes to the guest as its make code when
+/// it goes down, again with each repeat while it is held, and as its break
+/// once when it comes up. A press the overlay took is not sent, and the
+/// release of a key the guest does not hold is not passed on.
+#[test]
+fn a_screen_key_is_sent_as_make_then_break() {
+    let (mut keys, events) = guest_keys();
+    keys.screen_key(0x1E, ElementState::Pressed, false);
+    keys.screen_key(0x1E, ElementState::Pressed, false);
+    keys.screen_key(0x1E, ElementState::Released, false);
+    keys.screen_key(0x1E, ElementState::Released, false);
+    assert_eq!(
+        sent(&events),
+        [Scancode(0x1E), Scancode(0x1E), ScanRelease(0x9E)]
+    );
+
+    keys.screen_key(0x30, ElementState::Pressed, true);
+    keys.screen_key(0x30, ElementState::Released, false);
+    assert_eq!(sent(&events), NOTHING, "the overlay took the press");
+}
+
+/// The keys the guest holds from the screen and from the host are held each
+/// for itself, the same key from both included: the guest gets as many
+/// breaks as it got makes. `release_screen` lets go of the screen's keys
+/// alone, in the order they went down; `release_all` of every key.
+#[test]
+fn screen_keys_are_held_beside_the_hosts() {
+    let (mut keys, events) = guest_keys();
+    press(&mut keys, KeyCode::ShiftLeft);
+    keys.screen_key(0x2A, ElementState::Pressed, false);
+    keys.screen_key(0x1D, ElementState::Pressed, false);
+    press(&mut keys, KeyCode::KeyA);
+    assert_eq!(
+        sent(&events),
+        [
+            Scancode(0x2A),
+            Scancode(0x2A),
+            Scancode(0x1D),
+            Scancode(0x1E)
+        ]
+    );
+
+    keys.release_screen();
+    assert_eq!(sent(&events), [ScanRelease(0xAA), ScanRelease(0x9D)]);
+    keys.screen_key(0x2A, ElementState::Released, false);
+    assert_eq!(sent(&events), NOTHING, "let go already");
+    release(&mut keys, KeyCode::ShiftLeft);
+    assert_eq!(sent(&events), [ScanRelease(0xAA)], "the host's own Shift");
+
+    keys.screen_key(0x38, ElementState::Pressed, false);
+    sent(&events);
+    keys.release_all();
+    assert_eq!(sent(&events), [ScanRelease(0x9E), ScanRelease(0xB8)]);
+}
+
 /// Two keys of the host that share an XT code are held and released each
 /// for itself: the guest gets as many breaks as it got keys.
 #[test]

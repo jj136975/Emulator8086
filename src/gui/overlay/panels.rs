@@ -8,11 +8,13 @@
 //! 1. A variant of `Panel`, listed in `ALL`. The order of `ALL` is the order
 //!    of the View menu.
 //! 2. Its arm in `title` and in `body`: the compiler asks for both.
-//! 3. The body, in a file beside this one:
+//! 3. The body, in a file beside this one (or a directory, for a body that
+//!    outgrows one):
 //!    `pub(super) fn body(ui: &mut egui::Ui, cx: &mut Cx<'_>)`. It reaches
 //!    the machine through `cx.runtime`, asks the app for what only the app
 //!    can do through `cx.commands`, and says what it did or why it failed
-//!    through `cx.messages`. A colour is a slot of `theme::PALETTE`.
+//!    through `cx.messages`; `cx.drawn_before` says whether the pass before
+//!    drew it. A colour is a slot of `theme::PALETTE`.
 //!
 //! The checkbox in the View menu, the window, its title bar and its close
 //! button all follow from `ALL`: the shell knows no panel by name.
@@ -24,13 +26,16 @@
 //! compile until a new one is named there:
 //! `every_panel_has_a_title_a_checkbox_and_a_window`.
 
-use super::{Cx, about, debug_port, disks, keyboard, memory, pic, pit, stats, vga};
+use super::{
+    Cx, about, debug_port, disks, keyboard, memory, on_screen_keyboard, pic, pit, stats, vga,
+};
 
 /// The panels of the overlay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
     About,
     Disks,
+    OnScreenKeyboard,
     Stats,
     Memory,
     Interrupts,
@@ -42,9 +47,10 @@ pub enum Panel {
 
 impl Panel {
     /// Every panel, in the order of the View menu.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::About,
         Self::Disks,
+        Self::OnScreenKeyboard,
         Self::Stats,
         Self::Memory,
         Self::Interrupts,
@@ -61,6 +67,7 @@ impl Panel {
         match self {
             Self::About => "About",
             Self::Disks => "Disks",
+            Self::OnScreenKeyboard => "On-screen keyboard",
             Self::Stats => "Stats",
             Self::Memory => "Memory",
             Self::Interrupts => "Interrupts (8259A)",
@@ -76,6 +83,7 @@ impl Panel {
         match self {
             Self::About => about::body(ui, cx),
             Self::Disks => disks::body(ui, cx),
+            Self::OnScreenKeyboard => on_screen_keyboard::body(ui, cx),
             Self::Stats => stats::body(ui, cx),
             Self::Memory => memory::body(ui, cx),
             Self::Interrupts => pic::body(ui, cx),

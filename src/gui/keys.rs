@@ -1,17 +1,21 @@
-//! The guest's keyboard as the window presses it. `physical_key_to_scancode`
-//! is the key map: a winit physical key to the make code of the key in the
-//! same place on the PC/XT keyboard. The guest's keyboard driver turns that
-//! code into a character, so the host's keyboard layout plays no part.
-//! `GuestKeys` sends the codes to the machine and remembers which keys the
-//! guest holds.
+//! The guest's keyboard as the window and the on-screen keyboard press it.
+//! `physical_key_to_scancode` is the key map: a winit physical key to the
+//! make code of the key in the same place on the PC/XT keyboard. The
+//! guest's keyboard driver turns that code into a character, so the host's
+//! keyboard layout plays no part. A key of the overlay's on-screen keyboard
+//! comes as its make code already. `GuestKeys` sends the codes to the
+//! machine and remembers which keys the guest holds, and who holds each:
+//! the host's keyboard, or the on-screen one.
 //!
 //! The invariants: a key maps to one make code below 80h, or to nothing.
 //! The break is the make with bit 7 set, and an XT keyboard knows no E0
 //! prefix: a key that later keyboards added beside an XT key (right Ctrl,
 //! the cursor block, keypad Enter) shares its code. And the guest gets the
-//! break of a key if and only if it got its make: a key it holds is let go
-//! when the host releases it or by `release_all`, whichever comes first, and
-//! a release of a key it does not hold is not passed on.
+//! break of a key if and only if it got its make, whichever keyboard
+//! pressed it: a key it holds is let go when its keyboard releases it, or
+//! by `release_screen` (the on-screen keys) or `release_all` (every key),
+//! whichever comes first, and a release of a key it does not hold is not
+//! passed on.
 
 use std::sync::mpsc::Sender;
 
@@ -20,14 +24,24 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 
 use emu8086_core::io::keyboard::EmulatorEvent;
 
+/// Who holds a key down in the guest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Holder {
+    /// A key of the host's keyboard.
+    Host(PhysicalKey),
+    /// A key of the on-screen keyboard, which has each make code once.
+    Screen,
+}
+
 /// Sends the guest its key presses and releases, down the channel the
 /// machine's keyboard controller reads.
 pub struct GuestKeys {
     events: Sender<EmulatorEvent>,
-    /// The host keys the guest holds, each with the make code it was sent.
-    /// Two of them can share a code (the two Ctrl keys): each is pressed
-    /// and released for itself, as on the host.
-    held: Vec<(PhysicalKey, u8)>,
+    /// The keys the guest holds, in the order they went down, each with
+    /// who holds it and the make code it was sent. Two of them can share a
+    /// code (the two Ctrl keys of the host, a key of the host and the same
+    /// key on the screen): each is pressed and released for itself.
+    held: Vec<(Holder, u8)>,
 }
 
 impl GuestKeys {
@@ -46,34 +60,64 @@ impl GuestKeys {
     /// not the guest's either. A key held down arrives pressed again and
     /// again, and is sent again: an XT keyboard repeats the same way.
     pub fn key(&mut self, key: PhysicalKey, state: ElementState, taken: bool) {
-        let held = self.held.iter().position(|(held, _)| *held == key);
+        let Some(make) = physical_key_to_scancode(key) else {
+            return;
+        };
+        self.press_or_release(Holder::Host(key), make, state, taken);
+    }
+
+    /// A key of the on-screen keyboard went down or came up: `make` is its
+    /// make code. The rules are a host key's: a press the overlay took,
+    /// because it has the keyboard, is not the guest's; a release reaches
+    /// the guest if it holds the key; a press of a key held is sent again,
+    /// as a repeat.
+    pub fn screen_key(&mut self, make: u8, state: ElementState, taken: bool) {
+        self.press_or_release(Holder::Screen, make, state, taken);
+    }
+
+    fn press_or_release(&mut self, holder: Holder, make: u8, state: ElementState, taken: bool) {
+        let held = self.held.iter().position(|held| *held == (holder, make));
         match state {
             ElementState::Pressed if taken => {}
             ElementState::Pressed => {
-                let Some(scancode) = physical_key_to_scancode(key) else {
-                    return;
-                };
                 if held.is_none() {
-                    self.held.push((key, scancode));
+                    self.held.push((holder, make));
                 }
-                self.send(EmulatorEvent::Scancode(scancode));
+                self.send(EmulatorEvent::Scancode(make));
             }
             ElementState::Released => {
                 if let Some(held) = held {
-                    let (_, scancode) = self.held.remove(held);
-                    self.send(EmulatorEvent::ScanRelease(scancode | 0x80));
+                    self.held.remove(held);
+                    self.send(EmulatorEvent::ScanRelease(make | 0x80));
                 }
             }
         }
     }
 
-    /// Lets go of every key the guest holds. For when the releases of the
-    /// host's keys will not reach the guest anymore, as when the window
-    /// loses the keyboard or the overlay takes it: a key held then would
-    /// stay down in the guest.
+    /// Lets go of the keys of the on-screen keyboard the guest holds. For
+    /// when that keyboard is gone from the screen: nothing there holds a
+    /// key anymore, and its releases will not come.
+    pub fn release_screen(&mut self) {
+        self.release_where(|holder| holder == Holder::Screen);
+    }
+
+    /// Lets go of every key the guest holds, the host's and the on-screen
+    /// keyboard's. For when the releases of the keys will not reach the
+    /// guest anymore, as when the window loses the keyboard or the overlay
+    /// takes it: a key held then would stay down in the guest.
     pub fn release_all(&mut self) {
-        for (_, scancode) in std::mem::take(&mut self.held) {
-            self.send(EmulatorEvent::ScanRelease(scancode | 0x80));
+        self.release_where(|_| true);
+    }
+
+    /// Lets go of the keys held by a holder `which` picks, in the order
+    /// they went down.
+    fn release_where(&mut self, which: impl Fn(Holder) -> bool) {
+        let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|(holder, _)| which(*holder));
+        self.held = kept;
+        for (_, make) in released {
+            self.send(EmulatorEvent::ScanRelease(make | 0x80));
         }
     }
 

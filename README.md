@@ -8,8 +8,8 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
-- A tools overlay in the window (F12): pause and resume, reset, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, and the drives: put disks in and take them out, save them, copy host files onto them
-- Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2
+- A tools overlay in the window (F12): pause and resume, reset, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the drives (put disks in and take them out, save them, copy host files onto them), and an on-screen PC keyboard
+- Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2, on phones and tablets too
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
 
@@ -85,6 +85,7 @@ F12, or a finger held on the picture, puts a menu bar over the picture; for the 
 | Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory (in a browser: offers it as a download) |
 | View | About | A panel with the key bindings, the version, and the machine: the image in each drive, whether it can be written, and the boot order |
 | View | Disks | Every drive with the disk it holds: where its image lives (a file, or memory), its size, its cylinders, heads and sectors, and whether it can be written. For the drive chosen in the list: put in an image file, a blank disk held in memory (a formatted floppy of a standard size, or a blank 32 MB hard disk) or a new image file (a formatted 1.44 MB floppy, or a blank 32 MB hard disk), write-protected if the box is ticked; take the disk out, move it to another drive, save it to a file, or copy host files or a whole folder onto it |
+| View | On-screen keyboard | The 83 keys of the PC/XT keyboard, printed for the US and laid out like a keyboard without a numeric pad, as large as the screen allows: for a phone, or wherever no keyboard is at hand. A key is pressed with a finger or the mouse, several at once with several fingers, and sends what the physical key sends, so the guest's layout decides what it types. A key held repeats as an XT's does. Shift, Ctrl and Alt tapped alone (down and up again before they repeat, with no other key down) stay down until the next key comes up, and a second tap lets them go. The lock keys light up with the guest's Caps Lock, Num Lock and Scroll Lock |
 | View | Stats | Whether the guest keeps up with real time, and where the host's time goes: the guest's speed with a chart of its last minute, how a frame divides between running the guest, idling, the overlay, drawing and waiting for the display, the guest's clock and its timer against real time, the time owed and the time dropped, the share spent halted, and the interrupts taken on each line. The menu bar shows the speed at its right end |
 | View | Memory | A hex view of guest memory with an ASCII column: an address field (`B8000` or `B800:0000`), jumps to where the registers point and to the vector table, the BIOS data area, video memory and the ROM |
 | View | Interrupts (8259A) | Each interrupt line's request, in-service and mask bits, the vector base and the modes in force |
@@ -101,7 +102,7 @@ The Disks panel asks for files in the system's own file dialogs, and the guest r
 
 ### Keyboard Layouts
 
-The window sends the physical key positions, like a real keyboard: with a non-US keyboard, load the matching layout in DOS (`KEYB`).
+The window sends the physical key positions, like a real keyboard: with a non-US keyboard, load the matching layout in DOS (`KEYB`). The on-screen keyboard is printed for the US whatever layout the guest has loaded.
 
 ## Web build
 
@@ -159,6 +160,8 @@ Disks get into the browser through the Disks panel: an image file chosen in the 
 ### Phones and tablets
 
 On a touch screen a finger works the tools overlay as the mouse does: a tap is a click. There is no right-click to show the overlay with: a finger held still on the picture for half a second shows it or hides it, as soon as the time is up (on a desktop's touch screen as well). A finger held on the overlay itself, on its menu bar, a window or a message, is the overlay's however long it stays there. The page keeps the fingers on the picture for itself: the browser neither scrolls nor zooms it.
+
+The guest's keys come from View > On-screen keyboard, which fits the width of a phone held upright and is easier to hit with the phone on its side. Each finger holds a key of its own, so that keys are held together, an arrow while Ctrl fires in DOOM; a modifier tapped alone stays down for the next key, for Ctrl+C or Ctrl+Alt+Del. The keyboard is a panel of the overlay: hidden with it, it lets go of whatever a finger held. The phone's own keyboard is not used: it types characters rather than pressing keys, holds none down, and has no Esc, function keys, Ctrl, Alt or arrows.
 
 A keyboard paired with the phone or the tablet reaches the guest as a desktop's keyboard does.
 
@@ -227,7 +230,7 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 ### Testing
 
-The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking through it with hand-made input, and the disk tools with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, the time stamps, the disk tools on a host that hands files over as their contents, and the frame drawn within the limits WebGL2 guarantees. The page itself is outside the suite, and so are the system's file dialogs and the browser's file picker.
+The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking and touching through it with hand-made input, and the disk tools with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, touches among them, the time stamps, the disk tools on a host that hands files over as their contents, and the frame drawn within the limits WebGL2 guarantees. The page itself is outside the suite, and so are the system's file dialogs and the browser's file picker.
 
 ```bash
 # Fetch the CPU test vectors (git submodule)

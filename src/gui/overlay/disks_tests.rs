@@ -408,6 +408,7 @@ impl Passes for HandedOver {
             runtime: &mut self.runtime,
             paused: false,
             meter: &self.meter,
+            drawn_before: true,
             commands: &mut self.commands,
             messages: &mut self.messages,
         };

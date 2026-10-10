@@ -63,6 +63,15 @@ pub struct Palette {
     pub frame_drawing: Color32,
     /// and the part spent waiting for the display.
     pub frame_waiting: Color32,
+    /// A key of the on-screen keyboard held down by a finger or the
+    /// pointer. A key at rest is a button.
+    pub key_held: Color32,
+    /// A modifier of the on-screen keyboard latched: down in the guest,
+    /// with nothing holding it.
+    pub key_latched: Color32,
+    /// The light of a lock key of the on-screen keyboard whose lock is on.
+    /// Off, it is `off`.
+    pub key_lit: Color32,
 }
 
 /// The sizes of the overlay, in points.
@@ -103,6 +112,16 @@ pub struct Metrics {
     /// Height of a bar that divides a span into its parts, such as a
     /// frame's host time. It is as wide as a chart.
     pub bar: f32,
+    /// The smallest and the largest a key of the on-screen keyboard that
+    /// types a letter is, across and down: its size follows the screen's
+    /// between the two. The smallest lets the keyboard fit across a phone
+    /// held upright, 360 points wide.
+    pub key_smallest: f32,
+    pub key_largest: f32,
+    /// Between two keys of the on-screen keyboard.
+    pub key_gap: f32,
+    /// The light of a lock key, in its top right corner.
+    pub key_light: Vec2,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -130,6 +149,9 @@ pub const PALETTE: Palette = Palette {
     frame_overlay: Color32::from_rgb(72, 190, 170),
     frame_drawing: Color32::from_rgb(226, 186, 88),
     frame_waiting: Color32::from_rgb(172, 132, 216),
+    key_held: Color32::from_rgb(64, 118, 204),
+    key_latched: Color32::from_rgb(156, 108, 36),
+    key_lit: Color32::from_rgb(124, 232, 120),
 };
 
 pub const METRICS: Metrics = Metrics {
@@ -148,6 +170,10 @@ pub const METRICS: Metrics = Metrics {
     cascade: 24.0,
     chart: vec2(180.0, 36.0),
     bar: 10.0,
+    key_smallest: 16.0,
+    key_largest: 40.0,
+    key_gap: 2.0,
+    key_light: vec2(6.0, 3.0),
 };
 
 /// Puts the theme on `ctx`. egui keeps one style for a dark host and one

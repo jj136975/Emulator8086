@@ -307,6 +307,7 @@ fn every_panel_has_a_title_a_checkbox_and_a_window() {
         match panel {
             Panel::About => Panel::ALL.contains(&panel),
             Panel::Disks => Panel::ALL.contains(&panel),
+            Panel::OnScreenKeyboard => Panel::ALL.contains(&panel),
             Panel::Stats => Panel::ALL.contains(&panel),
             Panel::Memory => Panel::ALL.contains(&panel),
             Panel::Interrupts => Panel::ALL.contains(&panel),
@@ -319,6 +320,7 @@ fn every_panel_has_a_title_a_checkbox_and_a_window() {
     for panel in [
         Panel::About,
         Panel::Disks,
+        Panel::OnScreenKeyboard,
         Panel::Stats,
         Panel::Memory,
         Panel::Interrupts,

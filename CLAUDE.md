@@ -49,17 +49,18 @@ The app, in `src/`:
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause; what each slice did with its time (`Slice`) |
 | `gui/meter.rs` | measuring the emulation: `Meter`, told of each frame by the session (the pacer's `Slice`, the machine's `Counts`) and of what the frame spent outside its slice (the overlay's pass, the window's `Drawn`), averages over about a second the guest's speed (with the last minute of it), the frames and how their host time divides into five (running, idle, the overlay, the drawing, the wait for the display), the guest's time (its clock, the time owed and dropped, the share spent halted) and the interrupts per line. It reads no clock |
 | `gui/renderer/` | wgpu. `mod.rs`: `record_frame` (the picture and the overlay in one render pass, no surface needed) and what asks for a device; `blit.rs`: `FrameBlit` (frame texture and blit pipeline, the whole-number viewport, the WGSL); `overlay_pass.rs`: `OverlayPass` (egui's meshes); `surface.rs`: `Renderer` (the window's surface), whose `render` returns a `Drawn`: how long the surface kept it waiting for a frame to draw on, and how long the rest took |
-| `gui/keys.rs` | physical key to XT scancode; `GuestKeys` sends the codes and remembers which keys the guest holds |
-| `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on |
+| `gui/keys.rs` | physical key to XT scancode; `GuestKeys` sends the codes and remembers which keys the guest holds, and whether the host's keyboard or the on-screen one holds each |
+| `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on; what the last pass covered of the screen (`covers`) and which panels it drew (`shows`) |
 | `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
 | `gui/overlay/about.rs` | the About panel; every panel has a file like it |
 | `gui/overlay/disks.rs` | the Disks panel: every drive with its disk (`image_place`, `disk_size`, which the About panel shares), the buttons that ask the app for a `DiskCommand` on the drive chosen, what the host cannot do left out (`platform::FILE_ACCESS`), and a reboot that is due shown with the reset |
+| `gui/overlay/on_screen_keyboard/` | the On-screen keyboard panel. `mod.rs`: the body, which takes up the frame's touches and clicks (the first finger's pointer events are its echo) and draws the keys at a size that follows the screen's; `layout.rs`: THE key table, the 83 keys of the XT by make code, where each lies, its name and its legend; `presses.rs`: who holds which key (each finger, the pointer), the latched modifiers and the repeat, answered with `Command::Key` |
 | `gui/overlay/stats.rs` | the Stats panel: whether the guest keeps up with real time and where the host's time goes (five parts of each frame, as a bar and as rows), from the `Meter` the shell is lent (`Cx::meter`); the chart of the last minute, drawn with egui's painter; and the guest's speed at the right end of the menu bar (`readout`) |
 | `gui/overlay/memory.rs` | the Memory panel: a hex view of guest memory, the address field (`parse_address`), the jumps to where the register pairs point and to the landmarks of the first megabyte |
 | `gui/overlay/pic.rs`, `pit.rs`, `vga.rs`, `keyboard.rs`, `debug_port.rs` | the device panels: the 8259A, the 8253, the VGA and its DAC, the 8255's keyboard interface, the port E9h log |
 | `gui/overlay/messages.rs` | where a tool says what it did or why it failed |
 | `gui/overlay/theme.rs` | the palette and the sizes as named slots, and their one application to egui's style |
-| `gui/overlay/testing.rs` | test support: drives the overlay frame by frame with hand-made input and reads the screen as egui describes it to a screen reader; `Shell`, the shell alone over a machine; `waiting_for_a_key`, a machine the BIOS booted |
+| `gui/overlay/testing.rs` | test support: drives the overlay frame by frame with hand-made input (keys, the pointer, and fingers as a host hands them to egui) and reads the screen as egui describes it to a screen reader; `Shell`, the shell alone over a machine; `waiting_for_a_key`, a machine the BIOS booted |
 
 The core, in `crates/emu8086_core/`:
 
@@ -180,12 +181,21 @@ box is never replaced).
   is nowhere. The browser's switch is named for both ("Right-click or
   touch and hold"). Every other event of the window goes to egui first. A
   key then goes on to the guest unless egui kept it (Tab) or the overlay
-  has the keyboard: one of
-  its widgets has the focus or one of its menus is open
-  (`Overlay::wants_keyboard`, `Session::key`). The guest gets the release
-  of a key if and only if it got its press: when the overlay takes the
-  keyboard, or the window loses it, the keys the guest holds are let go
-  (`GuestKeys::release_all`).
+  has the keyboard: one of its widgets has the focus or one of its menus
+  is open (`Overlay::wants_keyboard`, `Session::key`). The overlay's
+  On-screen keyboard is a keyboard of the guest's as well: its panel asks
+  for each press and release of a key by its make code (`Command::Key`:
+  the overlay knows no winit), and the session hands them to
+  `GuestKeys::screen_key`, under the rules of a host's key. The guest gets
+  the release of a key if and only if it got its press, whichever keyboard
+  pressed it: when the overlay takes the keyboard, or the window loses it,
+  every key the guest holds is let go (`GuestKeys::release_all`); when the
+  on-screen keyboard leaves the screen (the overlay hidden, or a pass that
+  did not draw the panel: `Overlay::shows`), the keys it held are
+  (`GuestKeys::release_screen`), and the panel drawn again remembers
+  nothing (`Cx::drawn_before`). No key of the panel takes the focus: one
+  that did would give the overlay the keyboard, and undo the chord it is
+  part of.
 - **An overlay panel**: ONE row in THE panel table
   (`src/gui/overlay/panels.rs`: a variant of `Panel`, its place in `ALL`,
   its arm in `title` and in `body`) plus one file for the body,
@@ -196,7 +206,12 @@ box is never replaced).
   did or why it failed through `cx.messages`. The window takes the size of
   the body: a horizontal separator would stretch it across the screen, so
   panels part their sections with a gap. A panel's own state lives in
-  egui's memory (`ui.data_mut`), as the Memory panel's view does.
+  egui's memory (`ui.data_mut`), as the Memory panel's view does; one that
+  holds something only while it is on the screen, as the on-screen
+  keyboard holds keys, drops it when the pass before did not draw it
+  (`cx.drawn_before`: not after its window was closed or collapsed, or the
+  overlay hidden). egui may run the UI twice for one frame, and gives the
+  frame's events (`ui.input(|i| i.events)`) to the first run alone.
 - **A device panel** (8259A, 8253, VGA, keyboard, port E9h): reads the
   device's description, never its ports, since a port read is seen by the
   guest (a poll answered, a flip-flop reset, a DAC index moved):
@@ -321,13 +336,15 @@ from is tested, `answer_later`).
 Of the browser build the suite covers, on the desktop, what needs no
 browser: the pacer on a host that cannot wait (`gui::pacer::tests`), the
 window's events as egui's input, the fingers on a touch screen among them
-(`platform::egui_events::tests`), the FAT
-stamp of a date (`platform::fat_stamp::tests`), the overlay's button and
-the hold of a finger (`gui::session::tests`, `gui::hold::tests`), the disk
-tools and the Disks panel on a host that
-hands files over as their contents (`gui::disk_tools::tests`,
-`gui::overlay::disks::tests`), and the frame drawn on a device that has no
-more than WebGL2 guarantees
+(`platform::egui_events::tests`), the FAT stamp of a date
+(`platform::fat_stamp::tests`), the overlay's button and the hold of a
+finger (`gui::session::tests`, `gui::hold::tests`), the On-screen keyboard
+driven with fingers as a host hands them to egui
+(`gui::overlay::on_screen_keyboard::tests`, and through the session to the
+guest's keyboard in `gui::session::tests`), the disk tools and the Disks
+panel on a host that hands files over as their contents
+(`gui::disk_tools::tests`, `gui::overlay::disks::tests`), and the frame
+drawn on a device that has no more than WebGL2 guarantees
 (`gui::renderer::tests::the_frame_is_drawn_within_the_limits_of_webgl2`;
 with `WGPU_BACKEND=gl` it runs on the backend WebGL2 shares its shader
 translation with). `platform/web.rs` and the page are outside the suite,

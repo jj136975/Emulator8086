@@ -7,11 +7,14 @@
 //! the machine. What the Disks panel asks for is carried out by
 //! `disk_tools`, which has the file dialogs to wait for.
 //!
-//! The invariant: the keyboard has one owner at a time. A key goes to the
+//! The invariants: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
 //! keyboard (one of its widgets has the focus, or one of its menus is open)
 //! the keys the guest holds are let go: their releases will go to the
-//! overlay, and a key the guest never sees released stays down in it.
+//! overlay, and a key the guest never sees released stays down in it. And
+//! a key of the on-screen keyboard is held from the screen: the moment the
+//! keyboard is not on it (hidden with the overlay, closed, or not drawn by
+//! a pass), the keys the guest holds from there are let go.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,7 +32,7 @@ use super::disk_tools::DiskTools;
 use super::hold::Hold;
 use super::keys::GuestKeys;
 use super::meter::{Counts, Meter};
-use super::overlay::{Command, Overlay};
+use super::overlay::{Command, Overlay, Panel};
 use super::pacer::Pacer;
 use super::renderer::Drawn;
 use crate::platform::{self, Instant};
@@ -120,6 +123,8 @@ impl Session {
     /// Shows the overlay, or hides it.
     fn toggle_overlay(&mut self) {
         self.overlay.toggle();
+        // A hidden overlay has no keyboard on the screen.
+        self.release_unshown_keys();
         // An overlay that comes back with the focus where it left it has
         // the keyboard at once.
         self.yield_keyboard();
@@ -171,8 +176,9 @@ impl Session {
     }
 
     /// One pass of the overlay over `input`, and what follows from it: the
-    /// commands it asked for are carried out, and the keyboard is given up
-    /// if the pass took it. The meter is told how long all of that took.
+    /// commands it asked for are carried out, the keys of an on-screen
+    /// keyboard the pass did not draw are let go, and the keyboard is given
+    /// up if the pass took it. The meter is told how long all of that took.
     fn run_overlay(&mut self, input: egui::RawInput) {
         let started = Instant::now();
         let paused = self.pacer.paused();
@@ -182,6 +188,7 @@ impl Session {
         {
             self.execute(command);
         }
+        self.release_unshown_keys();
         self.yield_keyboard();
         self.meter.overlay_pass(started.elapsed());
     }
@@ -190,6 +197,15 @@ impl Session {
     fn yield_keyboard(&mut self) {
         if self.overlay.wants_keyboard() {
             self.keys.release_all();
+        }
+    }
+
+    /// Lets go of the keys the guest holds from the on-screen keyboard if
+    /// the keyboard is not on the screen: the overlay is hidden, or its
+    /// last pass did not draw the panel. Nothing holds them there anymore.
+    fn release_unshown_keys(&mut self) {
+        if !self.overlay.shows(Panel::OnScreenKeyboard) {
+            self.keys.release_screen();
         }
     }
 
@@ -219,6 +235,17 @@ impl Session {
             Command::Disk(command) => {
                 self.disks
                     .execute(command, &mut self.runtime, self.overlay.messages());
+            }
+            Command::Key { make, pressed } => {
+                let state = if pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                };
+                // A press while the overlay has the keyboard is the
+                // overlay's, as a key of the host's would be.
+                let taken = self.overlay.wants_keyboard();
+                self.keys.screen_key(make, state, taken);
             }
         }
     }

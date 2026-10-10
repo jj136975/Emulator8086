@@ -2,9 +2,9 @@
 //! file is the shell: whether the overlay is shown, the hint of the first
 //! seconds, the menu bar, the windows of the panels and the messages.
 //! `panels` is THE panel table, with a file per panel beside it (`about`,
-//! `disks`, `stats`, `memory`, and one per device: `pic`, `pit`, `vga`,
-//! `keyboard`, `debug_port`); `messages` is where a tool says what it did;
-//! `theme` is the look.
+//! `disks`, `on_screen_keyboard`, `stats`, `memory`, and one per device:
+//! `pic`, `pit`, `vga`, `keyboard`, `debug_port`); `messages` is where a
+//! tool says what it did; `theme` is the look.
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
@@ -25,6 +25,7 @@ mod disks;
 mod keyboard;
 mod memory;
 mod messages;
+mod on_screen_keyboard;
 mod panels;
 mod pic;
 mod pit;
@@ -71,6 +72,10 @@ pub enum Command {
     DumpVga,
     /// Do to a drive what the Disks panel asks.
     Disk(DiskCommand),
+    /// Press (`pressed`) or release the key of the on-screen keyboard whose
+    /// make code is `make`, for the guest. A press of a key held down is a
+    /// repeat.
+    Key { make: u8, pressed: bool },
 }
 
 /// What the menu bar and the panels work on during a pass: the machine, and
@@ -82,6 +87,9 @@ pub struct Cx<'a> {
     pub paused: bool,
     /// What the app measured of the emulation, frame by frame.
     pub meter: &'a Meter,
+    /// Whether the pass before this one drew the panel being drawn: not
+    /// when it was closed, collapsed, or hidden with the overlay since.
+    pub drawn_before: bool,
     /// What the app is asked to do once the pass is over.
     pub commands: &'a mut Vec<Command>,
     /// Where to say what was done, or why it could not be.
@@ -117,6 +125,9 @@ pub struct Overlay {
     hint: Hint,
     /// The panels whose windows are open.
     open: Vec<Panel>,
+    /// The panels whose bodies the last pass drew: those open, but for a
+    /// window collapsed to its title bar.
+    drawn: Vec<Panel>,
     /// What the menu bar left of the screen below it in the last pass that
     /// drew it.
     below_bar: Rect,
@@ -150,6 +161,7 @@ impl Overlay {
             visible: false,
             hint: Hint::Unstarted,
             open: Vec::new(),
+            drawn: Vec::new(),
             below_bar: Rect::EVERYTHING,
             messages: Messages::default(),
             shapes: Vec::new(),
@@ -174,6 +186,10 @@ impl Overlay {
     pub fn toggle(&mut self) {
         self.visible = !self.visible;
         self.hint = Hint::Over;
+        if !self.visible {
+            // A hidden overlay runs no pass, and draws no panel meanwhile.
+            self.drawn.clear();
+        }
     }
 
     /// Whether there is anything to show: the overlay, or the hint. While
@@ -186,8 +202,13 @@ impl Overlay {
     /// widgets has the keyboard focus, as a field being typed in has, or
     /// one of its menus is open, which Escape closes.
     pub fn wants_keyboard(&self) -> bool {
-        self.visible
-            && (self.ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(&self.ctx))
+        self.visible && keyboard_taken(&self.ctx)
+    }
+
+    /// Whether the overlay is shown and its last pass drew the body of
+    /// `panel`: the panel is open and its window not collapsed.
+    pub fn shows(&self, panel: Panel) -> bool {
+        self.visible && self.drawn.contains(&panel)
     }
 
     /// Whether the overlay shows something at `at`, in points, as its last
@@ -276,6 +297,7 @@ impl Overlay {
         {
             self.hint = Hint::Over;
         }
+        let drawn_before = std::mem::take(&mut self.drawn);
         if !self.visible {
             if let Hint::Until(_) = self.hint {
                 hint(ui.ctx());
@@ -287,6 +309,7 @@ impl Overlay {
             runtime,
             paused,
             meter,
+            drawn_before: false,
             commands,
             messages: &mut self.messages,
         };
@@ -314,13 +337,19 @@ impl Overlay {
             // keeps it inside the screen at that size: given none, it takes
             // one so wide that every step is pushed back to the same place.
             let step = Vec2::splat(METRICS.edge + METRICS.cascade * index as f32);
-            Window::new(panel.title())
+            cx.drawn_before = drawn_before.contains(&panel);
+            let window = Window::new(panel.title())
                 .open(&mut is_open)
                 .constrain_to(below_bar)
                 .default_pos(below_bar.left_top() + step)
                 .default_size(Vec2::ZERO)
                 .auto_sized()
                 .show(ui.ctx(), |ui| panel.body(ui, &mut cx));
+            // A window that is closed shows nothing, and a collapsed one
+            // only its title bar.
+            if window.is_some_and(|window| window.inner.is_some()) {
+                self.drawn.push(panel);
+            }
             // The window's own button closed it.
             if !is_open {
                 open.retain(|shown| *shown != panel);
@@ -339,6 +368,12 @@ impl Drop for Overlay {
         // still holds the changes of its passes.
         self.textures.clear();
     }
+}
+
+/// Whether the overlay over `ctx`, if it is shown, has the keyboard: one of
+/// its widgets has the focus, or one of its menus is open.
+fn keyboard_taken(ctx: &egui::Context) -> bool {
+    ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx)
 }
 
 /// The menu bar: the Machine menu, the View menu with a checkbox for every

@@ -13,7 +13,9 @@ use winit::keyboard::KeyCode;
 
 use super::*;
 use crate::gui::hold::HOLD;
-use crate::gui::overlay::testing::{Driver, Passes, SCREEN, input, key};
+use crate::gui::overlay::testing::{
+    Driver, Passes, SCREEN, first_finger_down, first_finger_up, input, key, touch,
+};
 use crate::wall_clock::HostClock;
 use EmulatorEvent::{ScanRelease, Scancode};
 use emu8086_core::BIOS_ROM;
@@ -228,6 +230,100 @@ fn a_finger_down_before_the_overlay_showed_presses_nothing_when_it_lifts() {
         !session.screen().has(Role::Button, "Reset"),
         "the menu is shut"
     );
+}
+
+/// The title of the on-screen keyboard's panel.
+const KEYBOARD: &str = "On-screen keyboard";
+
+/// The keys of the on-screen keyboard reach the guest's keyboard as their
+/// make and break codes: a key clicked, and Shift latched by a tap, then
+/// the key typed after it, which takes Shift up with it.
+#[test]
+fn the_on_screen_keys_reach_the_guest() {
+    let (mut session, events) = shown(&BUSY_ROM);
+    session.toggle_in_view_menu(KEYBOARD);
+    session.click(Role::Button, "A");
+    assert_eq!(sent(&events), [Scancode(0x1E), ScanRelease(0x9E)]);
+
+    session.click(Role::Button, "Right Shift");
+    session.click(Role::Button, "B");
+    assert_eq!(
+        sent(&events),
+        [
+            Scancode(0x36),
+            Scancode(0x30),
+            ScanRelease(0xB0),
+            ScanRelease(0xB6)
+        ]
+    );
+}
+
+/// A key held from the on-screen keyboard is let go in the guest the moment
+/// the keyboard leaves the screen, its window closed or the overlay hidden,
+/// and when the window loses the keyboard. The lift of the finger that held
+/// it sends nothing after that, and the key no longer shows down.
+#[test]
+fn the_on_screen_keys_are_let_go_when_the_keyboard_leaves_the_screen() {
+    let (mut session, events) = shown(&BUSY_ROM);
+    session.toggle_in_view_menu(KEYBOARD);
+    let w = session.screen().rect(Role::Button, "W").center();
+    let picture = egui::pos2(SCREEN[0] as f32 - 4.0, SCREEN[1] as f32 - 4.0);
+
+    // A finger holds W while another, which is egui's pointer, taps the
+    // close button of the keyboard's window.
+    session.frame(first_finger_down(1, picture));
+    session.frame(vec![touch(2, egui::TouchPhase::Start, w)]);
+    session.frame(first_finger_up(1, picture));
+    assert_eq!(sent(&events), [Scancode(0x11)]);
+    let close = session.screen().rect(Role::Button, "Close window").center();
+    session.frame(first_finger_down(3, close));
+    session.frame(first_finger_up(3, close));
+    session.wait(1.0);
+    assert!(!session.screen().has(Role::Window, KEYBOARD));
+    assert_eq!(sent(&events), [ScanRelease(0x91)], "closed");
+    session.frame(vec![touch(2, egui::TouchPhase::End, w)]);
+    assert_eq!(sent(&events), NOTHING);
+
+    session.toggle_in_view_menu(KEYBOARD);
+    session.frame(first_finger_down(4, w));
+    assert_eq!(sent(&events), [Scancode(0x11)]);
+    session.target.overlay_key(ElementState::Pressed, false);
+    assert_eq!(sent(&events), [ScanRelease(0x91)], "hidden");
+    session.target.overlay_key(ElementState::Pressed, false);
+    assert!(!session.frame(first_finger_up(4, w)).pressed("W"));
+    assert_eq!(sent(&events), NOTHING);
+
+    session.frame(first_finger_down(5, w));
+    assert_eq!(sent(&events), [Scancode(0x11)]);
+    session.target.focus_lost();
+    assert_eq!(sent(&events), [ScanRelease(0x91)], "the keyboard lost");
+    let mut lost = vec![egui::Event::WindowFocused(false)];
+    lost.extend(first_finger_up(5, w));
+    assert!(!session.frame(lost).pressed("W"));
+    assert_eq!(sent(&events), NOTHING);
+}
+
+/// A finger that holds a key of the on-screen keyboard is on the overlay:
+/// however long it stays there it does not hide the overlay, and its key
+/// repeats meanwhile.
+#[test]
+fn a_finger_holding_an_on_screen_key_never_hides_the_overlay() {
+    let (mut session, events) = shown(&BUSY_ROM);
+    session.toggle_in_view_menu(KEYBOARD);
+    let d = session.screen().rect(Role::Button, "D").center();
+    let start = Instant::now();
+    session.target.touch(1, TouchPhase::Started, d, start);
+    session.frame(first_finger_down(1, d));
+    session.target.hold(start + 4 * HOLD);
+    assert!(session.target.overlay.visible());
+
+    session.wait(0.5);
+    for _ in 0..30 {
+        session.frame(Vec::new());
+    }
+    let repeated = sent(&events);
+    assert!(repeated.len() > 2, "{repeated:?}");
+    assert!(repeated.iter().all(|event| *event == Scancode(0x20)));
 }
 
 /// An overlay shown by its button with the focus where it was left has the

@@ -1,9 +1,10 @@
 //! Driving the overlay by hand, for the tests of the shell, of its panels
-//! and of the session around it: frames of hand-made input, and what each
-//! pass left on the screen as egui describes it to a screen reader (the
-//! texts, and where each control is). No window and no GPU. `Shell` is the
-//! shell alone, lent a machine; `waiting_for_a_key` is a machine in a state
-//! the BIOS put it in.
+//! and of the session around it: frames of hand-made input, keys, the
+//! pointer and the fingers of a touch screen as the hosts hand them to egui,
+//! and what each pass left on the screen as egui describes it to a screen
+//! reader (the texts, and where each control is). No window and no GPU.
+//! `Shell` is the shell alone, lent a machine; `waiting_for_a_key` is a
+//! machine in a state the BIOS put it in.
 //!
 //! The invariant: a test reaches the overlay only the way a user does. A
 //! control is found by its role and its label among what the last pass
@@ -13,7 +14,10 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui::accesskit::{Node, Role, Toggled};
-use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
+use egui::{
+    Event, Modifiers, PointerButton, Pos2, RawInput, Rect, TouchDeviceId, TouchId, TouchPhase,
+    pos2, vec2,
+};
 
 use super::{Command, Overlay};
 use crate::gui::meter::Meter;
@@ -55,6 +59,48 @@ pub fn key(key: egui::Key, pressed: bool) -> Event {
         repeat: false,
         modifiers: Modifiers::NONE,
     }
+}
+
+/// Finger `id` of a touch screen in `phase` at `pos`.
+pub fn touch(id: u64, phase: TouchPhase, pos: Pos2) -> Event {
+    Event::Touch {
+        device_id: TouchDeviceId(1),
+        id: TouchId(id),
+        phase,
+        pos,
+        force: None,
+    }
+}
+
+/// The primary button of the pointer going down or coming up at `pos`.
+pub fn primary(pos: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// What a host hands egui when the first finger, which is the pointer as
+/// well, comes down at `pos`: its touch, then the pointer moved there and
+/// its primary button pressed.
+pub fn first_finger_down(id: u64, pos: Pos2) -> Vec<Event> {
+    vec![
+        touch(id, TouchPhase::Start, pos),
+        Event::PointerMoved(pos),
+        primary(pos, true),
+    ]
+}
+
+/// What a host hands egui when the first finger lifts at `pos`: its touch,
+/// then the primary button released and the pointer gone.
+pub fn first_finger_up(id: u64, pos: Pos2) -> Vec<Event> {
+    vec![
+        touch(id, TouchPhase::End, pos),
+        primary(pos, false),
+        Event::PointerGone,
+    ]
 }
 
 /// What a pass left on the screen.
@@ -148,6 +194,15 @@ impl Screen {
             .find(Role::CheckBox, label)
             .unwrap_or_else(|| panic!("no checkbox {label:?} on the screen"));
         checkbox.toggled() == Some(Toggled::True)
+    }
+
+    /// Whether the button labelled `label` is pressed: a button that is
+    /// down or up, and is down.
+    pub fn pressed(&self, label: &str) -> bool {
+        let button = self
+            .find(Role::Button, label)
+            .unwrap_or_else(|| panic!("no button {label:?} on the screen"));
+        button.toggled() == Some(Toggled::True)
     }
 
     /// Whether the radio button labelled `label` is the one chosen.
