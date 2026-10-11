@@ -1,19 +1,20 @@
 //! The Start panel's commands carried out on a host whose site the tests
 //! answer by hand, when they like: what a start asks of the site, what the
-//! machine is once the disk has come, and what the messages say. The disks
-//! are small, made by hand: the Insert takes an image of any size but none.
-//! The panel that asks for the starts is tested beside it
-//! (`overlay::start`), and what the session does with the overlay after a
-//! start in `session::tests`.
+//! machine is once the disk has come, what it boots, and what the messages
+//! say. The disks are small, made by hand: the Insert takes an image of any
+//! size but an empty one. The panel that asks for the starts is tested
+//! beside it (`overlay::start`), and what the session does with the overlay
+//! after a start in `session::tests`.
 
 use std::sync::mpsc::channel;
 
 use super::*;
 use crate::gui::host::testing::ByHand;
 use crate::site::{Kind, of_kind};
-use emu8086_core::io::disk::DiskImage;
+use emu8086_core::io::disk::{DiskController, DiskImage};
 use emu8086_core::io::disk_spec::parse_disk_specs;
 use emu8086_core::io::keyboard::KeyboardController;
+use emu8086_core::{BIOS_ROM, BIOS_ROM_NAME};
 
 /// What the machine runs before a start: a jump to itself.
 const BUSY_ROM: [u8; 16] = {
@@ -333,4 +334,83 @@ fn a_disk_is_known_by_the_name_of_its_file() {
     assert_eq!(file_name("disks/msdos400.img"), "msdos400.img");
     assert_eq!(file_name("a/b/c.img"), "c.img");
     assert_eq!(file_name("top.img"), "top.img");
+}
+
+/// Where the boot sectors of these tests leave their marks: 0000:0500.
+const BOOT_MARK_AT: usize = 0x0500;
+/// The marks of the floppy in A: before any start, of the site's floppy
+/// and of the site's hard disk.
+const OLD_FLOPPY: u16 = 0xA0A0;
+const NEW_FLOPPY: u16 = 0xF10F;
+const NEW_HARD_DISK: u16 = 0xD15C;
+
+/// An image of `size` bytes whose first sector boots: it writes `mark` to
+/// `BOOT_MARK_AT`, then jumps to itself at 0000:7C06. A hard disk's ends
+/// with the signature the BIOS asks of one (`signed`); a floppy needs none.
+fn booting_image(size: usize, mark: u16, signed: bool) -> Vec<u8> {
+    let [low, high] = mark.to_le_bytes();
+    let mut image = vec![0; size];
+    image[..8].copy_from_slice(&[
+        0xB8, low, high, // MOV AX, mark
+        0xA3, 0x00, 0x05, // MOV [0500h], AX (the BIOS boots with DS 0)
+        0xEB, 0xFE, // JMP $
+    ]);
+    if signed {
+        image[510..512].copy_from_slice(&[0x55, 0xAA]);
+    }
+    image
+}
+
+/// Runs the machine until a boot sector of these tests loops at 0000:7C06,
+/// and returns the mark it left; `None` if none got there in a hundred
+/// million instructions.
+fn booted(runtime: &mut Runtime) -> Option<u16> {
+    for _ in 0..2000 {
+        runtime.run(50_000);
+        let registers = &runtime.cpu.registers;
+        if registers.cs.reg().word() == 0 && registers.pc.word() == 0x7C06 {
+            return Some(runtime.cpu.memory.read_word(BOOT_MARK_AT));
+        }
+    }
+    None
+}
+
+/// The disk a start puts in is the one the machine boots, through the BIOS
+/// built into the app, which tries the drive of the disk's kind first.
+/// Started with the site's hard disk, the machine boots it, though A: holds
+/// a floppy that boots as well and that it booted at power-on; started then
+/// with the site's floppy, it boots that one, which took the place of the
+/// floppy in A:.
+#[test]
+fn the_machine_boots_the_disk_it_was_started_with() {
+    let mut drives = DiskController::new();
+    let old = booting_image(163_840, OLD_FLOPPY, false);
+    drives.attach(0x00, DiskImage::from_bytes(old, "old.img", false));
+    let (_keys, key_events) = channel();
+    let keyboard = KeyboardController::with_receiver(key_events);
+    let mut runtime = Runtime::with_drives(drives, None, false, keyboard);
+    runtime.load_rom_image(BIOS_ROM, BIOS_ROM_NAME).unwrap();
+    assert_eq!(booted(&mut runtime), Some(OLD_FLOPPY), "at power-on");
+
+    let host = ByHand::default();
+    let mut starter = Starter::on(Box::new(host.clone()));
+    let mut messages = Messages::default();
+    for (disk, image, mark) in [
+        (
+            hard_disk(),
+            booting_image(2 * 16 * 63 * 512, NEW_HARD_DISK, true),
+            NEW_HARD_DISK,
+        ),
+        (
+            floppy(),
+            booting_image(163_840, NEW_FLOPPY, false),
+            NEW_FLOPPY,
+        ),
+    ] {
+        starter.execute(StartCommand::of(disk, false));
+        let (_, answer) = host.fetch_asked();
+        answer.send(Ok(image)).unwrap();
+        assert!(starter.poll(&mut runtime, &mut messages).is_some());
+        assert_eq!(booted(&mut runtime), Some(mark), "{}", disk.title);
+    }
 }

@@ -533,9 +533,9 @@ ROM on a host with a site and the ROM of the site loaded from answers
 given by hand (`gui::overlay::load_rom::tests`, `gui::rom_loader::tests`),
 the Start panel on a host with a site and not on one without, its buttons
 pressed with the pointer and with a finger, its disks fetched, put in and
-started from with answers given by hand, the panel opened at start with no
-disk, and the overlay put away after a start, for the pointer and for a
-finger (`gui::overlay::start::tests`, `gui::starter::tests`,
+booted by the built-in BIOS with answers given by hand, the panel opened
+at start with no disk, and the overlay put away after a start, for the
+pointer and for a finger (`gui::overlay::start::tests`, `gui::starter::tests`,
 `gui::session::tests`; the hint that waits for the bare picture in
 `gui::overlay::tests`), what a site's answer to a fetch says
 (`platform::site_answer::tests`), the site's files against what the page
