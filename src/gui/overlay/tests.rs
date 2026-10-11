@@ -8,7 +8,7 @@
 use egui::accesskit::Role;
 
 use super::messages::{DONE_SECONDS, FAILED_SECONDS};
-use super::testing::{Driver, SCREEN, Shell, key};
+use super::testing::{Driver, SCREEN, Shell, key, primary, touch};
 use super::*;
 use crate::wall_clock::HostClock;
 use emu8086_core::io::disk::DiskImage;
@@ -294,6 +294,42 @@ fn the_overlay_has_no_shortcut_on_keys_the_guest_gets() {
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         assert!(!ctx.style_of(theme).interaction.selectable_labels);
     }
+}
+
+/// A press or a release of the primary button that follows a touch, with
+/// nothing but moves of the pointer between them, is that touch's echo:
+/// the hosts hand egui the first finger as its pointer as well. A press or a
+/// release after any other event is not, nor is one of another button, nor
+/// is a touch itself.
+#[test]
+fn a_finger_echoes_in_the_primary_button_right_after_its_touch() {
+    let at = egui::pos2(10.0, 10.0);
+    let secondary = egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Secondary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    };
+    // Each event of a frame, and whether it is an echo.
+    let frame = [
+        (touch(1, egui::TouchPhase::Start, at), false),
+        (egui::Event::PointerMoved(at), false),
+        (primary(at, true), true),
+        (primary(at, false), false),
+        (touch(1, egui::TouchPhase::End, at), false),
+        (primary(at, false), true),
+        (egui::Event::PointerGone, false),
+        (touch(2, egui::TouchPhase::Start, at), false),
+        (secondary, false),
+        (primary(at, true), false),
+        (touch(3, egui::TouchPhase::Start, at), false),
+        (key(egui::Key::A, true), false),
+        (primary(at, false), false),
+    ];
+    let events: Vec<egui::Event> = frame.iter().map(|(event, _)| event.clone()).collect();
+    let echoes: Vec<bool> = with_echoes(&events).map(|(_, echo)| echo).collect();
+    let expected: Vec<bool> = frame.iter().map(|(_, echo)| *echo).collect();
+    assert_eq!(echoes, expected);
 }
 
 /// The panel table is complete. `ALL` lists every variant, once; every

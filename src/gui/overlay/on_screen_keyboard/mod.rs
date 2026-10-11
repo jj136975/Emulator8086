@@ -34,7 +34,7 @@ use egui::{
 };
 
 use super::theme::{METRICS, PALETTE};
-use super::{Command, Cx, keyboard_taken};
+use super::{Command, Cx, keyboard_taken, with_echoes};
 use presses::{Holder, Presses};
 
 /// Where the BIOS keeps its keyboard flags, the state of the lock keys
@@ -111,13 +111,9 @@ pub(super) fn body(ui: &mut Ui, cx: &mut Cx<'_>) {
 /// A finger that comes down on a key presses it, and so does the primary
 /// button of the pointer; the key comes up when that finger lifts or the
 /// host takes it away, or when that button is released, wherever the
-/// finger or the pointer is by then.
-///
-/// The first finger is egui's pointer as well, and the host puts the
-/// pointer's events of a finger right after its touch (egui-winit, and
-/// `platform::egui_events` in a browser): a press or a release of the
-/// primary button that follows a touch, with nothing but moves of the
-/// pointer between them, is that touch's echo, and does nothing here.
+/// finger or the pointer is by then. A press or a release of the button
+/// that is a finger's echo (`with_echoes`) does nothing here: the finger's
+/// touch did it.
 fn take_events(
     state: &mut State,
     events: &[Event],
@@ -125,8 +121,7 @@ fn take_events(
     now: f64,
     commands: &mut Vec<Command>,
 ) {
-    let mut after_touch = false;
-    for event in events {
+    for (event, echo) in with_echoes(events) {
         match event {
             Event::Touch {
                 device_id,
@@ -147,16 +142,13 @@ fn take_events(
                         state.presses.release(finger, commands);
                     }
                 }
-                after_touch = true;
-                continue;
             }
-            Event::PointerMoved(_) => continue,
             Event::PointerButton {
                 pos,
                 button: PointerButton::Primary,
                 pressed,
                 ..
-            } if !after_touch => {
+            } if !echo => {
                 if !pressed {
                     state.presses.release(Holder::Pointer, commands);
                 } else if let Some(make) = state.key_at(ctx, *pos) {
@@ -165,7 +157,6 @@ fn take_events(
             }
             _ => {}
         }
-        after_touch = false;
     }
 }
 

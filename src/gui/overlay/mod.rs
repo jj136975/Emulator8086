@@ -5,7 +5,9 @@
 //! `disks`, `on_screen_keyboard`, `stats`, `memory`, and one per device:
 //! `pic`, `pit`, `vga`, `keyboard`, `debug_port`); `load_rom` is the
 //! Machine menu's choice of ROMs; `messages` is where a tool says what it
-//! did; `theme` is the look.
+//! did; `theme` is the look. What the panels read alike of egui's input is
+//! here too: whether the overlay has the keyboard (`keyboard_taken`), and
+//! which of the pointer's events are a finger's echo (`with_echoes`).
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
@@ -41,7 +43,8 @@ pub use messages::Messages;
 pub use panels::Panel;
 
 use egui::{
-    Align, Align2, Area, Frame, Id, Layout, MenuBar, Order, Pos2, Rect, Vec2, Window, vec2,
+    Align, Align2, Area, Event, Frame, Id, Layout, MenuBar, Order, PointerButton, Pos2, Rect, Vec2,
+    Window, vec2,
 };
 
 use super::meter::Meter;
@@ -380,6 +383,32 @@ impl Drop for Overlay {
 /// its widgets has the focus, or one of its menus is open.
 fn keyboard_taken(ctx: &egui::Context) -> bool {
     ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx)
+}
+
+/// The events of a frame, each with whether it is a finger's echo. The
+/// first finger is egui's pointer as well, and the hosts put the pointer's
+/// events of a finger right after its touch (egui-winit, and
+/// `platform::egui_events` in a browser): a press or a release of the
+/// primary button that follows a touch, with nothing but moves of the
+/// pointer between them, is that touch's echo.
+fn with_echoes(events: &[Event]) -> impl Iterator<Item = (&Event, bool)> {
+    let mut after_touch = false;
+    events.iter().map(move |event| {
+        let echo = after_touch
+            && matches!(
+                event,
+                Event::PointerButton {
+                    button: PointerButton::Primary,
+                    ..
+                }
+            );
+        after_touch = match event {
+            Event::Touch { .. } => true,
+            Event::PointerMoved(_) => after_touch,
+            _ => false,
+        };
+        (event, echo)
+    })
 }
 
 /// The menu bar: the Machine menu, with the ROMs the machine can restart
