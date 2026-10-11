@@ -2,13 +2,15 @@
 
 An Intel 8086 PC emulator in Rust: a real-mode CPU interpreter, the PC/XT
 devices around it and a BIOS written in NASM. It boots MS-DOS 6.22 and runs
-DOOM8088. One Cargo workspace of two crates in one configuration (no cargo
-features): the machine, and the app around it with a winit + wgpu window as
-its only frontend and an egui overlay of tools over the picture. The app
-builds for two hosts, a desktop (the native targets) and a browser
-(wasm32-unknown-unknown, built with trunk); what differs between them is in
-`src/platform` and nowhere else. `README.md` is the user-facing description
-(options, controls, the web build, what is and is not emulated).
+DOOM8088. One Cargo workspace of three crates in one configuration (no cargo
+features): the machine; the app around it, with a winit + wgpu window as its
+only frontend and an egui overlay of tools over the picture; and a tool that
+builds MS-DOS 4.00 from its source inside the machine, for the disks the
+site publishes. The app builds for two hosts, a desktop (the native
+targets) and a browser (wasm32-unknown-unknown, built with trunk); what
+differs between them is in `src/platform` and nowhere else. `README.md` is
+the user-facing description (options, controls, the web build, the site's
+disks, what is and is not emulated).
 
 The coding style and conventions are the ones of the sibling project
 `bettervoxel_engine` (its `CLAUDE.md`, "Writing conventions" and "Hard
@@ -20,6 +22,7 @@ rules"), restated below as far as they apply here.
 |---|---|
 | `crates/emu8086_core` | the machine: the CPU, the devices, the disks, the BIOS ROM it embeds (`BIOS_ROM`) with the build script that assembles it, and every test of the machine. A library with no window, no GPU and no clock: it builds for wasm32-unknown-unknown on its own |
 | root package `emulator_8086` | the app: the start-up, the winit window, the wgpu renderer, the key map, the overlay of tools (egui), and what depends on the host (`src/platform`). It owns the machine, measures host time for it and is its wall clock. `cargo run` at the root runs it on the desktop; `trunk serve` at the root builds it for wasm32 and serves it in `index.html` |
+| `crates/dos_images` | the tool that makes the site's two disks: FreeDOS 1.4 builds MS-DOS 4.00 from its source inside the machine, and the tool makes an MS-DOS 4.00 floppy and a hard disk that starts Doom8088 of what it built, boots each and reports. A headless binary of the core and fatfs alone, which the Pages workflow runs, and a developer by hand; neither the app nor a browser has it. Its inputs are fetched by `fetch-inputs.sh`, checked against `pins.env` |
 
 The root `Cargo.toml` is the version authority for every dependency
 (`[workspace.dependencies]`; a member only adds features, as the app adds
@@ -29,8 +32,12 @@ vectors, a submodule) stay at the root of the repository; the core reaches
 them from its own directory. `index.html` at the root is the page trunk
 builds the browser build into, and has trunk copy the BIOS beside it as
 `rom/bios.bin`; `dist/`, where trunk puts the result, is ignored.
-`.github/workflows/pages.yml` assembles the BIOS and publishes the browser
-build with it on GitHub Pages ("Build & test").
+`.github/workflows/pages.yml` assembles the BIOS, makes the site's disks
+with `crates/dos_images`, and publishes the browser build with them on
+GitHub Pages ("Build & test"). `.gitattributes` keeps what bash and
+sha256sum read in `crates/dos_images` (the script, the pins, the lists of
+hashes) in LF line ends in every checkout: a Windows checkout gives other
+text files CR LF.
 
 The app, in `src/`:
 
@@ -91,15 +98,46 @@ The core, in `crates/emu8086_core/`:
 `assets/rom/` holds the BIOS: `bios.asm` plus one `.inc` per interrupt, and
 the tracked `bios.bin`.
 
+The tool, in `crates/dos_images/`:
+
+| path | role |
+|---|---|
+| `pins.env` | THE pins of the inputs: the URLs and SHA-256 of FreeDOS 1.4's Floppy Edition and its boot floppy, the repository, branch, commit and git tree of MS-DOS 4.00's restored source, Doom8088's tag, commit, release zip, files and GPL text. `fetch-inputs.sh` sources it, the tool compiles it in (`src/pins.rs`), the workflow's cache key hashes it |
+| `fetch-inputs.sh` | fetches the inputs into a new directory, each checked against its pin: curl and `sha256sum --check`, unzip of the files needed, and `v4.0` of the commit by a sparse, depth-1 git fetch whose commit and tree are checked, its files checked out as committed |
+| `msdos400-binaries.sha256`, `disks.sha256` | the lists the workflow checks the output against: the 62 files the build makes (61 of the MS-DOS 4.00 release of 1988, and XMAEM.SYS) and the two disks |
+| `src/main.rs` | the command line (`--freedos`, `--msdos`, `--doom8088`, `--out`), the stages run, a failure printed, the exit code |
+| `src/stages/` | the stages in their order (`mod.rs`, `run`), each with its error type: `host` (FreeDOS's floppy with its own FDCONFIG.SYS and FDAUTO.BAT), `build_disk` (the source on a 100 MB FAT16 disk, with BUILD.BAT), `build` (the run: its markers in turn, its budgets, a line a module), `collect` (what CPY.BAT copied, the boot sector, the master boot record, a clean BUILD.LOG), `floppy`, `hard_disk`; `msdos` puts MS-DOS on a volume for both, `check` has CHKDSK check each from a copy of the floppy |
+| `src/guest.rs` | the machine as the tool runs it: batches of instructions credited with guest time, budgets of guest time, the port E9h's new lines, the text screen, the hash of the Mode 13h picture, a disk's contents |
+| `src/makefiles.rs` | the modules, from the makefiles that only dispatch; BUILD.BAT; the files of CPY.BAT |
+| `src/markers.rs` | E9.COM, and the markers the batch files send through it |
+| `src/log_scan.rs` | BUILD.LOG: the lines of an error, the warnings of the tools, a module's part |
+| `src/layout.rs` | the disks below their file systems: CHS and the partition entry, `HardDisk`, the build's boot sector on a volume with the volume's own BPB, IO.SYS and MSDOS.SYS sealed where the boot sector looks |
+| `src/fat.rs`, `src/stamp.rs` | fatfs mounted at a fixed stamp; DOS names, DOS text; the stamps and the volumes' serials |
+| `src/notices.rs`, `src/pins.rs` | README.TXT and SOURCE.TXT of the disks; `pins.env` read |
+| `src/failure.rs`, `src/report.rs` | a failure as an `::error` annotation of GitHub Actions and what the guest showed; `report.txt` |
+
+The tool's rules. Guest time comes from the instructions run, never from a
+clock: each batch of a million instructions is credited 100 ns an
+instruction, a guest of 10 MIPS, and a budget is of guest time, which a
+guest that waits for a key spends too. fatfs stamps what the tool writes
+with fixed times and the volumes have fixed serials, so the same inputs
+make the same disks, byte for byte, on every run and every host; the host's
+clock only measures, for the report. The tool reaches the core through its
+public API alone. Its inputs are plain directories: it downloads nothing
+and checks no hash itself, which `fetch-inputs.sh` and the workflow do with
+curl and sha256sum. A pin is written in `pins.env` and nowhere else. A
+change that changes what a disk holds changes its bytes: `disks.sha256` is
+then taken anew from a run of the tool and committed with the change.
+
 Every source file carries a `//!` header stating what it owns — skim headers
 before reading bodies.
 
-The core's public surface is what the app reaches. A module of `io` or `vm`
-is `pub` when the app reaches into it, by name or through a public field of
-the `Runtime`, and `pub(crate)` otherwise; an item is widened from
-`pub(crate)` when the app needs it, not before. `Runtime::cpu` is public for
-reading: whoever writes to it keeps the rule of `vm/mod.rs` (the `Memory`
-box is never replaced).
+The core's public surface is what the app and the tool reach. A module of
+`io` or `vm` is `pub` when one of them reaches into it, by name or through a
+public field of the `Runtime`, and `pub(crate)` otherwise; an item is
+widened from `pub(crate)` when one of them needs it, not before.
+`Runtime::cpu` is public for reading: whoever writes to it keeps the rule of
+`vm/mod.rs` (the `Memory` box is never replaced).
 
 ## Finding things
 
@@ -282,6 +320,26 @@ box is never replaced).
   `trunk serve` answers a path it has no file for), is "The site has no
   ..." (`platform/site_answer.rs`). A test answers the fetches by hand
   (`host::testing::ByHand`).
+- **A disk of the site's**: a row of THE table in `src/site.rs` of the kind
+  `Floppy` or `HardDisk` (`disks/msdos400.img`, "MS-DOS 4.00";
+  `disks/doom8088.img`, "DOOM"). The repository holds no disk: the Pages
+  workflow makes them with `crates/dos_images`, checks them against
+  `crates/dos_images/disks.sha256` and copies them into `dist/disks/`
+  after trunk built, by those names. The page names none, so `trunk serve`
+  serves no disk: a fetch of one there is answered "The site has no ...".
+  `site_tests.rs` holds the table to both: a ROM is copied by trunk and
+  checked by the workflow, a disk is copied by the workflow and not named
+  by the page. What a disk holds is the tool's `stages/floppy.rs` and
+  `stages/hard_disk.rs`, with `stages/msdos.rs` (MS-DOS put on a volume),
+  `layout.rs` (below the file system) and `notices.rs` (README.TXT,
+  SOURCE.TXT); a change there changes the disk's bytes and its line of
+  `disks.sha256`, taken from a run of the tool. A change to the core or to
+  the BIOS may change what the build makes: the workflow builds anew
+  (its cache key holds both) and fails where a file differs from
+  `msdos400-binaries.sha256`, which is the release's for 61 of them. A
+  stage that fails prints an `::error` annotation, what the emulated
+  screen showed, the last lines of port E9h and, for the build, the
+  failing module's part of BUILD.LOG.
 - **A colour of the overlay**: a slot of `PALETTE` in
   `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
   under `src/gui/overlay/` spells a colour.
@@ -315,9 +373,30 @@ cargo fmt --all                                               # run before every
 Without `--workspace` cargo acts on the root package alone: that is what
 makes `cargo run --release -- ...` run the app, and it makes a bare
 `cargo test` skip every test of the machine. `-p emu8086_core` runs the
-core's alone. There is one configuration: no cargo feature selects anything.
-What selects is the target: the dependencies only one host has stand in the
-target tables of the root manifest.
+core's alone, `-p dos_images` the tool's. There is one configuration: no
+cargo feature selects anything. What selects is the target: the
+dependencies only one host has stand in the target tables of the root
+manifest.
+
+The site's disks are made by hand as the workflow makes them (bash with
+curl, sha256sum, unzip and git; Git Bash on Windows), with directories
+outside the repository:
+
+```
+bash crates/dos_images/fetch-inputs.sh <inputs>               # the inputs, each checked against pins.env; <inputs> new or empty
+cargo run --release -p dos_images -- --freedos <inputs>/freedos --msdos <inputs>/msdos/v4.0 --doom8088 <inputs>/doom8088 --out <out>
+(cd <out>/bin && sha256sum --check --quiet <repo>/crates/dos_images/msdos400-binaries.sha256)
+(cd <out>/disks && sha256sum --check <repo>/crates/dos_images/disks.sha256)
+```
+
+The tool's run is the full build, about two minutes in release on a
+desktop: there is no ignored test of it, since its inputs are not in the
+repository and the check of its output is sha256sum's. `cargo test
+--workspace` runs the tool's unit tests, which need no input: the
+makefiles, the layouts, the markers and E9.COM, the log, CHKDSK's report,
+the notices, the pins, and the account of a build told its markers by
+hand. Run the tool with `--release`: the emulator of a debug build is many
+times slower.
 
 The browser build is trunk's (0.21, `cargo install trunk`): `trunk serve`
 builds it, serves it on http://127.0.0.1:8080 and rebuilds on change, and
@@ -351,6 +430,23 @@ after the build script replaced the image. The run then fails unless
 committed (`git diff --exit-code`) and is what `dist/` publishes (`cmp`). A
 change to the BIOS's sources is committed with the `bios.bin` it assembles
 to; a nasm that assembled other bytes would fail the run as well.
+
+The site publishes the two disks beside the page as well
+(`disks/msdos400.img`, `disks/doom8088.img`), which the workflow makes
+after trunk built the page and the BIOS was checked. It runs
+`crates/dos_images/fetch-inputs.sh`, then the tool in release, then checks
+the 62 files against `msdos400-binaries.sha256`, copies the disks into
+`dist/disks/` and checks them there against `disks.sha256`, and puts the
+tool's report into the run's summary. The tool's whole output is kept with
+`actions/cache`, keyed on what can change it: `pins.env`, all of
+`crates/dos_images` and `crates/emu8086_core`, `assets/rom/bios.bin` (the
+machine's BIOS), the root manifest, `Cargo.lock` and `rust-toolchain`. A run
+that finds it in the cache neither fetches the inputs nor runs the tool,
+and still checks both lists and copies the disks. One that does not takes
+about two and a half minutes more, as the workflow's steps replayed in
+`ubuntu:24.04` on a desktop took them (the fetch 6 s, the tool's compile
+6 s after trunk's build, its run 125 s, of which the build in the emulator
+122 s); GitHub's runner is slower than that desktop per thread.
 
 The CPU is validated against real hardware: a change under the core's
 `src/vm/` runs the suite with `--include-ignored`. Never judge a suite
@@ -522,6 +618,9 @@ not listed has not been asked: ask first, and add the answer here.
 | 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
 | 2026-10-10 | GitHub's own actions: `actions/checkout`, `actions/cache`, `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` | requested with the deployment (the user asked for the browser build to be built by CI and published on GitHub Pages), not asked one by one | `.github/workflows/pages.yml` alone. No action of a third party: the runner's rustup installs the toolchain, and trunk comes from its releases, checked against the checksum the workflow holds |
 | 2026-10-10 | `nasm`, from Ubuntu's packages on the runner | requested with the user's "compile + upload" of the BIOS on 2026-10-10 (CI assembles the BIOS and publishes it with the site), not asked apart | `.github/workflows/pages.yml` alone: the runner installs it with apt for the core's build script to assemble `assets/rom`. A build tool, not a dependency of either crate; a desktop build uses whatever nasm is on PATH, or none |
+| 2026-10-10 | MS-DOS 4.00's source, restored: lotharsm/MS-DOS, branch `dos-4.00-reconstructed`, commit `500867d` (Microsoft's 2d04cac with its damaged files mended), MIT License | the user's choice on 2026-10-10: MS-DOS 4.00, built from source in CI, over FreeDOS as the DOS of the site's disks. MS-DOS 6.22, which Microsoft never licensed for redistribution, is never published | an input of `crates/dos_images` alone, fetched pinned (`pins.env`: the commit, and the git tree of `v4.0`): built inside the emulator, and published on the two disks with its MIT notice (`LICENSE.TXT`) and a `README.TXT` that names the source |
+| 2026-10-11 | FreeDOS 1.4, the boot floppy of its Floppy Edition (kernel 2043, FreeCOM 0.86; GPL) | requested with the CI build of MS-DOS 4.00 (the user's choice of 2026-10-10), as its build host; not asked apart | `crates/dos_images` alone: fetched pinned (`pins.env`: the zip's and the floppy's SHA-256), booted in the emulator to run the build, and never published. Nothing of it is on the disks |
+| 2026-10-11 | Doom8088 v20260304 (FrenkelS/Doom8088, tag commit `8f97ce0`; GPL-2.0), its Mode 13h build `D8M13H.EXE`, and the shareware `DOOM1.WAD` of its release | the user's decision on 2026-10-11 to publish the DOOM disk with the WAD, told that id Software's shareware license forbids modified copies and that Doom8088's release ships the WAD preprocessed for it | `crates/dos_images` alone: fetched pinned (`pins.env`), with the repository's GPL text at the tag's commit as `COPYING`; published on the DOOM disk in `\DOOM` with Doom8088's README, `COPYING` and a `SOURCE.TXT` naming the repository, the tag and the commit, and the WAD as id Software's shareware data, not under the GPL |
 
 Approved does not mean added: the manifests say what is in use, the root
 one at which version and each crate's own which of them it takes.

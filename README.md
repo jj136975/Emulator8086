@@ -10,6 +10,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
 - A tools overlay in the window (F12): pause and resume, reset, a restart with another ROM, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the drives (put disks in and take them out, save them, copy host files onto them), and an on-screen PC keyboard
 - Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2, on phones and tablets too
+- Builds MS-DOS 4.00 from Microsoft's published source inside itself, with the tools of 1988, 61 of its 62 files byte for byte as released; the site publishes an MS-DOS 4.00 boot floppy and a DOOM hard disk made of it ([The site's disks](#the-sites-disks))
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
 
@@ -142,8 +143,10 @@ Beside the page, the site publishes files the application fetches from it, each 
 | Path | What it is | Where the application offers it |
 |------|------------|---------------------------------|
 | `rom/bios.bin` | The BIOS. The workflow assembles it from its sources in `assets/rom` with NASM, and fails unless it is the image committed there, which is the one built into the application | Machine > Load ROM > BIOS from the site |
+| `disks/msdos400.img` | "MS-DOS 4.00": a boot floppy of MS-DOS 4.00, which the workflow builds ([The site's disks](#the-sites-disks)) | Not yet |
+| `disks/doom8088.img` | "DOOM": a hard disk on which MS-DOS 4.00 starts DOOM, which the workflow makes as well | Not yet |
 
-`trunk build` and `trunk serve` put the same files beside the page, from the repository. A file is fetched by its path relative to the page, so it is found wherever the page is served from: at the root of `trunk serve`, or below `/Emulator8086/` on GitHub Pages. Where the server has no such file (a 404, or the page itself in its place, which is how `trunk serve` answers a path it has no file for), a message says that the site has no such file, and the machine runs on as it was.
+`trunk build` and `trunk serve` put the BIOS beside the page, from the repository. The disks are not in the repository: the workflow makes them, and puts them beside the page in what trunk built, so a site served by `trunk serve` has none. A file is fetched by its path relative to the page, so it is found wherever the page is served from: at the root of `trunk serve`, or below `/Emulator8086/` on GitHub Pages. Where the server has no such file (a 404, or the page itself in its place, which is how `trunk serve` answers a path it has no file for), a message says that the site has no such file, and the machine runs on as it was.
 
 ### Browsers
 
@@ -177,11 +180,52 @@ The guest's keys come from View > On-screen keyboard, which fits the width of a 
 
 A keyboard paired with the phone or the tablet reaches the guest as a desktop's keyboard does.
 
+## The site's disks
+
+Beside the page, the site publishes two disks, which the emulator makes itself:
+
+| Disk | What it is |
+|------|------------|
+| `disks/msdos400.img` | A 1.44 MB floppy that boots MS-DOS 4.00 to its `A:\>` prompt, with all of its programs but the installer, SELECT |
+| `disks/doom8088.img` | A 2.5 MB hard disk on which MS-DOS 4.00 starts [Doom8088](https://github.com/FrenkelS/Doom8088), Frenkel Smeijers's port of DOOM to the 8088, with the shareware episode |
+
+The MS-DOS 4.00 on them is built from its source, inside the emulator. Microsoft and IBM published the source of MS-DOS 4.00 under the MIT License in 2024, and the community restored the files that came out damaged ([lotharsm/MS-DOS](https://github.com/lotharsm/MS-DOS), branch `dos-4.00-reconstructed`). The workflow that publishes the site boots FreeDOS 1.4 in the emulator, and FreeDOS builds that source with the tools that come with it: NMAKE, MASM, C and LINK of 1988, which run 11.4 billion instructions on the emulated 8086. Of the 62 files the build makes, 61 are byte for byte those of the MS-DOS 4.00 release of 1988-10-06; the 62nd, XMAEM.SYS, is not on that release's disks. The emulator then boots each disk: the floppy to its prompt, and the hard disk until DOOM plays its demo; MS-DOS 4.00's own CHKDSK finds both clean. The workflow fails unless the 62 files and the two disks are those whose SHA-256 the repository lists (`crates/dos_images/msdos400-binaries.sha256`, `disks.sha256`): the same inputs make the same disks, byte for byte. Its inputs are pinned (`crates/dos_images/pins.env`) and checked when they are fetched.
+
+The licenses:
+
+- MS-DOS 4.00 is under the MIT License. Each disk carries it as `LICENSE.TXT`, with a `README.TXT` that says where the source is and how the disk was made.
+- Doom8088 is under the GNU General Public License, version 2. The hard disk carries the license as `\DOOM\COPYING`, and where its source is as `\DOOM\SOURCE.TXT`.
+- `DOOM1.WAD` is id Software's shareware DOOM data, as Doom8088's release ships it, prepared for Doom8088. It is not under the GPL.
+- FreeDOS only builds MS-DOS 4.00, and is on neither disk.
+
+To make the disks on your own machine, in bash with curl, sha256sum, unzip and git (on Windows: Git Bash), from the root of the repository, into directories beside it:
+
+```bash
+inputs=../dos-inputs out=../dos-out lists=$PWD/crates/dos_images
+
+# Fetch the inputs into a new directory, each checked against its pin
+bash crates/dos_images/fetch-inputs.sh "$inputs"
+
+# Build MS-DOS 4.00 in the emulator and make the disks of it: about two minutes
+cargo run --release -p dos_images -- --freedos "$inputs/freedos" \
+    --msdos "$inputs/msdos/v4.0" --doom8088 "$inputs/doom8088" --out "$out"
+
+# Check what was made as the workflow does
+(cd "$out/bin" && sha256sum --check --quiet "$lists/msdos400-binaries.sha256")
+(cd "$out/disks" && sha256sum --check "$lists/disks.sha256")
+
+# Boot them in the window
+cargo run --release -- --disk "a:$out/disks/msdos400.img"
+cargo run --release -- --hd "$out/disks/doom8088.img" --boot hd0
+```
+
+The tool writes the 62 files the build made into `$out/bin`, the disks into `$out/disks`, and what it did into `$out/report.txt`. A stage that fails says why, with what the emulated screen showed; a build that fails leaves its disk as `$out/failed-build.img`.
+
 ## Technical Details
 
 ### Layout
 
-The repository is a Cargo workspace of two crates. `crates/emu8086_core` is the machine as a library: the CPU, the devices, the disks and the BIOS it embeds. It opens no window, uses no GPU and reads no clock, and builds for `wasm32-unknown-unknown` as it is. The root package is the application around it: the command line and the window, which shows the machine's picture, sends it the keys and tells it the time, and draws the tools overlay over the picture (egui). `cargo build` and `cargo run` at the root build and run the application. It builds for a desktop and for a browser; what differs between the two is in one module, `src/platform`, and nothing else in the application asks which of them it runs on.
+The repository is a Cargo workspace of three crates. `crates/emu8086_core` is the machine as a library: the CPU, the devices, the disks and the BIOS it embeds. It opens no window, uses no GPU and reads no clock, and builds for `wasm32-unknown-unknown` as it is. The root package is the application around it: the command line and the window, which shows the machine's picture, sends it the keys and tells it the time, and draws the tools overlay over the picture (egui). `cargo build` and `cargo run` at the root build and run the application. It builds for a desktop and for a browser; what differs between the two is in one module, `src/platform`, and nothing else in the application asks which of them it runs on. `crates/dos_images` is a tool without a window that runs the machine to build MS-DOS 4.00 and make the site's disks ([The site's disks](#the-sites-disks)); the guest's time there is counted in the instructions it runs, so that every run makes the same disks.
 
 ### CPU
 
@@ -244,11 +288,13 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking and touching through it with hand-made input, and the disk tools and the ROM loader with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, touches among them, the time stamps, the disk tools on a host that hands files over as their contents, the ROMs of the site offered and loaded with answers the tests give by hand, what a site's answer to a fetch says, and the frame drawn within the limits WebGL2 guarantees. The files the site publishes are checked against what the page and the workflow publish. The page itself is outside the suite, and so are the system's file dialogs, the browser's file picker and its fetch.
 
+The build of MS-DOS 4.00 is the widest test of the CPU there is: NMAKE, MASM, C and LINK run 11.4 billion instructions, and a fault of the CPU that one of them meets is likely to change one of the 62 files they make, which the workflow compares with the release of 1988. It needs inputs the repository does not hold, so it is not part of `cargo test`: the workflow runs it at every push that changes the machine, and a developer runs it by hand ([The site's disks](#the-sites-disks)). `cargo test` covers the tool's parts that need no inputs: what it reads of the makefiles, the layout of the disks, the markers, the build's log and CHKDSK's report, and the notices.
+
 ```bash
 # Fetch the CPU test vectors (git submodule)
 git submodule update --init
 
-# Unit and integration tests of both crates
+# Unit and integration tests of the three crates
 cargo test --workspace
 
 # Everything, including the hardware-captured CPU vectors
@@ -262,6 +308,8 @@ cargo test -p emu8086_core cpu_tests::test_opcode_00 -- --ignored
 
 - [DOOM 8088](https://github.com/FrenkelS/Doom8088) by Frenkel Smeijers — DOOM port for 8088/8086
 - CPU test vectors from [SingleStepTests/8086](https://github.com/SingleStepTests/8086) captured on real P80C86A-2 hardware
+- [MS-DOS](https://github.com/microsoft/MS-DOS) 4.00 by Microsoft and IBM, under the MIT License, as restored in [lotharsm/MS-DOS](https://github.com/lotharsm/MS-DOS) (branch `dos-4.00-reconstructed`)
+- [FreeDOS](https://www.freedos.org/) 1.4, which builds it
 
 ## License
 
