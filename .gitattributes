@@ -1,0 +1,6 @@
+# What bash or sha256sum reads keeps its LF line ends in every checkout,
+# Windows' too: bash runs no script whose lines end in CR LF, and the CR
+# would be part of a pin to bash and of a file's name to sha256sum.
+crates/dos_images/*.sh text eol=lf
+crates/dos_images/*.env text eol=lf
+crates/dos_images/*.sha256 text eol=lf
