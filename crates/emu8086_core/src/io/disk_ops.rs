@@ -19,6 +19,8 @@
 //!   word: the controller raises its change line.
 //! - One image file is one disk in one drive. Inserting an image never
 //!   creates a file, and creating one never replaces a file.
+//! - An image of no bytes is no disk, however it comes: inserting one is
+//!   refused, and the drive keeps the disk it holds.
 
 use crate::io::disk::{
     DiskController, DiskImage, FLOPPY_144_SIZE, HD_DEFAULT_SIZE_MB, SaveOutcome, WallClock,
@@ -184,6 +186,12 @@ fn require_drive(drive: u8) -> Result<(), String> {
     }
 }
 
+/// Why the image the user knows as `shown` is refused: it has no bytes, and
+/// the disk made of it would be a blank one the user never asked for.
+fn no_disk(shown: &str) -> String {
+    format!("{shown} is empty: an image of no bytes is no disk")
+}
+
 fn insert(
     disks: &mut DiskController,
     drive: u8,
@@ -205,6 +213,12 @@ fn insert(
                     path.display()
                 ));
             }
+            if path
+                .metadata()
+                .is_ok_and(|file| file.is_file() && file.len() == 0)
+            {
+                return Err(no_disk(&format!("'{}'", path.display())));
+            }
             require_unshared(disks, &path, drive)?;
             let opened = if hard_disk {
                 DiskImage::open_hard_disk(&path, read_only)
@@ -216,6 +230,9 @@ fn insert(
             (image, format!("{} now holds {}", label, path.display()))
         }
         Disk::Image(HostFile::Contents { name, bytes }) => {
+            if bytes.is_empty() {
+                return Err(no_disk(&name));
+            }
             let image = if hard_disk {
                 DiskImage::hard_disk_from_bytes(bytes, &name, read_only)
             } else {

@@ -395,6 +395,40 @@ fn an_image_handed_over_as_its_contents_is_a_disk_in_memory() {
     assert!(hard_disk.readonly);
 }
 
+/// An image of no bytes is no disk, whether it comes by its path or as its
+/// contents, for a floppy drive as for a hard disk drive: inserting one is
+/// refused, and the drive keeps the disk it holds, unchanged.
+#[test]
+fn an_image_of_no_bytes_is_refused() {
+    let empty = Scratch::file("empty.img", &[]);
+    let mut disks = machine_with_floppy_and_hard_disk();
+
+    for drive in [0x00, 0x80] {
+        assert_eq!(
+            refusal(&mut disks, insert(drive, image_at(&empty.0))),
+            format!(
+                "'{}' is empty: an image of no bytes is no disk",
+                empty.0.display()
+            )
+        );
+        let handed_over = insert(drive, image_of("nothing.img", Vec::new()));
+        let outcome = apply(&mut disks, handed_over, &FixedClock);
+        assert_eq!(
+            outcome.result,
+            Err("nothing.img is empty: an image of no bytes is no disk".to_string())
+        );
+        assert!(!outcome.needs_reboot);
+    }
+    assert_eq!(disks.drives.len(), 2);
+    assert_eq!(
+        disks.find_drive(0x00).unwrap().total_bytes(),
+        FLOPPY_144_SIZE
+    );
+    let hard_disk = disks.find_drive(0x80).unwrap();
+    assert!(hard_disk.name().is_none() && hard_disk.backing_path().is_none());
+    assert!(!disks.reboot_due(), "no hard disk was changed");
+}
+
 /// A blank disk is a formatted floppy of a standard size in a floppy drive,
 /// 1.44 MB unless another is asked for, and a blank disk of the one size
 /// there is in a hard disk drive.
