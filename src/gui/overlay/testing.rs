@@ -21,6 +21,7 @@ use egui::{
 
 use super::{Command, Overlay};
 use crate::gui::meter::Meter;
+use crate::site::SiteFile;
 use crate::wall_clock::HostClock;
 use emu8086_core::io::keyboard::{EmulatorEvent, KeyboardController};
 use emu8086_core::vm::runtime::Runtime;
@@ -364,22 +365,36 @@ impl<T: Passes> Driver<T> {
 
 /// The shell by itself, lent a machine: what the tests of the shell and of
 /// its panels drive. Nobody carries out the commands its passes ask for:
-/// `paused` is what the test says, and so is `meter`, which no frame feeds.
+/// `paused` is what the test says, and so are `starting` and `meter`, which
+/// no frame feeds.
 pub struct Shell {
     pub overlay: Overlay,
     pub runtime: Runtime,
     pub paused: bool,
+    pub starting: Option<&'static SiteFile>,
     pub meter: Meter,
     pub commands: Vec<Command>,
 }
 
 impl Shell {
-    /// The shell as the app starts it, hidden, lent `runtime`.
+    /// The shell as the app starts it, hidden, lent `runtime`, on the host
+    /// the tests run on: a desktop, which came from no site.
     pub fn new(runtime: Runtime) -> Self {
+        Self::with(Overlay::new(), runtime)
+    }
+
+    /// The shell, hidden, lent `runtime`, on a host that came from a site,
+    /// or not: `has_site`.
+    pub fn on(runtime: Runtime, has_site: bool) -> Self {
+        Self::with(Overlay::on(has_site), runtime)
+    }
+
+    fn with(overlay: Overlay, runtime: Runtime) -> Self {
         Self {
-            overlay: Overlay::new(),
+            overlay,
             runtime,
             paused: false,
+            starting: None,
             meter: Meter::default(),
             commands: Vec::new(),
         }
@@ -403,9 +418,13 @@ impl Passes for Shell {
     }
 
     fn pass(&mut self, input: RawInput) -> egui::PlatformOutput {
-        let commands = self
-            .overlay
-            .run(input, &mut self.runtime, self.paused, &self.meter);
+        let commands = self.overlay.run(
+            input,
+            &mut self.runtime,
+            self.paused,
+            self.starting,
+            &self.meter,
+        );
         self.commands.extend(commands);
         self.overlay.take_platform_output()
     }

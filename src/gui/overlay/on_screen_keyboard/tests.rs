@@ -463,6 +463,7 @@ impl Passes for RunTwice {
         let mut cx = Cx {
             runtime: &mut self.runtime,
             paused: false,
+            starting: None,
             meter: &self.meter,
             drawn_before: self.drawn_before,
             commands: &mut self.commands,

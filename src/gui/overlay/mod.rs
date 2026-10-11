@@ -1,21 +1,23 @@
 //! The overlay: the tools drawn over the emulator's picture with egui. This
 //! file is the shell: whether the overlay is shown, the hint of the first
 //! seconds, the menu bar, the windows of the panels and the messages.
-//! `panels` is THE panel table, with a file per panel beside it (`about`,
-//! `disks`, `on_screen_keyboard`, `stats`, `memory`, and one per device:
-//! `pic`, `pit`, `vga`, `keyboard`, `debug_port`); `load_rom` is the
-//! Machine menu's choice of ROMs; `messages` is where a tool says what it
-//! did; `theme` is the look. What the panels read alike of egui's input is
-//! here too: whether the overlay has the keyboard (`keyboard_taken`), and
-//! which of the pointer's events are a finger's echo (`with_echoes`).
+//! `panels` is THE panel table, with a file per panel beside it (`start`,
+//! `about`, `disks`, `on_screen_keyboard`, `stats`, `memory`, and one per
+//! device: `pic`, `pit`, `vga`, `keyboard`, `debug_port`); `load_rom` is
+//! the Machine menu's choice of ROMs; `messages` is where a tool says what
+//! it did; `theme` is the look. What the panels read alike of egui's input
+//! is here too: whether the overlay has the keyboard (`keyboard_taken`),
+//! and which of the pointer's events are a finger's echo (`with_echoes`).
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
-//! called (`platform::OVERLAY_SWITCH`). The window gathers egui's input and
-//! calls `run`, which is lent the machine and what the app measured of it
-//! (`gui::meter`) for the length of the pass and returns what the user
-//! asked the app to do (`Command`); the renderer takes what to draw
-//! (`take_paint`). The only time there is, is the time of that input.
+//! called (`platform::OVERLAY_SWITCH`) and whether it came from a site
+//! (`platform::HAS_SITE`), whose panel only such a host offers. The window
+//! gathers egui's input and calls `run`, which is lent the machine and what
+//! the app measured of it (`gui::meter`) for the length of the pass and
+//! returns what the user asked the app to do (`Command`); the renderer
+//! takes what to draw (`take_paint`). The only time there is, is the time
+//! of that input.
 //!
 //! The invariant: a hidden overlay costs nothing. `draws` says whether there
 //! is anything to show; while it says no, the window runs no pass and the
@@ -33,6 +35,7 @@ mod on_screen_keyboard;
 mod panels;
 mod pic;
 mod pit;
+mod start;
 mod stats;
 pub mod theme;
 mod vga;
@@ -41,6 +44,7 @@ pub use disks::DiskCommand;
 pub use load_rom::RomCommand;
 pub use messages::Messages;
 pub use panels::Panel;
+pub use start::StartCommand;
 
 use egui::{
     Align, Align2, Area, Event, Frame, Id, Layout, MenuBar, Order, PointerButton, Pos2, Rect, Vec2,
@@ -48,7 +52,8 @@ use egui::{
 };
 
 use super::meter::Meter;
-use crate::platform::OVERLAY_SWITCH;
+use crate::platform::{self, OVERLAY_SWITCH};
+use crate::site::SiteFile;
 use emu8086_core::vm::runtime::Runtime;
 use theme::{METRICS, PALETTE};
 
@@ -81,6 +86,10 @@ pub enum Command {
     DumpVga,
     /// Do to a drive what the Disks panel asks.
     Disk(DiskCommand),
+    /// Start the machine with a disk of the site, as the Start panel asks:
+    /// the disk into its drive, the bootstrap trying that drive first, and
+    /// the machine restarted.
+    Start(StartCommand),
     /// Press (`pressed`) or release the key of the on-screen keyboard whose
     /// make code is `make`, for the guest. A press of a key held down is a
     /// repeat.
@@ -94,6 +103,9 @@ pub struct Cx<'a> {
     pub runtime: &'a mut Runtime,
     /// Whether the app is holding the guest still.
     pub paused: bool,
+    /// The disk of the site the app is fetching to start the machine with,
+    /// while it is: the Start panel waits for it.
+    pub starting: Option<&'static SiteFile>,
     /// What the app measured of the emulation, frame by frame.
     pub meter: &'a Meter,
     /// Whether the pass before this one drew the panel being drawn: not
@@ -132,6 +144,9 @@ pub struct Overlay {
     ctx: egui::Context,
     visible: bool,
     hint: Hint,
+    /// Whether the host came from a site: only then are the panels that
+    /// need one offered (`Panel::needs_site`).
+    has_site: bool,
     /// The panels whose windows are open.
     open: Vec<Panel>,
     /// The panels whose bodies the last pass drew: those open, but for a
@@ -151,8 +166,14 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    /// A hidden overlay, in the theme, with no panel open.
+    /// A hidden overlay, in the theme, with no panel open, on the host the
+    /// app runs on.
     pub fn new() -> Self {
+        Self::on(platform::HAS_SITE)
+    }
+
+    /// The overlay on a host that came from a site, or not: `has_site`.
+    pub fn on(has_site: bool) -> Self {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
         // The keyboard is shared with the guest. egui's own shortcuts, to
@@ -169,6 +190,7 @@ impl Overlay {
             ctx,
             visible: false,
             hint: Hint::Unstarted,
+            has_site,
             open: Vec::new(),
             drawn: Vec::new(),
             below_bar: Rect::EVERYTHING,
@@ -193,12 +215,38 @@ impl Overlay {
     /// Shows the overlay, or hides it. Whoever does either has found the
     /// switch: the hint is over.
     pub fn toggle(&mut self) {
-        self.visible = !self.visible;
-        self.hint = Hint::Over;
-        if !self.visible {
-            // A hidden overlay runs no pass, and draws no panel meanwhile.
-            self.drawn.clear();
+        if self.visible {
+            self.hide();
+        } else {
+            self.visible = true;
         }
+        self.hint = Hint::Over;
+    }
+
+    /// Hides the overlay, as the app does by itself once its work is done:
+    /// the user did not work the switch for it.
+    pub fn hide(&mut self) {
+        self.visible = false;
+        // A hidden overlay runs no pass, and draws no panel meanwhile.
+        self.drawn.clear();
+    }
+
+    /// Opens the window of `panel`, as its checkbox in the View menu does.
+    /// A panel the host does not offer stays shut.
+    pub fn open(&mut self, panel: Panel) {
+        if self.offers(panel) && !self.open.contains(&panel) {
+            self.open.push(panel);
+        }
+    }
+
+    /// Closes the window of `panel`, as its close button does.
+    pub fn close(&mut self, panel: Panel) {
+        self.open.retain(|open| *open != panel);
+    }
+
+    /// Whether the View menu offers `panel` on this host.
+    fn offers(&self, panel: Panel) -> bool {
+        self.has_site || !panel.needs_site()
     }
 
     /// Whether there is anything to show: the overlay, or the hint. While
@@ -247,14 +295,16 @@ impl Overlay {
     }
 
     /// Runs one pass over `input`, on the machine as it is: `paused` says
-    /// whether the app is holding the guest still, `meter` what it measured
-    /// of the emulation. Returns what the user asked the app to do, in the
-    /// order asked.
+    /// whether the app is holding the guest still, `starting` which disk of
+    /// the site it is fetching to start the machine with, if it is, `meter`
+    /// what it measured of the emulation. Returns what the user asked the
+    /// app to do, in the order asked.
     pub fn run(
         &mut self,
         input: egui::RawInput,
         runtime: &mut Runtime,
         paused: bool,
+        starting: Option<&'static SiteFile>,
         meter: &Meter,
     ) -> Vec<Command> {
         // egui may run the UI twice for one frame, to lay out what it
@@ -263,7 +313,7 @@ impl Overlay {
         let mut commands = Vec::new();
         let ctx = self.ctx.clone();
         let output = ctx.run_ui(input, |ui| {
-            self.ui(ui, runtime, paused, meter, &mut commands)
+            self.ui(ui, runtime, paused, starting, meter, &mut commands)
         });
         self.shapes = output.shapes;
         self.pixels_per_point = output.pixels_per_point;
@@ -294,6 +344,7 @@ impl Overlay {
         ui: &mut egui::Ui,
         runtime: &mut Runtime,
         paused: bool,
+        starting: Option<&'static SiteFile>,
         meter: &Meter,
         commands: &mut Vec<Command>,
     ) {
@@ -314,9 +365,14 @@ impl Overlay {
             return;
         }
 
+        let offered: Vec<Panel> = Panel::ALL
+            .into_iter()
+            .filter(|panel| self.offers(*panel))
+            .collect();
         let mut cx = Cx {
             runtime,
             paused,
+            starting,
             meter,
             drawn_before: false,
             commands,
@@ -324,14 +380,14 @@ impl Overlay {
         };
         let open = &mut self.open;
         egui::Panel::top("overlay_menu_bar").show(ui, |ui| {
-            MenuBar::new().ui(ui, |ui| menu_bar(ui, &mut cx, open));
+            MenuBar::new().ui(ui, |ui| menu_bar(ui, &mut cx, &offered, open));
         });
 
         // What the menu bar leaves of the window: the panels stay in it,
         // and the messages go to its corner.
         let below_bar = ui.available_rect_before_wrap();
         self.below_bar = below_bar;
-        for (index, panel) in Panel::ALL.into_iter().enumerate() {
+        for (index, panel) in offered.into_iter().enumerate() {
             let mut is_open = open.contains(&panel);
             // A window takes the size of what its panel shows: a tool over
             // the picture hides no more of it than it has to. A panel that
@@ -413,9 +469,9 @@ fn with_echoes(events: &[Event]) -> impl Iterator<Item = (&Event, bool)> {
 
 /// The menu bar: the Machine menu, with the ROMs the machine can restart
 /// with in a menu of their own (`load_rom`), the View menu with a checkbox
-/// for every panel, and at the right end the guest's speed, beside the mark
-/// of a paused machine.
-fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, open: &mut Vec<Panel>) {
+/// for every panel the host offers (`offered`), and at the right end the
+/// guest's speed, beside the mark of a paused machine.
+fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, offered: &[Panel], open: &mut Vec<Panel>) {
     ui.menu_button("Machine", |ui| {
         let (label, command) = if cx.paused {
             ("Resume", Command::Resume)
@@ -435,7 +491,7 @@ fn menu_bar(ui: &mut egui::Ui, cx: &mut Cx<'_>, open: &mut Vec<Panel>) {
         }
     });
     ui.menu_button("View", |ui| {
-        for panel in Panel::ALL {
+        for &panel in offered {
             let mut is_open = open.contains(&panel);
             if ui.checkbox(&mut is_open, panel.title()).changed() {
                 if is_open {

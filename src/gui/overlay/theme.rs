@@ -122,6 +122,9 @@ pub struct Metrics {
     pub key_gap: f32,
     /// The light of a lock key, in its top right corner.
     pub key_light: Vec2,
+    /// The smallest a button of the Start panel is, across and down: the
+    /// same for each, and large enough for a finger.
+    pub start_button: Vec2,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -174,6 +177,7 @@ pub const METRICS: Metrics = Metrics {
     key_largest: 40.0,
     key_gap: 2.0,
     key_light: vec2(6.0, 3.0),
+    start_button: vec2(180.0, 36.0),
 };
 
 /// Puts the theme on `ctx`. egui keeps one style for a dark host and one

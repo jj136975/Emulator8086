@@ -407,6 +407,7 @@ impl Passes for HandedOver {
         let mut cx = Cx {
             runtime: &mut self.runtime,
             paused: false,
+            starting: None,
             meter: &self.meter,
             drawn_before: true,
             commands: &mut self.commands,

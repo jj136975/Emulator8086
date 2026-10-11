@@ -116,6 +116,13 @@ impl<P, A> Awaited<P, A> {
         answered
     }
 
+    /// What the questions still waited for were asked for, in the order
+    /// they were asked. An answer that has come is among them until a look
+    /// takes it up.
+    pub fn purposes(&self) -> impl Iterator<Item = &P> {
+        self.asked.iter().map(|(purpose, _)| purpose)
+    }
+
     /// How many questions are still waited for: what a test reads of what
     /// a tool waits for.
     #[cfg(test)]

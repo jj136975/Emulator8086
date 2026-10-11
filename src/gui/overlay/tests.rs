@@ -16,11 +16,10 @@ use emu8086_core::io::disk_spec::parse_disk_specs;
 use emu8086_core::io::keyboard::KeyboardController;
 use emu8086_core::{BIOS_ROM, BIOS_ROM_NAME};
 
-/// A shell as the app starts it: hidden, no frame run yet. Its machine has
-/// a floppy in A: and a hard disk, both in memory.
-fn shell() -> Driver<Shell> {
+/// A machine with a floppy in A: and a hard disk, both in memory.
+fn machine() -> Runtime {
     let (_keys, key_events) = std::sync::mpsc::channel();
-    let runtime = Runtime::new(
+    Runtime::new(
         parse_disk_specs(&["a:memory".to_string()]).unwrap(),
         vec!["memory".to_string()],
         None,
@@ -28,13 +27,27 @@ fn shell() -> Driver<Shell> {
         KeyboardController::with_receiver(key_events),
         &HostClock,
     )
-    .unwrap();
-    Driver::new(Shell::new(runtime))
+    .unwrap()
+}
+
+/// A shell as the app starts it: hidden, no frame run yet, on the host the
+/// tests run on, a desktop.
+fn shell() -> Driver<Shell> {
+    Driver::new(Shell::new(machine()))
 }
 
 /// A shell whose overlay is shown and has had its first frame.
 fn shown() -> Driver<Shell> {
     let mut shell = shell();
+    shell.target.overlay.toggle();
+    shell.frame(Vec::new());
+    shell
+}
+
+/// A shell whose overlay is shown and has had its first frame, on a host
+/// that came from a site: every panel is offered there.
+fn shown_on_a_site() -> Driver<Shell> {
+    let mut shell = Driver::new(Shell::on(machine(), true));
     shell.target.overlay.toggle();
     shell.frame(Vec::new());
     shell
@@ -333,15 +346,17 @@ fn a_finger_echoes_in_the_primary_button_right_after_its_touch() {
 }
 
 /// The panel table is complete. `ALL` lists every variant, once; every
-/// panel has a title of its own, a checkbox in the View menu and a window
-/// with a body, which the checkbox opens and closes and which the View menu
-/// shows open or closed.
+/// panel has a title of its own, a checkbox in the View menu of a host that
+/// offers it (one that came from a site offers all) and a window with a
+/// body, which the checkbox opens and closes and which the View menu shows
+/// open or closed.
 #[test]
 fn every_panel_has_a_title_a_checkbox_and_a_window() {
     // One arm per variant: a new variant does not compile until it is
     // named here, and is then looked for in `ALL`.
     fn listed(panel: Panel) -> bool {
         match panel {
+            Panel::Start => Panel::ALL.contains(&panel),
             Panel::About => Panel::ALL.contains(&panel),
             Panel::Disks => Panel::ALL.contains(&panel),
             Panel::OnScreenKeyboard => Panel::ALL.contains(&panel),
@@ -355,6 +370,7 @@ fn every_panel_has_a_title_a_checkbox_and_a_window() {
         }
     }
     for panel in [
+        Panel::Start,
         Panel::About,
         Panel::Disks,
         Panel::OnScreenKeyboard,
@@ -369,7 +385,7 @@ fn every_panel_has_a_title_a_checkbox_and_a_window() {
         assert!(listed(panel), "{panel:?} is in ALL");
     }
 
-    let mut shell = shown();
+    let mut shell = shown_on_a_site();
     for (index, panel) in Panel::ALL.into_iter().enumerate() {
         let title = panel.title();
         assert!(!title.is_empty());

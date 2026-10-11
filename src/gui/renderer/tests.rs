@@ -559,7 +559,7 @@ fn overlay_lies_over_the_picture(gpu: Option<(wgpu::Device, wgpu::Queue)>) {
         // the machine whose picture this is, running.
         let meter = Meter::default();
         let mut run = |overlay: &mut Overlay, time: f64| {
-            overlay.run(input(time, Vec::new()), &mut rt, false, &meter);
+            overlay.run(input(time, Vec::new()), &mut rt, false, None, &meter);
         };
 
         // The first seconds: the hint, in the bottom left corner. It is

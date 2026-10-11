@@ -40,6 +40,7 @@ mod pacer;
 mod renderer;
 mod rom_loader;
 mod session;
+mod starter;
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
@@ -168,10 +169,18 @@ impl EmulatorApp {
             return;
         };
 
+        let shown = self.session.overlay.visible();
         let passed = self.session.frame(|| front.egui.take(&front.window));
         if passed {
             let wishes = self.session.overlay.take_platform_output();
             front.egui.handle_output(&front.window, wishes);
+        } else if shown && !self.session.overlay.visible() {
+            // The session hid the overlay itself, as after a start from the
+            // Start panel, and no pass has run since: as after the switch,
+            // the overlay asks nothing of the window anymore.
+            front
+                .egui
+                .handle_output(&front.window, egui::PlatformOutput::default());
         }
 
         if let Some(vga) = &self.session.runtime.vga {

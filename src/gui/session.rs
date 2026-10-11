@@ -5,8 +5,11 @@
 //! decided here: whose a key is, when a finger held on the picture works
 //! the overlay's switch (`hold`), and what a command of the overlay does to
 //! the machine. What the Disks panel asks for is carried out by
-//! `disk_tools`, and what Machine > Load ROM asks for by `rom_loader`: both
-//! have answers of the host's to wait for.
+//! `disk_tools`, what Machine > Load ROM asks for by `rom_loader`, and what
+//! the Start panel asks for by `starter`: all three have answers of the
+//! host's to wait for. A start carried out puts the overlay away for the
+//! guest: the Start panel closes, and the overlay hides, or, for a finger,
+//! makes way for the on-screen keyboard.
 //!
 //! The invariants: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -33,10 +36,11 @@ use super::disk_tools::DiskTools;
 use super::hold::Hold;
 use super::keys::GuestKeys;
 use super::meter::{Counts, Meter};
-use super::overlay::{Command, Overlay, Panel};
+use super::overlay::{Command, Overlay, Panel, StartCommand};
 use super::pacer::Pacer;
 use super::renderer::Drawn;
 use super::rom_loader::RomLoader;
+use super::starter::Starter;
 use crate::platform::{self, Instant};
 
 /// Host time the CPU runs for before each frame is drawn. The rest of the
@@ -64,6 +68,8 @@ pub struct Session {
     /// What carries out `Command::Rom`, and the dialogs and fetches it
     /// waits for.
     pub(super) roms: RomLoader,
+    /// What carries out `Command::Start`, and the disk it waits for.
+    pub(super) starts: Starter,
 }
 
 impl Session {
@@ -79,6 +85,7 @@ impl Session {
             dump_file: PathBuf::from(VGA_DUMP_FILE),
             disks: DiskTools::new(),
             roms: RomLoader::new(),
+            starts: Starter::new(),
         }
     }
 
@@ -169,6 +176,9 @@ impl Session {
         // may be answered long after the tools were put away.
         self.disks.poll(&mut self.runtime, self.overlay.messages());
         self.roms.poll(&mut self.runtime, self.overlay.messages());
+        if let Some(start) = self.starts.poll(&mut self.runtime, self.overlay.messages()) {
+            self.started(start);
+        }
         let slice = self.pacer.run_slice(&mut self.runtime, CPU_SLICE);
         self.meter.frame(slice, Counts::read(&self.runtime));
         let draws = self.overlay.draws();
@@ -191,9 +201,10 @@ impl Session {
     fn run_overlay(&mut self, input: egui::RawInput) {
         let started = Instant::now();
         let paused = self.pacer.paused();
+        let starting = self.starts.starting();
         for command in self
             .overlay
-            .run(input, &mut self.runtime, paused, &self.meter)
+            .run(input, &mut self.runtime, paused, starting, &self.meter)
         {
             self.execute(command);
         }
@@ -215,6 +226,22 @@ impl Session {
     fn release_unshown_keys(&mut self) {
         if !self.overlay.shows(Panel::OnScreenKeyboard) {
             self.keys.release_screen();
+        }
+    }
+
+    /// The machine was started as `start` asked: the Start panel has done
+    /// its work, and closes. The guest is to be typed at now. A finger
+    /// pressed the button on a touch screen, which has no keys: the
+    /// on-screen keyboard opens, in an overlay left as it is. Otherwise the
+    /// overlay hides, and the keys are the guest's, whatever of the overlay
+    /// had the keyboard.
+    fn started(&mut self, start: StartCommand) {
+        self.overlay.close(Panel::Start);
+        if start.by_finger {
+            self.overlay.open(Panel::OnScreenKeyboard);
+        } else if self.overlay.visible() {
+            self.overlay.hide();
+            self.release_unshown_keys();
         }
     }
 
@@ -249,6 +276,7 @@ impl Session {
                 self.disks
                     .execute(command, &mut self.runtime, self.overlay.messages());
             }
+            Command::Start(start) => self.starts.execute(start),
             Command::Key { make, pressed } => {
                 let state = if pressed {
                     ElementState::Pressed

@@ -15,6 +15,8 @@
 //!    can do through `cx.commands`, and says what it did or why it failed
 //!    through `cx.messages`; `cx.drawn_before` says whether the pass before
 //!    drew it. A colour is a slot of `theme::PALETTE`.
+//! 4. If it works on what only a host that came from a site has, it is
+//!    named in `needs_site`: the View menu of another host leaves it out.
 //!
 //! The checkbox in the View menu, the window, its title bar and its close
 //! button all follow from `ALL`: the shell knows no panel by name.
@@ -27,12 +29,13 @@
 //! `every_panel_has_a_title_a_checkbox_and_a_window`.
 
 use super::{
-    Cx, about, debug_port, disks, keyboard, memory, on_screen_keyboard, pic, pit, stats, vga,
+    Cx, about, debug_port, disks, keyboard, memory, on_screen_keyboard, pic, pit, start, stats, vga,
 };
 
 /// The panels of the overlay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
+    Start,
     About,
     Disks,
     OnScreenKeyboard,
@@ -47,7 +50,8 @@ pub enum Panel {
 
 impl Panel {
     /// Every panel, in the order of the View menu.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
+        Self::Start,
         Self::About,
         Self::Disks,
         Self::OnScreenKeyboard,
@@ -65,6 +69,7 @@ impl Panel {
     /// panels never share one.
     pub fn title(self) -> &'static str {
         match self {
+            Self::Start => "Start",
             Self::About => "About",
             Self::Disks => "Disks",
             Self::OnScreenKeyboard => "On-screen keyboard",
@@ -78,9 +83,17 @@ impl Panel {
         }
     }
 
+    /// Whether the panel works on what only a host that came from a site
+    /// has: the Start panel, whose disks are the site's. The View menu of
+    /// any other host does not offer it.
+    pub fn needs_site(self) -> bool {
+        matches!(self, Self::Start)
+    }
+
     /// Draws the panel's contents into its window.
     pub(super) fn body(self, ui: &mut egui::Ui, cx: &mut Cx<'_>) {
         match self {
+            Self::Start => start::body(ui, cx),
             Self::About => about::body(ui, cx),
             Self::Disks => disks::body(ui, cx),
             Self::OnScreenKeyboard => on_screen_keyboard::body(ui, cx),

@@ -257,3 +257,20 @@ fn each_file_has_a_path_below_the_page_and_a_title_of_its_own() {
     assert_eq!(paths(Kind::Floppy), ["disks/msdos400.img"]);
     assert_eq!(paths(Kind::HardDisk), ["disks/doom8088.img"]);
 }
+
+/// A disk has a verb, which its button in the Start panel says before its
+/// title, and a ROM has none: the Start panel offers every disk, and
+/// Machine > Load ROM names a ROM by its title alone.
+#[test]
+fn a_disk_has_a_verb_and_a_rom_none() {
+    for file in &FILES {
+        match file.kind {
+            Kind::Rom => assert_eq!(file.verb, None, "{}", file.path),
+            Kind::Floppy | Kind::HardDisk => assert!(
+                file.verb.is_some_and(|verb| !verb.is_empty()),
+                "{} has a verb",
+                file.path
+            ),
+        }
+    }
+}

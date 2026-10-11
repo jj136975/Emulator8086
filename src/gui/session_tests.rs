@@ -13,12 +13,14 @@ use winit::keyboard::KeyCode;
 
 use super::*;
 use crate::gui::hold::HOLD;
+use crate::gui::host::testing::ByHand;
 use crate::gui::overlay::testing::{
     Driver, Passes, SCREEN, first_finger_down, first_finger_up, input, key, touch,
 };
 use crate::wall_clock::HostClock;
 use EmulatorEvent::{ScanRelease, Scancode};
 use emu8086_core::BIOS_ROM;
+use emu8086_core::io::disk_spec::parse_disk_specs;
 use emu8086_core::io::keyboard::KeyboardController;
 
 impl Passes for Session {
@@ -630,4 +632,180 @@ fn dump_vga_writes_the_file_and_says_so() {
         texts.iter().any(|text| text.starts_with("Cannot write ")),
         "{texts:?}"
     );
+}
+
+/// Where a ROM that marks its runs leaves its mark: 0000:0500, just above
+/// the BIOS data area, which the ROM does not set up.
+const MARK_AT: usize = 0x0500;
+
+/// A ROM that, from its reset vector, writes 4D52h to `MARK_AT` and then
+/// jumps to itself: a machine that runs it shows that it was restarted.
+const MARKING_ROM: [u8; 16] = [
+    0xB8, 0x52, 0x4D, // MOV AX, 4D52h
+    0xA3, 0x00, 0x05, // MOV [0500h], AX (DS is 0 after a reset)
+    0xEB, 0xFE, // JMP $
+    0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, // NOP
+];
+
+/// The labels of the buttons of the Start panel.
+const BOOT: &str = "Boot MS-DOS 4.00";
+const PLAY: &str = "Play DOOM";
+
+/// A session on a host that came from a site, around a machine with a
+/// 720 KB floppy in A: and no hard disk that runs `MARKING_ROM`, whose
+/// starts are carried out on a host whose site the test answers. Its
+/// overlay is shown with the Start panel open, and the mark the machine
+/// left when it was powered on is wiped.
+fn at_the_start_panel() -> (Driver<Session>, ByHand) {
+    let (_unused, key_events) = channel();
+    let mut runtime = Runtime::new(
+        parse_disk_specs(&["a:memory:720".to_string()]).unwrap(),
+        Vec::new(),
+        None,
+        false,
+        KeyboardController::with_receiver(key_events),
+        &HostClock,
+    )
+    .unwrap();
+    runtime
+        .load_rom_image(&MARKING_ROM, "a marking ROM")
+        .unwrap();
+    let (kbd_tx, _sent) = channel();
+    let mut session = Session::new(runtime, kbd_tx);
+    session.overlay = Overlay::on(true);
+    let host = ByHand::default();
+    session.starts = Starter::on(Box::new(host.clone()));
+    session.overlay_key(ElementState::Pressed, false);
+    let mut session = Driver::new(session);
+    session.frame(Vec::new());
+    session.toggle_in_view_menu("Start");
+    assert!(session.screen().has(Role::Window, "Start"));
+    // A slice of the guest's time: the ROM has left its mark, and loops.
+    let input = session.next_input(Vec::new());
+    session.target.frame(|| input);
+    let memory = &mut session.target.runtime.cpu.memory;
+    assert_eq!(memory.read_word(MARK_AT), 0x4D52);
+    memory.write_byte(MARK_AT, 0);
+    memory.write_byte(MARK_AT + 1, 0);
+    (session, host)
+}
+
+/// Runs the session's own frame, which takes up the site's answer before
+/// the guest's slice, with no input, and then a pass of the test's to read
+/// the screen if the overlay is shown.
+fn frame_after_the_answer(session: &mut Driver<Session>) {
+    let input = session.next_input(Vec::new());
+    session.target.frame(|| input);
+    if session.target.overlay.visible() {
+        session.frame(Vec::new());
+    }
+}
+
+/// A start pressed with the pointer: the disk is fetched, and the panel
+/// says so with its buttons greyed out; once it has come the floppy is in
+/// A:, the bootstrap tries A: first, and the machine has restarted and run.
+/// The Start panel closes and the overlay hides, so that the keys go to the
+/// guest; shown again, it says what the machine restarted with.
+#[test]
+fn a_start_pressed_with_the_pointer_hides_the_overlay() {
+    let (mut session, host) = at_the_start_panel();
+    session.click(Role::Button, BOOT);
+    let (path, answer) = host.fetch_asked();
+    assert_eq!(path, "disks/msdos400.img");
+    let screen = session.wait(1.0);
+    assert!(screen.shows("Fetching MS-DOS 4.00..."));
+    assert!(!screen.enabled(Role::Button, BOOT) && !screen.enabled(Role::Button, PLAY));
+
+    answer.send(Ok(vec![0xF6; 163_840])).unwrap();
+    frame_after_the_answer(&mut session);
+    let target = &session.target;
+    assert!(!target.overlay.visible());
+    assert!(!target.overlay.wants_keyboard());
+    let disks = target.runtime.disks.borrow();
+    let (_, floppy) = disks
+        .drives
+        .iter()
+        .find(|(drive, _)| *drive == 0x00)
+        .unwrap();
+    assert_eq!(floppy.name(), Some("msdos400.img"));
+    assert_eq!(disks.boot_order(), [0x00, 0x80]);
+    drop(disks);
+    assert_eq!(
+        target.runtime.cpu.memory.read_word(MARK_AT),
+        0x4D52,
+        "the machine restarted"
+    );
+
+    // Shown again, the overlay lets the window it closed while hidden fade
+    // out, as it does any window that closes.
+    session.target.overlay_key(ElementState::Pressed, false);
+    session.frame(Vec::new());
+    let screen = session.wait(1.0);
+    assert!(!screen.has(Role::Window, "Start"));
+    assert!(
+        screen.shows("Restarted with MS-DOS 4.00, the floppy in A:"),
+        "{:?}",
+        screen.texts()
+    );
+}
+
+/// A start pressed with a finger: once the disk has come the hard disk is
+/// the first hard disk, the bootstrap tries it first, A: keeps its floppy,
+/// and the machine has restarted and run. The Start panel closes, and the
+/// overlay stays shown with the on-screen keyboard open, for a touch screen
+/// that has no keys, which go to the guest.
+#[test]
+fn a_start_pressed_with_a_finger_opens_the_on_screen_keyboard() {
+    let (mut session, host) = at_the_start_panel();
+    let play = session.screen().rect(Role::Button, PLAY).center();
+    session.frame(first_finger_down(1, play));
+    session.frame(first_finger_up(1, play));
+    let (path, answer) = host.fetch_asked();
+    assert_eq!(path, "disks/doom8088.img");
+
+    answer.send(Ok(vec![0x5A; 2 * 16 * 63 * 512])).unwrap();
+    frame_after_the_answer(&mut session);
+    session.wait(1.0);
+    let screen = session.screen();
+    assert!(session.target.overlay.visible());
+    assert!(screen.has(Role::Window, "On-screen keyboard"));
+    assert!(!screen.has(Role::Window, "Start"));
+    assert!(screen.shows("Restarted with DOOM, the hard disk as C:"));
+    assert!(!session.target.overlay.wants_keyboard());
+
+    let target = &session.target;
+    let disks = target.runtime.disks.borrow();
+    let held: Vec<(u8, Option<&str>)> = disks
+        .drives
+        .iter()
+        .map(|(drive, image)| (*drive, image.name()))
+        .collect();
+    assert!(
+        held.contains(&(0x00, None)),
+        "A: keeps its floppy: {held:?}"
+    );
+    assert!(held.contains(&(0x80, Some("doom8088.img"))), "{held:?}");
+    assert_eq!(disks.boot_order(), [0x80, 0x00]);
+    drop(disks);
+    assert_eq!(target.runtime.cpu.memory.read_word(MARK_AT), 0x4D52);
+}
+
+/// A start that fails changes nothing of the overlay either: the Start
+/// panel stays open, its buttons offered again, and the message says why.
+#[test]
+fn a_start_that_fails_leaves_the_start_panel_open() {
+    let (mut session, host) = at_the_start_panel();
+    session.click(Role::Button, PLAY);
+    let (_, answer) = host.fetch_asked();
+    answer
+        .send(Err("The site has no disks/doom8088.img".to_string()))
+        .unwrap();
+    frame_after_the_answer(&mut session);
+    session.wait(1.0);
+    let screen = session.screen();
+    assert!(session.target.overlay.visible());
+    assert!(screen.has(Role::Window, "Start"));
+    assert!(screen.enabled(Role::Button, PLAY) && screen.enabled(Role::Button, BOOT));
+    assert!(screen.shows("The site has no disks/doom8088.img. The machine runs on as it was"));
+    assert_eq!(session.target.runtime.cpu.memory.read_word(MARK_AT), 0);
 }
