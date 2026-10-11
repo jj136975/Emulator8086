@@ -138,6 +138,38 @@ fn the_key_ends_the_hint() {
     assert!(!shell.frame(Vec::new()).shows(HINT));
 }
 
+/// The app may show the overlay by itself, as it does at the start for a
+/// visitor of the site: the user has not found the switch then, and the
+/// hint waits for the picture to be bare, however long that takes. Its
+/// seconds start once the app hides the overlay; the switch, worked by the
+/// user at any time, ends it for good.
+#[test]
+fn the_hint_waits_for_the_bare_picture() {
+    let mut shown_by_the_app = shell();
+    let overlay = &mut shown_by_the_app.target.overlay;
+    overlay.show();
+    settle(&mut shown_by_the_app);
+    let screen = shown_by_the_app.wait(60.0);
+    assert!(!screen.shows(HINT), "the overlay is shown instead");
+
+    shown_by_the_app.target.overlay.hide();
+    assert!(
+        shown_by_the_app.target.overlay.draws(),
+        "the hint is to come"
+    );
+    settle(&mut shown_by_the_app);
+    assert!(shown_by_the_app.screen().shows(HINT));
+    shown_by_the_app.wait(HINT_SECONDS);
+    assert!(!shown_by_the_app.screen().shows(HINT));
+    assert!(!shown_by_the_app.target.overlay.draws());
+
+    let mut switched = shell();
+    switched.target.overlay.show();
+    settle(&mut switched);
+    switched.target.overlay.toggle();
+    assert!(!switched.target.overlay.draws(), "the switch was found");
+}
+
 /// Each entry of the Machine menu asks the app for its command, once, and
 /// closes the menu. Opening the menu asks for nothing.
 #[test]

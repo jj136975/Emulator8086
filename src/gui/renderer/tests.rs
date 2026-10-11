@@ -546,7 +546,7 @@ fn overlay_lies_over_the_picture(gpu: Option<(wgpu::Device, wgpu::Queue)>) {
         let mut blit = FrameBlit::new(&device, format, width, height);
         blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
         let mut pass = OverlayPass::new(&device, format);
-        let mut overlay = Overlay::new();
+        let mut overlay = Overlay::on(false);
 
         // A frame as the window draws it: the overlay is painted only if it
         // has anything to show.

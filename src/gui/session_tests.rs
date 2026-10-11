@@ -651,15 +651,17 @@ const MARKING_ROM: [u8; 16] = [
 const BOOT: &str = "Boot MS-DOS 4.00";
 const PLAY: &str = "Play DOOM";
 
-/// A session on a host that came from a site, around a machine with a
-/// 720 KB floppy in A: and no hard disk that runs `MARKING_ROM`, whose
-/// starts are carried out on a host whose site the test answers. Its
-/// overlay is shown with the Start panel open, and the mark the machine
-/// left when it was powered on is wiped.
-fn at_the_start_panel() -> (Driver<Session>, ByHand) {
+/// A machine that runs `rom`, with a 720 KB floppy in A: and no hard disk
+/// if `with_a_floppy`, and no disk at all if not.
+fn machine_running(rom: &[u8], with_a_floppy: bool) -> Runtime {
+    let specs = if with_a_floppy {
+        vec!["a:memory:720".to_string()]
+    } else {
+        Vec::new()
+    };
     let (_unused, key_events) = channel();
     let mut runtime = Runtime::new(
-        parse_disk_specs(&["a:memory:720".to_string()]).unwrap(),
+        parse_disk_specs(&specs).unwrap(),
         Vec::new(),
         None,
         false,
@@ -667,14 +669,27 @@ fn at_the_start_panel() -> (Driver<Session>, ByHand) {
         &HostClock,
     )
     .unwrap();
+    runtime.load_rom_image(rom, "the test's ROM").unwrap();
     runtime
-        .load_rom_image(&MARKING_ROM, "a marking ROM")
-        .unwrap();
+}
+
+/// The session of `runtime` on a host that came from a site, whose starts
+/// are carried out on a host whose site the test answers.
+fn on_a_site(runtime: Runtime) -> (Session, ByHand) {
     let (kbd_tx, _sent) = channel();
-    let mut session = Session::new(runtime, kbd_tx);
-    session.overlay = Overlay::on(true);
+    let mut session = Session::on(runtime, kbd_tx, true);
     let host = ByHand::default();
     session.starts = Starter::on(Box::new(host.clone()));
+    (session, host)
+}
+
+/// A session on a host that came from a site, around a machine with a
+/// 720 KB floppy in A: and no hard disk that runs `MARKING_ROM`, whose
+/// starts are carried out on a host whose site the test answers. Its
+/// overlay is shown with the Start panel open, and the mark the machine
+/// left when it was powered on is wiped.
+fn at_the_start_panel() -> (Driver<Session>, ByHand) {
+    let (mut session, host) = on_a_site(machine_running(&MARKING_ROM, true));
     session.overlay_key(ElementState::Pressed, false);
     let mut session = Driver::new(session);
     session.frame(Vec::new());
@@ -808,4 +823,57 @@ fn a_start_that_fails_leaves_the_start_panel_open() {
     assert!(screen.enabled(Role::Button, PLAY) && screen.enabled(Role::Button, BOOT));
     assert!(screen.shows("The site has no disks/doom8088.img. The machine runs on as it was"));
     assert_eq!(session.target.runtime.cpu.memory.read_word(MARK_AT), 0);
+}
+
+/// What the hint says on the host the tests run on, a desktop, whose
+/// switch is F12.
+const HINT: &str = "F12: tools";
+
+/// On a host that came from a site, a machine that starts with no disk in
+/// any drive has nothing to boot but the site's disks: the session starts
+/// with the overlay shown and the Start panel open. On a host that came
+/// from none, or with a disk named for the start, the overlay starts hidden
+/// as it always has, with the hint that names its switch.
+#[test]
+fn the_start_panel_opens_at_start_on_a_site_with_no_disk() {
+    for (has_site, with_a_floppy, opens) in [
+        (true, false, true),
+        (false, false, false),
+        (true, true, false),
+    ] {
+        let (kbd_tx, _sent) = channel();
+        let runtime = machine_running(&BUSY_ROM, with_a_floppy);
+        let session = Session::on(runtime, kbd_tx, has_site);
+        let case = format!("a site: {has_site}, a floppy: {with_a_floppy}");
+        assert_eq!(session.overlay.visible(), opens, "{case}");
+        let mut session = Driver::new(session);
+        session.frame(Vec::new());
+        let screen = session.wait(1.0);
+        assert_eq!(screen.has(Role::Window, "Start"), opens, "{case}");
+        assert_eq!(screen.has(Role::Button, BOOT), opens, "{case}");
+        assert_eq!(screen.shows(HINT), !opens, "{case}");
+    }
+}
+
+/// The overlay the session showed at the start was not shown by the user,
+/// who has yet to find its switch: once a start from its Start panel has
+/// hidden it, however long the user took to choose, the hint names the
+/// switch on the bare picture for its seconds.
+#[test]
+fn once_a_start_hides_the_overlay_shown_at_start_the_hint_names_the_switch() {
+    let (session, host) = on_a_site(machine_running(&BUSY_ROM, false));
+    let mut session = Driver::new(session);
+    session.frame(Vec::new());
+    session.wait(60.0);
+    assert!(!session.screen().shows(HINT), "the overlay is shown");
+
+    session.click(Role::Button, BOOT);
+    let (_, answer) = host.fetch_asked();
+    answer.send(Ok(vec![0xF6; 163_840])).unwrap();
+    frame_after_the_answer(&mut session);
+    assert!(!session.target.overlay.visible());
+    assert!(session.frame(Vec::new()).shows(HINT));
+    assert!(session.wait(4.0).shows(HINT));
+    assert!(!session.wait(1.0).shows(HINT), "its seconds are over");
+    assert!(!session.target.overlay.draws());
 }

@@ -11,18 +11,19 @@
 //!
 //! The shell knows egui and the machine and nothing else: no window, no GPU,
 //! no file, no clock, no thread, and of the host only what its switch is
-//! called (`platform::OVERLAY_SWITCH`) and whether it came from a site
-//! (`platform::HAS_SITE`), whose panel only such a host offers. The window
-//! gathers egui's input and calls `run`, which is lent the machine and what
-//! the app measured of it (`gui::meter`) for the length of the pass and
-//! returns what the user asked the app to do (`Command`); the renderer
-//! takes what to draw (`take_paint`). The only time there is, is the time
-//! of that input.
+//! called (`platform::OVERLAY_SWITCH`) and whether it came from a site,
+//! which the app tells it (`Overlay::on`): the Start panel is for such a
+//! host alone. The window gathers egui's input and calls `run`, which is
+//! lent the machine and what the app measured of it (`gui::meter`) for the
+//! length of the pass and returns what the user asked the app to do
+//! (`Command`); the renderer takes what to draw (`take_paint`). The only
+//! time there is, is the time of that input.
 //!
 //! The invariant: a hidden overlay costs nothing. `draws` says whether there
 //! is anything to show; while it says no, the window runs no pass and the
 //! renderer is given nothing to paint. Hidden, the overlay shows one thing,
-//! and only for the first seconds: the hint that names its switch.
+//! and only for the first seconds the picture is bare, until the user has
+//! worked the switch: the hint that names it.
 
 mod about;
 mod debug_port;
@@ -52,7 +53,7 @@ use egui::{
 };
 
 use super::meter::Meter;
-use crate::platform::{self, OVERLAY_SWITCH};
+use crate::platform::OVERLAY_SWITCH;
 use crate::site::SiteFile;
 use emu8086_core::vm::runtime::Runtime;
 use theme::{METRICS, PALETTE};
@@ -63,7 +64,7 @@ fn hint_text() -> String {
     format!("{}: tools", OVERLAY_SWITCH.name)
 }
 
-/// How long the hint stays after the first frame, in seconds.
+/// How long the hint stays once the picture is bare, in seconds.
 const HINT_SECONDS: f64 = 5.0;
 /// The mark of a paused machine, at the right end of the menu bar.
 const PAUSED: &str = "Paused";
@@ -132,7 +133,7 @@ pub struct Paint {
 
 /// The hint that names the overlay's switch, shown while the overlay is not.
 enum Hint {
-    /// No pass has told the time yet.
+    /// No pass has shown the bare picture yet.
     Unstarted,
     /// Shown until this input time.
     Until(f64),
@@ -166,13 +167,8 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    /// A hidden overlay, in the theme, with no panel open, on the host the
-    /// app runs on.
-    pub fn new() -> Self {
-        Self::on(platform::HAS_SITE)
-    }
-
-    /// The overlay on a host that came from a site, or not: `has_site`.
+    /// A hidden overlay, in the theme, with no panel open, on a host that
+    /// came from a site, or not: `has_site`.
     pub fn on(has_site: bool) -> Self {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
@@ -218,9 +214,16 @@ impl Overlay {
         if self.visible {
             self.hide();
         } else {
-            self.visible = true;
+            self.show();
         }
         self.hint = Hint::Over;
+    }
+
+    /// Shows the overlay, as the app does by itself where the user has a
+    /// choice to make first: the user did not work the switch for it, and
+    /// the hint waits for the picture to be bare.
+    pub fn show(&mut self) {
+        self.visible = true;
     }
 
     /// Hides the overlay, as the app does by itself once its work is done:
@@ -349,9 +352,6 @@ impl Overlay {
         commands: &mut Vec<Command>,
     ) {
         let now = ui.ctx().input(|input| input.time);
-        if let Hint::Unstarted = self.hint {
-            self.hint = Hint::Until(now + HINT_SECONDS);
-        }
         if let Hint::Until(end) = self.hint
             && now >= end
         {
@@ -359,6 +359,12 @@ impl Overlay {
         }
         let drawn_before = std::mem::take(&mut self.drawn);
         if !self.visible {
+            // The hint's seconds are those of the bare picture: they start
+            // with the first pass that shows it, at the start, or once the
+            // app has hidden the overlay it showed by itself.
+            if let Hint::Unstarted = self.hint {
+                self.hint = Hint::Until(now + HINT_SECONDS);
+            }
             if let Hint::Until(_) = self.hint {
                 hint(ui.ctx());
             }

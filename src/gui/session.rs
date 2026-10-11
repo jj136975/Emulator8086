@@ -7,9 +7,11 @@
 //! the machine. What the Disks panel asks for is carried out by
 //! `disk_tools`, what Machine > Load ROM asks for by `rom_loader`, and what
 //! the Start panel asks for by `starter`: all three have answers of the
-//! host's to wait for. A start carried out puts the overlay away for the
-//! guest: the Start panel closes, and the overlay hides, or, for a finger,
-//! makes way for the on-screen keyboard.
+//! host's to wait for. On a host that came from a site, a machine with no
+//! disk to boot starts with the overlay shown and the Start panel open; a
+//! start carried out puts the overlay away for the guest: the Start panel
+//! closes, and the overlay hides, or, for a finger, makes way for the
+//! on-screen keyboard.
 //!
 //! The invariants: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -73,15 +75,30 @@ pub struct Session {
 }
 
 impl Session {
-    /// `kbd_tx` feeds the keyboard controller `runtime` was built with.
+    /// The session of `runtime` on the host the app runs on. `kbd_tx`
+    /// feeds the keyboard controller `runtime` was built with.
     pub fn new(runtime: Runtime, kbd_tx: Sender<EmulatorEvent>) -> Self {
+        Self::on(runtime, kbd_tx, platform::HAS_SITE)
+    }
+
+    /// The session of `runtime` on a host that came from a site, or not:
+    /// `has_site`. There, a machine that starts with no disk in any drive
+    /// has nothing to boot but the site's disks: it starts with the overlay
+    /// shown and the Start panel open. Anywhere else, or with a disk, the
+    /// overlay starts hidden.
+    fn on(runtime: Runtime, kbd_tx: Sender<EmulatorEvent>, has_site: bool) -> Self {
+        let mut overlay = Overlay::on(has_site);
+        if has_site && runtime.disks.borrow().drives.is_empty() {
+            overlay.show();
+            overlay.open(Panel::Start);
+        }
         Self {
             runtime,
             pacer: Pacer::new(),
             meter: Meter::default(),
             keys: GuestKeys::new(kbd_tx),
             hold: Hold::default(),
-            overlay: Overlay::new(),
+            overlay,
             dump_file: PathBuf::from(VGA_DUMP_FILE),
             disks: DiskTools::new(),
             roms: RomLoader::new(),

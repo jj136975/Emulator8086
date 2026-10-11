@@ -377,21 +377,17 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// The shell as the app starts it, hidden, lent `runtime`, on the host
-    /// the tests run on: a desktop, which came from no site.
+    /// The shell as the app starts it, hidden, lent `runtime`, on a host
+    /// that came from no site, as the desktop the tests run on.
     pub fn new(runtime: Runtime) -> Self {
-        Self::with(Overlay::new(), runtime)
+        Self::on(runtime, false)
     }
 
     /// The shell, hidden, lent `runtime`, on a host that came from a site,
     /// or not: `has_site`.
     pub fn on(runtime: Runtime, has_site: bool) -> Self {
-        Self::with(Overlay::on(has_site), runtime)
-    }
-
-    fn with(overlay: Overlay, runtime: Runtime) -> Self {
         Self {
-            overlay,
+            overlay: Overlay::on(has_site),
             runtime,
             paused: false,
             starting: None,
