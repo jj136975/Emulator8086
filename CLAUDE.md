@@ -50,20 +50,22 @@ The app, in `src/`:
 | `platform/egui_events.rs`, `fat_stamp.rs`, `site_answer.rs` | the parts of the browser side that know nothing of a browser, built on the desktop for their tests alone: winit's events as egui's input (egui-winit does not build for wasm32), a `Date` as a FAT time stamp, and what a site's answer to a fetch says of the file (`verdict`: a 404, or a page in the place of a file, is "The site has no ...") |
 | `platform/tests.rs` | the rule of `platform` as a test: a sweep of the app's sources |
 | `wall_clock.rs` | `HostClock`, the wall clock the machine's FAT code is handed: the host's local time, as `platform::fat_options` carries it |
-| `site.rs` | THE table of the files the site publishes beside the page (`FILES`: each one's path relative to the page, its `Kind`, its title); `site_tests.rs` sweeps `index.html` and the Pages workflow for each of them |
-| `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw |
-| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the fingers on the screen, the disk tools, the ROM loader and the overlay, without a window. Decides whose a key is and when a finger held on the picture works the overlay's switch, and carries out the overlay's `Command`s on the machine; times the overlay's pass and passes the window's `Drawn` on to the meter |
+| `site.rs` | THE table of the files the site publishes beside the page (`FILES`: each one's path relative to the page, its `Kind`, its title, and for a disk the verb of its button in the Start panel); `site_tests.rs` sweeps `index.html` and the Pages workflow for each of them |
+| `gui/mod.rs` | the winit application, and all that needs the window: hands its events to egui and to the session, works the overlay's switch, takes the renderer when its start-up is over, runs and draws a frame per redraw, and forgets what the overlay asked of the window once it is hidden, by the switch or by the session |
+| `gui/session.rs` | `Session`: the machine, the pacer, the meter, the guest's keyboard, the fingers on the screen, the disk tools, the ROM loader, the starter and the overlay, without a window. Starts with the overlay shown and the Start panel open where the host came from a site and the machine has no disk (`Session::on`). Decides whose a key is and when a finger held on the picture works the overlay's switch, and carries out the overlay's `Command`s on the machine; puts the overlay away after a start (`started`); times the overlay's pass and passes the window's `Drawn` on to the meter |
 | `gui/hold.rs` | the overlay's switch on a touch screen: `Hold`, told of the fingers and of the time, says when a finger held still on the picture is due |
 | `gui/disk_tools.rs` | `DiskTools`, the session's side of the Disks panel: a `DiskCommand` becomes an operation of the core (`io::disk_ops`), carried out at once or once the host's file dialog has answered (`poll`, at the start of every frame) |
 | `gui/rom_loader.rs` | `RomLoader`, the session's side of Machine > Load ROM: a `RomCommand` becomes the image the machine restarts with, at once (the built-in BIOS) or once the host's file dialog or the site has answered (`poll`, at the start of every frame) |
-| `gui/host/` | the host as the session's tools reach it. `mod.rs`: `FileHost` (its dialogs, what it lets out, the files of its site), `Platform` (the host the app runs on), and `Awaited`, the questions whose answers are on their way down channels, each with what it was asked for; `testing.rs`: `ByHand`, a host whose dialogs and site a test answers by hand |
+| `gui/starter.rs` | `Starter`, the session's side of the Start panel: a `StartCommand` becomes a disk of the site fetched from it, put into the drive the panel chose for its kind with the core's Insert, the boot order set and the machine restarted, once the site has answered (`poll`, at the start of every frame); one start at a time (`starting`), and one that fails changes nothing |
+| `gui/host/` | the host as the session's tools reach it. `mod.rs`: `FileHost` (its dialogs, what it lets out, the files of its site), `Platform` (the host the app runs on), `Awaited`, the questions whose answers are on their way down channels, each with what it was asked for (`purposes`), and `fetched`, what an answer of the site brought; `testing.rs`: `ByHand`, a host whose dialogs and site a test answers by hand |
 | `gui/pacer.rs` | real-time pacing: `Pacer` reads the host clock, credits the machine with the time that passed and runs it 256 instructions at a time; the 1 ms wait of an idle guest; pause; what each slice did with its time (`Slice`) |
 | `gui/meter.rs` | measuring the emulation: `Meter`, told of each frame by the session (the pacer's `Slice`, the machine's `Counts`) and of what the frame spent outside its slice (the overlay's pass, the window's `Drawn`), averages over about a second the guest's speed (with the last minute of it), the frames and how their host time divides into five (running, idle, the overlay, the drawing, the wait for the display), the guest's time (its clock, the time owed and dropped, the share spent halted) and the interrupts per line. It reads no clock |
 | `gui/renderer/` | wgpu. `mod.rs`: `record_frame` (the picture and the overlay in one render pass, no surface needed) and what asks for a device; `blit.rs`: `FrameBlit` (frame texture and blit pipeline, the whole-number viewport, the WGSL); `overlay_pass.rs`: `OverlayPass` (egui's meshes); `surface.rs`: `Renderer` (the window's surface), whose `render` returns a `Drawn`: how long the surface kept it waiting for a frame to draw on, and how long the rest took |
 | `gui/keys.rs` | physical key to XT scancode; `GuestKeys` sends the codes and remembers which keys the guest holds, and whether the host's keyboard or the on-screen one holds each |
-| `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, the hint, the menu bar, the panels' windows (each the size of its contents, first opened a cascade step from the one before it); `Command`, what a tool asks the app to do; `Cx`, what a panel works on; what the last pass covered of the screen (`covers`) and which panels it drew (`shows`) |
+| `gui/overlay/mod.rs` | the overlay's shell: shown or hidden, by the switch (`toggle`) or by the app (`show`, `hide`, which leave the hint to the first bare picture), the hint, the menu bar, the windows of the panels the host offers (`Overlay::on`: whether it came from a site; each window the size of its contents, first opened a cascade step from the one before it), which the app may open and close too (`open`, `close`); `Command`, what a tool asks the app to do; `Cx`, what a panel works on; what the last pass covered of the screen (`covers`) and which panels it drew (`shows`); which of the pointer's events are a finger's echo (`with_echoes`) |
 | `gui/overlay/load_rom.rs` | Machine > Load ROM, a menu within the Machine menu: the built-in BIOS, the ROM images of the site where there is one (`platform::HAS_SITE`, `site::FILES`) and a file, each asked for with a `RomCommand` |
-| `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body |
+| `gui/overlay/start.rs` | the Start panel, offered where the host came from a site: a button per disk of the site (`site::FILES`, the floppies then the hard disks, labelled with each disk's verb and title: "Boot MS-DOS 4.00", "Play DOOM"), under each where its disk goes (`Place`, by its kind), each asking for a `StartCommand`, which says whether a finger pressed it; "Fetching ..." and its buttons greyed out while a start is on its way (`Cx::starting`) |
+| `gui/overlay/panels.rs` | THE panel table: `Panel`, `ALL`, `title`, the arm of each body, and the panels only a host that came from a site offers (`needs_site`) |
 | `gui/overlay/about.rs` | the About panel; every panel has a file like it |
 | `gui/overlay/disks.rs` | the Disks panel: every drive with its disk (`image_place`, `disk_size`, which the About panel shares), the buttons that ask the app for a `DiskCommand` on the drive chosen, what the host cannot do left out (`platform::FILE_ACCESS`), and a reboot that is due shown with the reset |
 | `gui/overlay/on_screen_keyboard/` | the On-screen keyboard panel. `mod.rs`: the body, which takes up the frame's touches and clicks (the first finger's pointer events are its echo) and draws the keys at a size that follows the screen's; `layout.rs`: THE key table, the 83 keys of the XT by make code, where each lies, its name and its legend; `presses.rs`: who holds which key (each finger, the pointer), the latched modifiers and the repeat, answered with `Command::Key` |
@@ -72,7 +74,7 @@ The app, in `src/`:
 | `gui/overlay/pic.rs`, `pit.rs`, `vga.rs`, `keyboard.rs`, `debug_port.rs` | the device panels: the 8259A, the 8253, the VGA and its DAC, the 8255's keyboard interface, the port E9h log |
 | `gui/overlay/messages.rs` | where a tool says what it did or why it failed |
 | `gui/overlay/theme.rs` | the palette and the sizes as named slots, and their one application to egui's style |
-| `gui/overlay/testing.rs` | test support: drives the overlay frame by frame with hand-made input (keys, the pointer, and fingers as a host hands them to egui) and reads the screen as egui describes it to a screen reader; `Shell`, the shell alone over a machine; `waiting_for_a_key`, a machine the BIOS booted |
+| `gui/overlay/testing.rs` | test support: drives the overlay frame by frame with hand-made input (keys, the pointer, and fingers as a host hands them to egui) and reads the screen as egui describes it to a screen reader; `Shell`, the shell alone over a machine, on a host that came from a site or not (`Shell::on`); `waiting_for_a_key`, a machine the BIOS booted |
 
 The core, in `crates/emu8086_core/`:
 
@@ -88,7 +90,7 @@ The core, in `crates/emu8086_core/`:
 | `src/io/pic.rs`, `pit.rs`, `keyboard.rs`, `dma.rs`, `fdc.rs`, `hdc.rs`, `console.rs` | 8259A, 8253, the XT keyboard on the 8255, the 8237 as registers, two controller stand-ins, debug port E9h (which keeps its last lines). The first three and the console describe themselves to a reader without a port access: `Pic::view`, `Pit::channels`, `KeyboardController::view`, `DebugConsole::lines`; `Pic::acknowledged` tallies the interrupts acknowledged on each line |
 | `src/io/vga.rs`, `raster.rs`, `font_cp437.rs` | the VGA registers (`VgaDevice::registers` and `dac_colour` for a reader), the CPU-side rasterisers the window uploads, the 8x16 font |
 | `src/io/disk/`, `src/io/disk_spec.rs` | disk images (in a host file, or in memory, made of a host's bytes and given back as them), the controller with the change lines and the reboot due after a hard disk changed (`reboot_due`), the host side of INT 13h, host-side FAT access and the `WallClock` its callers pass; the spellings of drives and images on the command line, and `open_drives`, which opens what the command line names and returns what the user is to be told of it (`OpenedDrives`) |
-| `src/io/disk_ops.rs` | the disk tools' operations (`Operation`: insert, create, move, save, eject, put; `apply`; `contents`, a disk as its bytes), each answering with an `Outcome`: words for the user, and whether the guest must be rebooted. A file comes as a `HostFile`, by its path or by its name and contents |
+| `src/io/disk_ops.rs` | the disk tools' operations (`Operation`: insert, create, move, save, eject, put; `apply`; `contents`, a disk as its bytes), each answering with an `Outcome`: words for the user, and whether the guest must be rebooted. A file comes as a `HostFile`, by its path or by its name and contents; an image of no bytes is no disk, and the Insert refuses it |
 | `build.rs` | reassembles `assets/rom/bios.bin` when a ROM source is newer and patches its checksum |
 | `src/bios_tests.rs` | tests that boot the real ROM on a fully wired machine (the `Machine` harness) |
 | `src/cpu_tests.rs` | the CPU against 608,000 vectors captured from real hardware (`8086/` submodule) |
@@ -214,7 +216,8 @@ widened from `pub(crate)` when one of them needs it, not before.
   two hosts differ in what a caller does next, the name says so in what it
   returns (`platform::wait`, `platform::FILE_ACCESS`, `platform::HAS_SITE`)
   and a test puts the other host's answer in its place
-  (`Pacer::waiting_with`, `DiskTools::on`, `RomLoader::on`).
+  (`Pacer::waiting_with`, `DiskTools::on`, `RomLoader::on`, `Session::on`,
+  `Overlay::on`).
 - **Keys**: the window sends `EmulatorEvent`s down a channel to
   `KeyboardController`: the scancode of the physical key (`src/gui/keys.rs`),
   so the layout is the guest's business. The overlay's switch is the
@@ -256,7 +259,11 @@ widened from `pub(crate)` when one of them needs it, not before.
   (`src/gui/overlay/panels.rs`: a variant of `Panel`, its place in `ALL`,
   its arm in `title` and in `body`) plus one file for the body,
   `pub(super) fn body(ui: &mut egui::Ui, cx: &mut Cx<'_>)`. The checkbox in
-  the View menu, the window and its close button follow from `ALL`. The
+  the View menu, the window and its close button follow from `ALL`; a panel
+  that works on what only a host that came from a site has is named in
+  `Panel::needs_site`, and the View menu of another host leaves it out
+  (the shell is told the host's answer: `Overlay::on`). The app opens and
+  closes a panel as its checkbox does (`Overlay::open`, `close`). The
   body has the machine as `cx.runtime` for the length of the pass, asks the
   app for what only the app can do through `cx.commands`, and says what it
   did or why it failed through `cx.messages`. The window takes the size of
@@ -267,7 +274,10 @@ widened from `pub(crate)` when one of them needs it, not before.
   keyboard holds keys, drops it when the pass before did not draw it
   (`cx.drawn_before`: not after its window was closed or collapsed, or the
   overlay hidden). egui may run the UI twice for one frame, and gives the
-  frame's events (`ui.input(|i| i.events)`) to the first run alone.
+  frame's events (`ui.input(|i| i.events)`) to the first run alone. Which
+  of them a finger made is the shell's to tell (`with_echoes`): the first
+  finger is egui's pointer as well, and a press or a release of the
+  primary button right after a touch is that touch's echo.
 - **A device panel** (8259A, 8253, VGA, keyboard, port E9h): reads the
   device's description, never its ports, since a port read is seen by the
   guest (a poll answered, a flip-flop reset, a DAC index moved):
@@ -321,8 +331,36 @@ widened from `pub(crate)` when one of them needs it, not before.
   ..." (`platform/site_answer.rs`). A test answers the fetches by hand
   (`host::testing::ByHand`).
 - **A disk of the site's**: a row of THE table in `src/site.rs` of the kind
-  `Floppy` or `HardDisk` (`disks/msdos400.img`, "MS-DOS 4.00";
-  `disks/doom8088.img`, "DOOM"). The repository holds no disk: the Pages
+  `Floppy` or `HardDisk`, with the verb of its button (`disks/msdos400.img`,
+  "MS-DOS 4.00", "Boot"; `disks/doom8088.img`, "DOOM", "Play"). The app
+  offers the disks in the Start panel (`src/gui/overlay/start.rs`), where
+  `platform::HAS_SITE` (`Panel::needs_site`): a button each, the floppies
+  then the hard disks, labelled with the verb and the title
+  ("Boot MS-DOS 4.00", "Play DOOM"), so that the table stays the one
+  source of both. Where the host came from a site and the machine starts
+  with no disk, the session starts with the overlay shown and the panel
+  open (`Session::on`); the View menu has it besides. A press asks for
+  `Command::Start` with where the disk's kind puts it (`Place`: a floppy
+  into A:, booted first, then the first hard disk; a hard disk in as the
+  first hard disk, booted first, then A:) and whether a finger pressed it
+  (the release of the button is a finger's echo). The session's `Starter`
+  (`src/gui/starter.rs`) fetches the disk (`FileHost::fetch`), one start at
+  a time: meanwhile the panel says "Fetching ..." with its buttons greyed
+  out (`Cx::starting`). Once the disk has come, the core's Insert puts it
+  into its drive from its contents (a hard disk by
+  `DiskImage::hard_disk_from_bytes`, as the tool built and booted it), the
+  boot order is set (`DiskController::set_boot_order`) and the machine
+  restarts as Reset does: "Restarted with MS-DOS 4.00, the floppy in A:".
+  A fetch that failed, a site without the disk, or an image the Insert
+  refuses (one of no bytes) changes nothing and says why: "... The machine
+  runs on as it was". A start carried out closes the Start panel; pressed
+  with a finger it opens the on-screen keyboard and leaves the overlay
+  shown, otherwise the overlay hides (`Overlay::hide`), so that the keys
+  are the guest's, and the window forgets what the overlay asked of the
+  cursor. The app's own showing and hiding of the overlay ends no hint:
+  the hint's seconds are those of the first bare picture. A test answers
+  the fetches by hand (`host::testing::ByHand`; `starter_tests.rs`,
+  `session_tests.rs`). The repository holds no disk: the Pages
   workflow makes them with `crates/dos_images`, checks them against
   `crates/dos_images/disks.sha256` and copies them into `dist/disks/`
   after trunk built, by those names. The page names none, so `trunk serve`
@@ -474,8 +512,9 @@ and the disk tools on a host whose dialogs the test answers
 (`gui::disk_tools::tests`). The pacer runs on the host's real clock in
 `gui::pacer::tests`. The window itself is compile-checked only and needs
 the user's eyes: the surface and its presentation, the winit event loop,
-`gui/mod.rs`, which is where the window's events become egui's input and
-where the overlay's switch is picked out, and the system's file dialogs
+`gui/mod.rs`, which is where the window's events become egui's input,
+where the overlay's switch is picked out and where the window forgets
+what a hidden overlay asked of the cursor, and the system's file dialogs
 (`platform::FileDialogs::ask` on a desktop; the thread their answers come
 from is tested, `answer_later`).
 
@@ -492,10 +531,16 @@ panel on a host that hands files over as their contents
 (`gui::disk_tools::tests`, `gui::overlay::disks::tests`), Machine > Load
 ROM on a host with a site and the ROM of the site loaded from answers
 given by hand (`gui::overlay::load_rom::tests`, `gui::rom_loader::tests`),
-what a site's answer to a fetch says (`platform::site_answer::tests`), the
-site's files against what the page and the workflow publish
-(`site::tests`), and the frame drawn on a device that has no more than
-WebGL2 guarantees
+the Start panel on a host with a site and not on one without, its buttons
+pressed with the pointer and with a finger, its disks fetched, put in and
+started from with answers given by hand, the panel opened at start with no
+disk, and the overlay put away after a start, for the pointer and for a
+finger (`gui::overlay::start::tests`, `gui::starter::tests`,
+`gui::session::tests`; the hint that waits for the bare picture in
+`gui::overlay::tests`), what a site's answer to a fetch says
+(`platform::site_answer::tests`), the site's files against what the page
+and the workflow publish (`site::tests`), and the frame drawn on a device
+that has no more than WebGL2 guarantees
 (`gui::renderer::tests::the_frame_is_drawn_within_the_limits_of_webgl2`;
 with `WGPU_BACKEND=gl` it runs on the backend WebGL2 shares its shader
 translation with). `platform/web.rs` and the page are outside the suite,

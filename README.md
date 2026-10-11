@@ -9,7 +9,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
 - VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
 - A tools overlay in the window (F12): pause and resume, reset, a restart with another ROM, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the drives (put disks in and take them out, save them, copy host files onto them), and an on-screen PC keyboard
-- Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2, on phones and tablets too
+- Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2, on phones and tablets too, where MS-DOS 4.00 or DOOM is one press away
 - Builds MS-DOS 4.00 from Microsoft's published source inside itself, with the tools of 1988, 61 of its 62 files byte for byte as released; the site publishes an MS-DOS 4.00 boot floppy and a DOOM hard disk made of it ([The site's disks](#the-sites-disks))
 - Floppy and hard disk support with file-backed or in-memory images
 - Hardware emulation: 8259 PIC, 8253 PIT, XT keyboard (8255 PPI), VGA, DMA, FDC
@@ -77,7 +77,7 @@ Closing the window quits the emulator.
 
 ### The Tools Overlay
 
-F12, or a finger held on the picture, puts a menu bar over the picture; for the first seconds after start a hint in the corner names the switch. The guest keeps running under it.
+F12, or a finger held on the picture, puts a menu bar over the picture; for the first seconds after start a hint in the corner names the switch (in a browser, which starts with the tools shown, once they hide). The guest keeps running under it.
 
 | Menu | Entry | What it does |
 |------|-------|--------------|
@@ -85,6 +85,7 @@ F12, or a finger held on the picture, puts a menu bar over the picture; for the 
 | Machine | Reset | Reboots the guest |
 | Machine | Load ROM | Restarts the machine with another ROM image, in place of the BIOS: the built-in BIOS, the BIOS the site publishes (in a browser, see [the site's files](#the-sites-files)), or an image file of 16 bytes to 64 KB chosen in a file dialog. The image ends at F000:FFFF and the rest of the ROM area reads 0xFF, as an empty socket does; the machine restarts at the reset vector, as Reset does, with its memory, its devices and its drives as they are. A message says which ROM runs then, or why the machine runs on with the one it had |
 | Machine | Dump VGA state | Writes the state of the display to `vga_dump.txt` in the working directory (in a browser: offers it as a download) |
+| View | Start | In a browser only: a button for each disk of the site, Boot MS-DOS 4.00 and Play DOOM, which restarts the machine with that disk ([The Start window](#the-start-window)). A browser opens it at start |
 | View | About | A panel with the key bindings, the version, and the machine: the ROM it runs, the image in each drive, whether it can be written, and the boot order |
 | View | Disks | Every drive with the disk it holds: where its image lives (a file, or memory), its size, its cylinders, heads and sectors, and whether it can be written. For the drive chosen in the list: put in an image file, a blank disk held in memory (a formatted floppy of a standard size, or a blank 32 MB hard disk) or a new image file (a formatted 1.44 MB floppy, or a blank 32 MB hard disk), write-protected if the box is ticked; take the disk out, move it to another drive, save it to a file, or copy host files or a whole folder onto it |
 | View | On-screen keyboard | The 83 keys of the PC/XT keyboard, printed for the US and laid out like a keyboard without a numeric pad, as large as the screen allows: for a phone, or wherever no keyboard is at hand. A key is pressed with a finger or the mouse, several at once with several fingers, and sends what the physical key sends, so the guest's layout decides what it types. A key held repeats as an XT's does. Shift, Ctrl and Alt tapped alone (down and up again before they repeat, with no other key down) stay down until the next key comes up, and a second tap lets them go. The lock keys light up with the guest's Caps Lock, Num Lock and Scroll Lock |
@@ -100,7 +101,7 @@ A panel is a window over the picture that can be moved and closed. What a tool d
 
 While the overlay is shown the keys still go to the guest, except that Tab moves between the overlay's controls, and that the keys are the overlay's own for as long as one of its menus is open or one of its controls has the keyboard focus (Escape closes the menu and gives the focus up). Whatever the guest was holding at that moment is released.
 
-The Disks panel asks for files in the system's own file dialogs, and the guest runs on while one is open. An image file put into a drive is the disk itself: what the guest writes goes straight to the file. A blank disk lives in memory until it is saved. One image file is in one drive at most, putting an image in never creates a file, and a new image file never replaces one. DOS notices a floppy change by itself. It does not notice a change to a hard disk, and writes what it holds in memory over it: after a hard disk was put in, taken out, moved or written to, the guest has to be rebooted before it uses the drive, which the panel says, with a button that resets the machine. To copy files onto a hard disk without a reboot, put them on a floppy and `COPY` them in DOS.
+The Disks panel asks for files in the system's own file dialogs, and the guest runs on while one is open. An image file put into a drive is the disk itself: what the guest writes goes straight to the file. A blank disk lives in memory until it is saved. One image file is in one drive at most, putting an image in never creates a file, a new image file never replaces one, and an empty file is no disk: putting one in is refused. DOS notices a floppy change by itself. It does not notice a change to a hard disk, and writes what it holds in memory over it: after a hard disk was put in, taken out, moved or written to, the guest has to be rebooted before it uses the drive, which the panel says, with a button that resets the machine. To copy files onto a hard disk without a reboot, put them on a floppy and `COPY` them in DOS.
 
 ### Keyboard Layouts
 
@@ -143,8 +144,8 @@ Beside the page, the site publishes files the application fetches from it, each 
 | Path | What it is | Where the application offers it |
 |------|------------|---------------------------------|
 | `rom/bios.bin` | The BIOS. The workflow assembles it from its sources in `assets/rom` with NASM, and fails unless it is the image committed there, which is the one built into the application | Machine > Load ROM > BIOS from the site |
-| `disks/msdos400.img` | "MS-DOS 4.00": a boot floppy of MS-DOS 4.00, which the workflow builds ([The site's disks](#the-sites-disks)) | Not yet |
-| `disks/doom8088.img` | "DOOM": a hard disk on which MS-DOS 4.00 starts DOOM, which the workflow makes as well | Not yet |
+| `disks/msdos400.img` | "MS-DOS 4.00": a boot floppy of MS-DOS 4.00, which the workflow builds ([The site's disks](#the-sites-disks)) | The Start window (View > Start) > Boot MS-DOS 4.00 |
+| `disks/doom8088.img` | "DOOM": a hard disk on which MS-DOS 4.00 starts DOOM, which the workflow makes as well | The Start window (View > Start) > Play DOOM |
 
 `trunk build` and `trunk serve` put the BIOS beside the page, from the repository. The disks are not in the repository: the workflow makes them, and puts them beside the page in what trunk built, so a site served by `trunk serve` has none. A file is fetched by its path relative to the page, so it is found wherever the page is served from: at the root of `trunk serve`, or below `/Emulator8086/` on GitHub Pages. Where the server has no such file (a 404, or the page itself in its place, which is how `trunk serve` answers a path it has no file for), a message says that the site has no such file, and the machine runs on as it was.
 
@@ -156,8 +157,9 @@ The picture is drawn with WebGPU where the browser has a working one, and with W
 
 | | On a desktop | In a browser |
 |---|---|---|
-| The machine at start | What the command line asks for | The built-in BIOS and no disk: the BIOS reports that there is nothing to boot and waits for a key. Put a disk in with the Disks panel, then press a key |
+| The machine at start | What the command line asks for | The built-in BIOS and no disk, with the tools shown and the Start window open ([below](#the-start-window)). Behind it the BIOS reports that there is nothing to boot and waits for a key: a disk put in with the Disks panel boots at the next key |
 | The tools overlay | F12 | A right-click on the picture. F12 stays the browser's key, for its developer tools; the hint and the About panel say "Right-click or touch and hold" |
+| View > Start | Not offered: a desktop's program has no site | The disks of the site, one press each |
 | Machine > Dump VGA state | Writes `vga_dump.txt` | Offers `vga_dump.txt` as a download |
 | Machine > Load ROM | The built-in BIOS, or an image file chosen in a dialog | The built-in BIOS, the BIOS the site publishes (`rom/bios.bin`), or an image file chosen in the file picker |
 | An image file put into a drive | Is the disk: the guest writes to the file | Is copied into the page and held in memory: the file stays as it was |
@@ -172,9 +174,17 @@ The machine runs with the frames of the page. An idle or paused guest gives the 
 
 Disks get into the browser through the Disks panel: an image file chosen in the browser's file picker is copied into the page, where it lives in memory and takes the guest's writes, and Download gives the disk back as a file. A blank disk can be put in as on a desktop, and files chosen in the picker copied onto a disk. A browser opens its file picker only right after a click or a key: when it will not, a small form in the page asks for the file instead.
 
+### The Start window
+
+At start, with no disk in any drive, the page shows the tools with a small window, Start, which has a button for each disk of the site: **Boot MS-DOS 4.00** and **Play DOOM** ([The site's disks](#the-sites-disks)). A press fetches the disk from the site, and the window says so meanwhile ("Fetching MS-DOS 4.00...") and offers nothing else. Once the disk has come it goes into its drive, the floppy into A: and the hard disk in as the first hard disk, C:, in place of the disk that was there; the BIOS is told to boot that drive first, and the machine restarts, as Machine > Reset restarts it. A message says what it restarted with ("Restarted with MS-DOS 4.00, the floppy in A:"), the Start window closes and the tools hide, so that the keys go to the guest; a user who has not worked the switch yet is then shown the hint that names it. Where the site has no such disk (a site of `trunk serve` has none), or the disk did not come, a message says why, and the machine runs on as it was.
+
+The window stays at hand in the View menu. A disk started from it lives in memory, as one put in with the Disks panel does: what the guest writes to it is lost with the page, unless Download gives the disk back as a file. A desktop, which comes from no site, has no Start window, and starts as its command line says.
+
 ### Phones and tablets
 
 On a touch screen a finger works the tools overlay as the mouse does: a tap is a click. There is no right-click to show the overlay with: a finger held still on the picture for half a second shows it or hides it, as soon as the time is up (on a desktop's touch screen as well). A finger held on the overlay itself, on its menu bar, a window or a message, is the overlay's however long it stays there. The page keeps the fingers on the picture for itself: the browser neither scrolls nor zooms it.
+
+A finger that presses a button of the Start window leaves the tools shown once the machine has restarted, with the On-screen keyboard open in place of the Start window: one tap, and the phone can type at `A:\>` or play.
 
 The guest's keys come from View > On-screen keyboard, which fits the width of a phone held upright and is easier to hit with the phone on its side. Each finger holds a key of its own, so that keys are held together, an arrow while Ctrl fires in DOOM; a modifier tapped alone stays down for the next key, for Ctrl+C or Ctrl+Alt+Del. The keyboard is a panel of the overlay: hidden with it, it lets go of whatever a finger held. The phone's own keyboard is not used: it types characters rather than pressing keys, holds none down, and has no Esc, function keys, Ctrl, Alt or arrows.
 
@@ -286,7 +296,7 @@ The CPU is not cycle-timed: it runs as fast as the host allows, while the timer 
 
 ### Testing
 
-The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking and touching through it with hand-made input, and the disk tools and the ROM loader with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, touches among them, the time stamps, the disk tools on a host that hands files over as their contents, the ROMs of the site offered and loaded with answers the tests give by hand, what a site's answer to a fetch says, and the frame drawn within the limits WebGL2 guarantees. The files the site publishes are checked against what the page and the workflow publish. The page itself is outside the suite, and so are the system's file dialogs, the browser's file picker and its fetch.
+The CPU is validated against 608,000 single-instruction test vectors (2,000 per file) captured from a real Intel P80C86A-2 processor. The opcodes that are given their 80186 meaning (60–62, 64–6F, C0, C1, C8, C9) are outside that set. The BIOS and the devices are covered by tests that boot the real ROM on a fully wired machine. The picture is checked on the graphics adapter itself: one test draws a text frame and a Mode 13h frame into an offscreen texture and compares the pixels it reads back, another draws the overlay over the picture; on a machine without an adapter they say so and pass. The overlay's logic is tested without a window, by clicking and touching through it with hand-made input, and the disk tools and the ROM loader with file dialogs the tests answer by hand. Of the browser build, the suite covers what needs no browser, on the desktop: the pacing of a guest on a host that cannot wait, the window's events as the overlay's input, touches among them, the time stamps, the disk tools on a host that hands files over as their contents, the ROMs of the site offered and loaded with answers the tests give by hand, the Start window opened at start and pressed with a finger or the mouse, its disks fetched, put in and started from with answers the tests give by hand, what a site's answer to a fetch says, and the frame drawn within the limits WebGL2 guarantees. The files the site publishes are checked against what the page and the workflow publish. The page itself is outside the suite, and so are the system's file dialogs, the browser's file picker and its fetch.
 
 The build of MS-DOS 4.00 is the widest test of the CPU there is: NMAKE, MASM, C and LINK run 11.4 billion instructions, and a fault of the CPU that one of them meets is likely to change one of the 62 files they make, which the workflow compares with the release of 1988. It needs inputs the repository does not hold, so it is not part of `cargo test`: the workflow runs it at every push that changes the machine, and a developer runs it by hand ([The site's disks](#the-sites-disks)). `cargo test` covers the tool's parts that need no inputs: what it reads of the makefiles, the layout of the disks, the markers, the build's log and CHKDSK's report, and the notices.
 
