@@ -23,7 +23,7 @@ use emu8086_core::io::disk_ops::HostFile;
 use emu8086_core::vm::runtime::Runtime;
 use emu8086_core::{BIOS_ROM, BIOS_ROM_NAME};
 
-use super::host::{Awaited, FileHost, Platform};
+use super::host::{Awaited, FileHost, Platform, fetched};
 use super::overlay::{Messages, RomCommand};
 use crate::platform::{Fetched, FileQuestion, Wanted};
 use crate::site::SiteFile;
@@ -104,12 +104,10 @@ impl RomLoader {
                 HostFile::Contents { name, bytes } => runtime.load_rom_image(&bytes, name),
             });
         }
-        for (file, fetched) in self.fetched.answered() {
-            restart(runtime, messages, |runtime| match fetched {
-                Some(Ok(image)) => runtime.load_rom_image(&image, from_the_site(file)),
-                // The host's own words, which name the file.
-                Some(Err(why)) => Err(why),
-                None => Err(format!("The site could not be asked for {}", file.path)),
+        for (file, answer) in self.fetched.answered() {
+            restart(runtime, messages, |runtime| {
+                let image = fetched(file.path, answer)?;
+                runtime.load_rom_image(&image, from_the_site(file))
             });
         }
     }

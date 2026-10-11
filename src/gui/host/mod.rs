@@ -3,7 +3,8 @@
 //! `Platform` is the host the app runs on; a test puts hand-made answers in
 //! its place (`testing::ByHand`). A question to the host is answered later,
 //! down a channel: `Awaited` holds the questions on their way, each with
-//! what it was asked for, and hands over the answers that have come.
+//! what it was asked for, and hands over the answers that have come;
+//! `fetched` says what such an answer of the site brought.
 //!
 //! The invariant: nothing here waits. A question returns at once, and its
 //! answer is taken up by the first look after it came
@@ -68,6 +69,15 @@ impl FileHost for Platform {
     fn fetch(&mut self, path: &str) -> Receiver<Fetched> {
         platform::fetch(path)
     }
+}
+
+/// What the site's answer to the fetch of the file at `path` brought, as
+/// `Awaited::answered` hands it over: the file's bytes, or why none came,
+/// in words for the user that name the file. The host's own words say why
+/// a file did not come; a question whose channel closed without an answer
+/// could not be asked.
+pub(super) fn fetched(path: &str, answer: Option<Fetched>) -> Fetched {
+    answer.unwrap_or_else(|| Err(format!("The site could not be asked for {path}")))
 }
 
 /// The questions asked of the host whose answers have not been taken up,
