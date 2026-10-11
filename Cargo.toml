@@ -83,7 +83,7 @@ wgpu = { workspace = true, features = ["webgl"] }
 workspace = true
 
 [workspace]
-members = ["crates/emu8086_core"]
+members = ["crates/emu8086_core", "crates/dos_images"]
 
 [workspace.package]
 edition = "2024"

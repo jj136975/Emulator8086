@@ -50,7 +50,12 @@ pub struct DiskController {
 }
 
 impl DiskController {
-    pub(crate) fn new() -> Self {
+    /// A controller with no disk in any drive: the floppy drives A: and B:,
+    /// which every machine has, empty, and a bootstrap that tries A:, then
+    /// the first hard disk. Whoever made the disks of a machine itself puts
+    /// them in (`attach`) and builds the machine around the drives
+    /// (`Runtime::with_drives`).
+    pub fn new() -> Self {
         Self {
             drives: Vec::new(),
             boot_order: vec![0x00, 0x80], // floppy A:, then hard disk 0
@@ -212,6 +217,12 @@ impl DiskController {
         } else {
             None
         }
+    }
+}
+
+impl Default for DiskController {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

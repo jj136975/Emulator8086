@@ -1,0 +1,7 @@
+# The SHA-256 of the two disks the site publishes, as crates/dos_images
+# makes them of the inputs pins.env pins: the same on every run and every
+# host. A change to what is on a disk changes its line, which is then taken
+# from a run of the tool. The Pages workflow checks the disks it publishes
+# against this list.
+cac64d7748ec1844cc09377bdc4734fff863f1f52dea37cf843e3998f83b06fd  msdos400.img
+0b53790a1ca00b44eaecb45bf56a5817ec1b717720a9aff7935310b2faf39ef4  doom8088.img

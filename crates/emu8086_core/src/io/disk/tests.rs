@@ -548,6 +548,19 @@ fn host_side_write_raises_the_change_line() {
     );
 }
 
+/// A new controller holds no disk: it has the floppy drives A: and B:,
+/// empty, no hard disk, and a bootstrap that tries A:, then the first hard
+/// disk. No reboot is due on it.
+#[test]
+fn a_new_controller_has_two_empty_floppy_drives_and_boots_a_then_c() {
+    let controller = DiskController::default();
+    assert!(controller.drives.is_empty());
+    assert_eq!(controller.floppy_drive_count(), 2);
+    assert_eq!(controller.hard_disk_count(), 0);
+    assert_eq!(controller.boot_order(), [0x00, 0x80]);
+    assert!(!controller.reboot_due());
+}
+
 /// A hard disk has no change line to tell the guest with. What the host
 /// does to one leaves a reboot due instead, until the bootstrap starts
 /// again: a write to the boot order port, which rewinds the list. What the
