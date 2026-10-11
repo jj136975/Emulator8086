@@ -20,6 +20,18 @@
 # trunk is the version the project is built with by hand (CLAUDE.md, "Build
 # & test"), downloaded from its releases and checked against the checksum
 # below: a new version changes both.
+#
+# The site publishes two disks beside the page as well, which the emulator
+# makes here: disks/msdos400.img, an MS-DOS 4.00 boot floppy, and
+# disks/doom8088.img, a hard disk on which MS-DOS 4.00 starts Doom8088. The
+# inputs are fetched, each checked against its pin; then the tool of
+# crates/dos_images has FreeDOS build MS-DOS 4.00 from its source inside the
+# emulator, makes the disks of what it built and boots each. That takes
+# minutes, so its output is kept from run to run for as long as nothing it
+# is made of changes. The run fails unless the files the build made are
+# those listed in crates/dos_images/msdos400-binaries.sha256 and the disks
+# those of crates/dos_images/disks.sha256: the same inputs make the same
+# disks, byte for byte.
 
 name: Pages
 
@@ -110,6 +122,63 @@ jobs:
             exit 1
           fi
           cmp assets/rom/bios.bin dist/rom/bios.bin
+
+      # The output of crates/dos_images, from an earlier run whose inputs
+      # were the same: the pins of what it fetches, the tool, the machine,
+      # the BIOS the machine runs, the manifests and the locked crates, and
+      # the toolchain. Any of them may change what the build makes.
+      - name: MS-DOS disks of an earlier run
+        id: dos-disks
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/dos-images
+          key: dos-images-${{ runner.os }}-${{ hashFiles('crates/dos_images/pins.env', 'crates/dos_images/**', 'crates/emu8086_core/**', 'assets/rom/bios.bin', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain') }}
+
+      # The inputs, each checked against its pin: FreeDOS 1.4's boot floppy,
+      # the build host, which is not published; the restored source of
+      # MS-DOS 4.00; and Doom8088's release, with its GPL text.
+      - name: MS-DOS build inputs
+        if: steps.dos-disks.outputs.cache-hit != 'true'
+        run: bash crates/dos_images/fetch-inputs.sh "$RUNNER_TEMP/dos-inputs"
+
+      # FreeDOS builds MS-DOS 4.00 inside the emulator, with the tools that
+      # come with its source; the tool makes the two disks of what it built
+      # and boots each. It says which stage failed, and how, as an error of
+      # the run.
+      - name: MS-DOS build
+        if: steps.dos-disks.outputs.cache-hit != 'true'
+        run: |
+          cargo run --release -p dos_images -- \
+            --freedos "$RUNNER_TEMP/dos-inputs/freedos" \
+            --msdos "$RUNNER_TEMP/dos-inputs/msdos/v4.0" \
+            --doom8088 "$RUNNER_TEMP/dos-inputs/doom8088" \
+            --out "$RUNNER_TEMP/dos-images"
+
+      # Checked on every run, one that took them from the cache too: 61 of
+      # the files the build made are those of MS-DOS 4.00's release of 1988
+      # and the 62nd, XMAEM.SYS, is the one built before; the disks the site
+      # publishes are the ones pinned. The tool's report is the run's
+      # summary.
+      - name: MS-DOS disks
+        env:
+          OUT: ${{ runner.temp }}/dos-images
+          CACHED: ${{ steps.dos-disks.outputs.cache-hit }}
+        run: |
+          (cd "$OUT/bin" && sha256sum --check --strict --quiet "$GITHUB_WORKSPACE/crates/dos_images/msdos400-binaries.sha256")
+          mkdir -p dist/disks
+          cp "$OUT/disks/msdos400.img" dist/disks/msdos400.img
+          cp "$OUT/disks/doom8088.img" dist/disks/doom8088.img
+          (cd dist/disks && sha256sum --check --strict "$GITHUB_WORKSPACE/crates/dos_images/disks.sha256")
+          {
+            if [ "$CACHED" = true ]; then
+              echo "### MS-DOS disks, as an earlier run made them"
+            else
+              echo "### MS-DOS disks"
+            fi
+            echo '```'
+            cat "$OUT/report.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-pages-artifact@v5
         with:
