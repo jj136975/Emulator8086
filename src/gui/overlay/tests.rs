@@ -458,6 +458,28 @@ fn each_panel_opens_a_step_from_the_one_before_it() {
     assert_ne!(first.left_top(), second.left_top());
 }
 
+/// The On-screen keyboard's window first opens at the foot of the screen,
+/// across its middle, as a phone's keyboard lies, and not a step from the
+/// panel before it: the picture's first rows, where a prompt starts, stay
+/// in view.
+#[test]
+fn the_on_screen_keyboard_first_opens_at_the_foot_of_the_screen() {
+    let mut shell = shown();
+    let title = Panel::OnScreenKeyboard.title();
+    shell.toggle_in_view_menu(title);
+    settle(&mut shell);
+    let window = shell.screen().rect(Role::Window, title);
+    let [width, height] = SCREEN.map(|side| side as f32);
+    assert!(
+        (window.bottom() - (height - METRICS.edge)).abs() < 1.0,
+        "the keyboard's foot is an edge above the screen's: {window:?}"
+    );
+    assert!(
+        (window.center().x - width / 2.0).abs() < 1.0,
+        "the keyboard lies across the middle: {window:?}"
+    );
+}
+
 /// The window of a panel is closed by its own button as well, and the View
 /// menu then shows the panel closed.
 #[test]

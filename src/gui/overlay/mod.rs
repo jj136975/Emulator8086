@@ -407,12 +407,26 @@ impl Overlay {
             // first, taking it meanwhile for the size it was given, and
             // keeps it inside the screen at that size: given none, it takes
             // one so wide that every step is pushed back to the same place.
-            let step = Vec2::splat(METRICS.edge + METRICS.cascade * index as f32);
+            //
+            // A keyboard first opens at the foot of the screen instead,
+            // across its middle: egui keeps that point of the window where
+            // it was put while the window takes its size, until it is
+            // dragged.
+            let (pivot, at) = if panel.opens_at_the_bottom() {
+                (
+                    Align2::CENTER_BOTTOM,
+                    below_bar.center_bottom() - vec2(0.0, METRICS.edge),
+                )
+            } else {
+                let step = Vec2::splat(METRICS.edge + METRICS.cascade * index as f32);
+                (Align2::LEFT_TOP, below_bar.left_top() + step)
+            };
             cx.drawn_before = drawn_before.contains(&panel);
             let window = Window::new(panel.title())
                 .open(&mut is_open)
                 .constrain_to(below_bar)
-                .default_pos(below_bar.left_top() + step)
+                .pivot(pivot)
+                .default_pos(at)
                 .default_size(Vec2::ZERO)
                 .auto_sized()
                 .show(ui.ctx(), |ui| panel.body(ui, &mut cx));

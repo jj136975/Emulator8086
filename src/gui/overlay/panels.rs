@@ -17,6 +17,9 @@
 //!    drew it. A colour is a slot of `theme::PALETTE`.
 //! 4. If it works on what only a host that came from a site has, it is
 //!    named in `needs_site`: the View menu of another host leaves it out.
+//! 5. If it is a keyboard, it is named in `opens_at_the_bottom`: its window
+//!    first opens at the foot of the screen, not a cascade step from the
+//!    panel before it.
 //!
 //! The checkbox in the View menu, the window, its title bar and its close
 //! button all follow from `ALL`: the shell knows no panel by name.
@@ -88,6 +91,15 @@ impl Panel {
     /// any other host does not offer it.
     pub fn needs_site(self) -> bool {
         matches!(self, Self::Start)
+    }
+
+    /// Whether the panel's window first opens at the foot of the screen,
+    /// across its middle, as a phone's keyboard lies: the On-screen
+    /// keyboard, which leaves in view the picture's first rows, where a
+    /// prompt starts. Every other panel first opens a cascade step from the
+    /// one before it in the View menu.
+    pub fn opens_at_the_bottom(self) -> bool {
+        matches!(self, Self::OnScreenKeyboard)
     }
 
     /// Draws the panel's contents into its window.
