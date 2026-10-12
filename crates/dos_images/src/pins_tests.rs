@@ -55,10 +55,16 @@ fn the_downloads_are_those_of_the_pinned_tag_and_commit() {
     );
 }
 
-/// A shell takes a line with a blank, a quote or an expansion in it for
-/// something else than the file means, so the tool refuses it, as it
-/// refuses a line of no pin and a pin given twice. Comments, blank lines
-/// and CR LF line endings are read past.
+/// A shell sources the file as it is: it would take a line whose name is no
+/// variable's for a command, and run, redirect or expand what a value holds
+/// beyond letters, digits, `.`, `-`, `_`, `/` and `:`: a `;`, `&` or `|`, a
+/// `<` or `>`, a parenthesis, a `$`, a backtick, a quote, a backslash, a
+/// `~` at the start or after a colon, a blank. The tool refuses a line
+/// whose name is of other than capitals, digits and underscores, or begins
+/// with a digit, and one whose value is empty or holds anything but those
+/// characters, as it refuses a line of no pin, a pin given twice and a file
+/// without a pin it names. Comments, blank lines and CR LF line endings are
+/// read past.
 #[test]
 fn only_plain_pins_are_read() {
     let fine = "# a comment\r\n\r\nMSDOS_REPOSITORY=r\r\nMSDOS_BRANCH=b\nMSDOS_COMMIT=c\n\
@@ -67,20 +73,28 @@ fn only_plain_pins_are_read() {
     assert_eq!(pins.msdos_repository, "r");
     assert_eq!(pins.all.len(), 7);
 
-    for wrong in [
-        "A=b c\n",
-        "A=\"b\"\n",
-        "A=$HOME\n",
-        "A=b\\\n",
-        "A\n",
-        "=b\n",
-        "A=b\nA=c\n",
+    // The pins of `fine` with `line` after them, its tenth line.
+    let with = |line: &str| Pins::parse(String::leak(format!("{fine}{line}\n")));
+    let plain = with("_A_1=https://a.example/b_c-d.e/0:1").unwrap();
+    assert_eq!(pins.all.len() + 1, plain.all.len());
+    for line in [
+        "A=b c", "A=\"b\"", "A='b'", "A=$HOME", "A=`b`", "A=b\\", "A=b;c", "A=b&c", "A=b&&c",
+        "A=b|c", "A=<b", "A=b>c", "A=(b)", "A=~", "A=~/b", "A=b:~/c", "A=b*", "A=b?c", "A=b=c",
+        "A=b\rc", "A=", "A/B=c", "A-B=c", "8A=b", "a=b", "=b",
     ] {
-        assert!(Pins::parse(wrong).is_err(), "{wrong:?}");
+        assert_eq!(
+            with(line).unwrap_err(),
+            format!("line 10 is not plain: {line}"),
+            "{line:?}"
+        );
     }
-    assert!(
-        Pins::parse("A=b\n")
-            .unwrap_err()
-            .contains("MSDOS_REPOSITORY")
+    assert_eq!(with("A").unwrap_err(), "line 10 is no NAME=value: A");
+    assert_eq!(
+        with("MSDOS_BRANCH=c").unwrap_err(),
+        "MSDOS_BRANCH is pinned twice"
+    );
+    assert_eq!(
+        Pins::parse("A=b\n").unwrap_err(),
+        "no MSDOS_REPOSITORY is pinned"
     );
 }
