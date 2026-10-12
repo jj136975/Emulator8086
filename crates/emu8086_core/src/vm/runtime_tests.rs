@@ -147,9 +147,10 @@ fn a_smaller_rom_leaves_nothing_of_the_one_before() {
 }
 
 /// An image that is not 16 bytes to 64 KB long is refused with a message
-/// that names it and says how long it is, and changes nothing: the socket
-/// holds the ROM it held, known by its name. The shortest image there can
-/// be holds the reset vector, and the longest fills the socket.
+/// that names it and says how long it is, a longer one as more than 64 KB,
+/// and changes nothing: the socket holds the ROM it held, known by its
+/// name. The shortest image there can be holds the reset vector, and the
+/// longest fills the socket.
 #[test]
 fn an_image_that_cannot_be_a_rom_changes_nothing() {
     let mut rt = Runtime::new_test();
@@ -160,7 +161,8 @@ fn an_image_that_cannot_be_a_rom_changes_nothing() {
     for (size, said) in [
         (0, "empty"),
         (ROM_MIN_SIZE - 1, "15 bytes"),
-        (ROM_MAX_SIZE + 1, "65537 bytes"),
+        (ROM_MAX_SIZE + 1, "more than 64 KB"),
+        (0x100000, "more than 64 KB"),
     ] {
         let error = rt
             .load_rom_image(&vec![0x5A; size], "disk.img")
@@ -180,8 +182,8 @@ fn an_image_that_cannot_be_a_rom_changes_nothing() {
 }
 
 /// A ROM file that cannot be read, or holds no ROM image, is an error that
-/// names the file. One longer than a ROM image is told by its own length,
-/// which it is refused for before a byte of it is read.
+/// names the file: an empty one is told as empty, and one longer than a
+/// ROM image as more than 64 KB, however much longer.
 #[test]
 fn unusable_rom_file_is_an_error_that_names_the_file() {
     let mut rt = Runtime::new_test();
@@ -198,8 +200,8 @@ fn unusable_rom_file_is_an_error_that_names_the_file() {
         std::fs::write(&path, vec![0xFFu8; size]).unwrap();
         let error = rt.load_rom(path.clone()).unwrap_err();
         let length = match size {
-            0 => "empty".to_string(),
-            bytes => format!("{bytes} bytes"),
+            0 => "empty",
+            _ => "more than 64 KB",
         };
         assert_eq!(
             error,

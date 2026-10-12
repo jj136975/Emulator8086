@@ -19,6 +19,7 @@ use crate::site::FILES;
 use crate::wall_clock::HostClock;
 use emu8086_core::io::disk_spec::parse_disk_specs;
 use emu8086_core::io::keyboard::KeyboardController;
+use emu8086_core::vm::runtime::ROM_MAX_SIZE;
 
 /// What the machine runs before a test loads another ROM: a jump to itself.
 const BUSY_ROM: [u8; 16] = {
@@ -172,7 +173,7 @@ fn a_rom_of_the_users_restarts_the_machine_when_the_dialog_answers() {
         asked,
         FileQuestion {
             title: "Restart the machine with a ROM image".to_string(),
-            wanted: Wanted::Image,
+            wanted: Wanted::Rom,
         }
     );
     for _ in 0..3 {
@@ -302,26 +303,31 @@ fn a_rom_the_site_does_not_bring_changes_nothing_and_says_why() {
 
 /// An image that cannot be a ROM, such as a disk image chosen by mistake,
 /// changes nothing: the message says why, and which ROM the machine runs on
-/// with.
+/// with. A browser hands over no more of a file chosen for a ROM than the
+/// longest image and a byte (`Wanted::Rom`): that much is enough to tell it
+/// longer, as the whole file would.
 #[test]
 fn an_image_that_cannot_be_a_rom_changes_nothing_and_says_why() {
-    let mut bench = Bench::new();
-    bench.execute(RomCommand::FromFile);
-    let (_, answer) = bench.host.question();
-    let floppy = HostFile::Contents {
-        name: "disk.img".to_string(),
-        bytes: vec![0; 1_474_560],
-    };
-    answer.send(vec![floppy]).unwrap();
-    bench.poll();
+    for handed in [1_474_560, ROM_MAX_SIZE + 1] {
+        let mut bench = Bench::new();
+        bench.execute(RomCommand::FromFile);
+        let (_, answer) = bench.host.question();
+        let floppy = HostFile::Contents {
+            name: "disk.img".to_string(),
+            bytes: vec![0; handed],
+        };
+        answer.send(vec![floppy]).unwrap();
+        bench.poll();
 
-    assert_eq!(
-        bench.said(),
-        [failed(
-            "disk.img is 1474560 bytes, and a ROM image is 16 bytes to 64 KB. The machine runs on with a busy loop"
-        )]
-    );
-    assert!(bench.unchanged());
+        assert_eq!(
+            bench.said(),
+            [failed(
+                "disk.img is more than 64 KB, and a ROM image is 16 bytes to 64 KB. The machine runs on with a busy loop"
+            )],
+            "{handed} bytes handed over"
+        );
+        assert!(bench.unchanged());
+    }
 }
 
 /// A dialog the user closes without choosing asks for nothing, and one

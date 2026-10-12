@@ -56,6 +56,9 @@ fatfs.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
+# The page's `File` behind a file picked for a ROM, of which no more is
+# read than a ROM image and a byte (`File`, `Blob`).
+rfd = { workspace = true, features = ["file-handle-inner"] }
 web-sys = { workspace = true, features = [
     "Blob",
     "BlobPropertyBag",
@@ -64,6 +67,7 @@ web-sys = { workspace = true, features = [
     "Element",
     "Event",
     "EventTarget",
+    "File",
     "Headers",
     "HtmlAnchorElement",
     "HtmlCanvasElement",

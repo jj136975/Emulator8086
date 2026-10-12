@@ -30,6 +30,7 @@ use super::{Fetched, FileAccess, FileQuestion, OverlaySwitch, Wanted};
 use super::{fat_stamp, site_answer};
 use crate::Options;
 use emu8086_core::io::disk_ops::HostFile;
+use emu8086_core::vm::runtime::ROM_MAX_SIZE;
 
 /// The most detailed level of the log that reaches the console. The console
 /// has a filter of its own; what is cut here is the cost of formatting, on
@@ -374,7 +375,8 @@ impl FileDialogs {
     /// Asks the user `question` in the browser's file picker, and returns
     /// at once. The answer arrives later through the channel returned: the
     /// files chosen, each by its name and its contents, or none if the user
-    /// chose nothing. What a page cannot ask for, a folder or a file to
+    /// chose nothing. Of a ROM image, no more is read than the longest
+    /// image and a byte. What a page cannot ask for, a folder or a file to
     /// write, is answered with none.
     ///
     /// A browser opens its picker only for a page its user has just
@@ -385,22 +387,43 @@ impl FileDialogs {
         let (answer, receiver) = mpsc::channel();
         spawn(async move {
             let dialog = rfd::AsyncFileDialog::new().set_title(question.title);
+            let most = (question.wanted == Wanted::Rom).then_some(ROM_MAX_SIZE + 1);
             let picked: Vec<rfd::FileHandle> = match question.wanted {
-                Wanted::Image => dialog.pick_file().await.into_iter().collect(),
+                Wanted::Image | Wanted::Rom => dialog.pick_file().await.into_iter().collect(),
                 Wanted::Files => dialog.pick_files().await.unwrap_or_default(),
                 Wanted::NewImage { .. } | Wanted::Folder => Vec::new(),
             };
             let mut files = Vec::with_capacity(picked.len());
             for file in picked {
+                let bytes = match most {
+                    Some(most) => read_at_most(&file, most).await,
+                    None => file.read().await,
+                };
                 files.push(HostFile::Contents {
                     name: file.file_name(),
-                    bytes: file.read().await,
+                    bytes,
                 });
             }
             // Whoever asked may have gone since.
             let _ = answer.send(files);
         });
         receiver
+    }
+}
+
+/// The first `most` bytes of the file `handle` holds, or all of it if it is
+/// shorter, read without the rest of it.
+async fn read_at_most(handle: &rfd::FileHandle, most: usize) -> Vec<u8> {
+    let file = handle.inner();
+    let read = match file.slice_with_f64_and_f64(0.0, file.size().min(most as f64)) {
+        Ok(part) => JsFuture::from(part.array_buffer()).await,
+        Err(error) => Err(error),
+    };
+    match read {
+        Ok(part) => js_sys::Uint8Array::new(&part).to_vec(),
+        // A part the page cannot read is read whole, as every other file
+        // is: rfd's read of a file the page cannot read fails as before.
+        Err(_) => handle.read().await,
     }
 }
 

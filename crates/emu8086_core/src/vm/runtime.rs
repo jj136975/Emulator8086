@@ -102,7 +102,7 @@ pub struct Prefixes {
 const FRAME_INSTRUCTIONS: u64 = 50_000;
 
 /// Size of the ROM socket, F000:0000-FFFF: the most a ROM image can be.
-const ROM_MAX_SIZE: usize = 0x10000;
+pub const ROM_MAX_SIZE: usize = 0x10000;
 /// Where the ROM socket starts.
 const ROM_START: usize = MEMORY_SIZE - ROM_MAX_SIZE;
 /// The least a ROM image can be: the 16 bytes from the reset vector at
@@ -635,10 +635,12 @@ impl Runtime {
 }
 
 /// Why an image of `length` bytes, known to the user as `name`, cannot be
-/// a ROM image.
+/// a ROM image. One longer than the longest is told as such, not by its
+/// length: a host may have read no more of it than tells it longer.
 fn misfit(name: &str, length: u64) -> String {
     let size = match length {
         0 => "empty".to_string(),
+        longer if longer > ROM_MAX_SIZE as u64 => "more than 64 KB".to_string(),
         bytes => format!("{bytes} bytes"),
     };
     format!("{name} is {size}, and a ROM image is 16 bytes to 64 KB")

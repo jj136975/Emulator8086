@@ -254,7 +254,9 @@ impl FileDialogs {
         // The dialog is made here, on the thread of the window: there are
         // systems that show one from no other thread.
         let choosing: Choosing = match question.wanted {
-            Wanted::Image => {
+            // A ROM file is read by its path, and a longer one refused
+            // unread (`Runtime::load_rom`).
+            Wanted::Image | Wanted::Rom => {
                 let picked = dialog.pick_file();
                 Box::pin(async move { picked.await.into_iter().map(PathBuf::from).collect() })
             }

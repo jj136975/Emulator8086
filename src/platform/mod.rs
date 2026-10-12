@@ -119,8 +119,13 @@ pub struct FileQuestion {
 /// What a file dialog is to come back with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wanted {
-    /// One file that exists: an image, of a disk or of a ROM.
+    /// One file that exists: an image of a disk.
     Image,
+    /// One file that exists: an image of a ROM. A host that hands a file
+    /// over by its contents reads no more of it than the longest ROM image
+    /// and a byte, which tells a longer one: a disk image of gigabytes
+    /// chosen by mistake is not read whole into the page to be refused.
+    Rom,
     /// A disk image to write: a new file, or one to replace, which the
     /// dialog has the user confirm. `suggested` is the name it offers.
     /// Asked only where files have paths.

@@ -161,12 +161,16 @@ widened from `pub(crate)` when one of them needs it, not before.
   stays below a smaller one) and keeps the name the user knows it by
   (`Runtime::rom`, which the About panel shows); `load_rom` reads a file,
   and refuses one longer than an image unread. Nothing else is refused,
-  and an image refused is a message for the user that changes nothing.
-  The command line names a ROM for the start. At run time Machine > Load
-  ROM (`src/gui/overlay/load_rom.rs`) asks for one with a `RomCommand`, and
-  `RomLoader` (`src/gui/rom_loader.rs`) loads it, at once or when the
-  host's dialog or the site has answered, and restarts the machine at the
-  reset vector as Reset does, its memory, devices and drives as they are.
+  and an image refused is a message for the user that changes nothing;
+  one longer than an image is told as "more than 64 KB", whatever its
+  length. The command line names a ROM for the start. At run time Machine
+  > Load ROM (`src/gui/overlay/load_rom.rs`) asks for one with a
+  `RomCommand`, and `RomLoader` (`src/gui/rom_loader.rs`) loads it, at
+  once or when the host's dialog or the site has answered, and restarts
+  the machine at the reset vector as Reset does, its memory, devices and
+  drives as they are. Its dialog asks for a ROM (`Wanted::Rom`), of which
+  a browser reads no more than `ROM_MAX_SIZE` and a byte: a disk image of
+  gigabytes chosen by mistake is refused there unread as well.
 - **Guest time**: the machine is told the time, it never reads a clock.
   `Runtime::credit_pit_time` turns host time into the 8253 clocks the guest
   is owed (the debt, its 250 ms cap) and `Runtime::run` pays them out, four
@@ -663,8 +667,8 @@ not listed has not been asked: ask first, and add the answer here.
 |---|---|---|---|
 | 2026-10-04 | `wgpu` 24 → 30, `winit` 0.30.13 | approved | the window; the versions `egui-wgpu` 0.36 requires |
 | 2026-10-04 | `egui` 0.36, `egui-wgpu`, `egui-winit` | approved | the overlay in the window. In use, in the app only, with egui's `default_fonts` and no other feature: no system clipboard (`arboard`), no screen-reader adapter (`accesskit_winit`), no opening of links (`webbrowser`), none of which a browser has. `egui-winit` is a dependency of the native targets only: 0.36.2 does not build for wasm32 (see below) |
-| 2026-10-04 | `rfd` 0.17 | approved | file dialogs, native and in the browser. In use, in the app on both hosts (`src/platform`): the system's dialogs on a desktop, the file picker in a browser. With its default features, which only Linux and the BSDs build (the desktop portal's dialogs, parented to a Wayland window too). In a browser it brings `web-sys` features of its own (the file input and its reader, the user's activation), which cargo adds to those the root manifest lists |
-| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other (beside those `rfd` asks for itself). `Response` and `Headers` were added on 2026-10-10 with the fetch of the site's files (`platform::fetch`) |
+| 2026-10-04 | `rfd` 0.17 | approved | file dialogs, native and in the browser. In use, in the app on both hosts (`src/platform`): the system's dialogs on a desktop, the file picker in a browser. With its default features, which only Linux and the BSDs build (the desktop portal's dialogs, parented to a Wayland window too). In a browser it brings `web-sys` features of its own (the file input and its reader, the user's activation), which cargo adds to those the root manifest lists. Its `file-handle-inner` feature, which adds no crate, is on in a browser since 2026-10-12: the page's `File` behind a picked file, of which a ROM's is read no further than an image and a byte (`Wanted::Rom`) |
+| 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other (beside those `rfd` asks for itself). `Response` and `Headers` were added on 2026-10-10 with the fetch of the site's files (`platform::fetch`), and `File` on 2026-10-12 with the part of a ROM's file the picker reads |
 | 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate. In use: 0.21, with `index.html` at the root |
 | 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
 | 2026-10-10 | GitHub's own actions: `actions/checkout`, `actions/cache`, `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` | requested with the deployment (the user asked for the browser build to be built by CI and published on GitHub Pages), not asked one by one | `.github/workflows/pages.yml` alone. No action of a third party: the runner's rustup installs the toolchain, and trunk comes from its releases, checked against the checksum the workflow holds |

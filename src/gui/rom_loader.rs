@@ -78,7 +78,7 @@ impl RomLoader {
             RomCommand::FromFile => {
                 let question = FileQuestion {
                     title: DIALOG_TITLE.to_string(),
-                    wanted: Wanted::Image,
+                    wanted: Wanted::Rom,
                 };
                 let answer = self.host.ask(question);
                 self.chosen.push((), answer);
