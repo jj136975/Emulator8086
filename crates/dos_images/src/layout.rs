@@ -1,8 +1,9 @@
 //! The disks below their file systems: a hard disk of whole cylinders with
 //! one primary partition (the partition entry of its master boot record),
-//! the boot sector the build made put on a volume with the volume's own
-//! BIOS parameter block, and IO.SYS and MSDOS.SYS where MS-DOS 4.00's boot
-//! sector looks for them.
+//! the volume of a disk the guest left, where that entry says
+//! (`volume_of`), the boot sector the build made put on a volume with the
+//! volume's own BIOS parameter block, and IO.SYS and MSDOS.SYS where
+//! MS-DOS 4.00's boot sector looks for them.
 //!
 //! The invariant: a volume the tool seals boots MS-DOS 4.00. Its boot
 //! sector reads the first two entries of the root and compares them with
