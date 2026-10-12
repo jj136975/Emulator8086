@@ -286,8 +286,10 @@ widened from `pub(crate)` when one of them needs it, not before.
   overlay hidden). egui may run the UI twice for one frame, and gives the
   frame's events (`ui.input(|i| i.events)`) to the first run alone. Which
   of them a finger made is the shell's to tell (`with_echoes`): the first
-  finger is egui's pointer as well, and a press or a release of the
-  primary button right after a touch is that touch's echo.
+  finger is egui's pointer as well, and a press of the primary button
+  right after a finger came down, or a release right after one lifted, is
+  that touch's echo; the mouse's release next to a finger coming down, or
+  its press next to one lifting, is the mouse's own.
 - **A device panel** (8259A, 8253, VGA, keyboard, port E9h): reads the
   device's description, never its ports, since a port read is seen by the
   guest (a poll answered, a flip-flop reset, a DAC index moved):

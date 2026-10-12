@@ -341,11 +341,13 @@ fn the_overlay_has_no_shortcut_on_keys_the_guest_gets() {
     }
 }
 
-/// A press or a release of the primary button that follows a touch, with
-/// nothing but moves of the pointer between them, is that touch's echo:
-/// the hosts hand egui the first finger as its pointer as well. A press or a
-/// release after any other event is not, nor is one of another button, nor
-/// is a touch itself.
+/// A press of the primary button that follows a finger coming down, or a
+/// release that follows one lifting, with nothing but moves of the pointer
+/// between them, is that touch's echo: the hosts hand egui the first finger
+/// as its pointer as well. A press or a release after any other event is
+/// not, nor is one of another button, nor a touch itself, nor the mouse's
+/// release right after another finger came down, nor its press right after
+/// one lifted, nor its release right after one was taken away.
 #[test]
 fn a_finger_echoes_in_the_primary_button_right_after_its_touch() {
     let at = egui::pos2(10.0, 10.0);
@@ -369,6 +371,12 @@ fn a_finger_echoes_in_the_primary_button_right_after_its_touch() {
         (primary(at, true), false),
         (touch(3, egui::TouchPhase::Start, at), false),
         (key(egui::Key::A, true), false),
+        (primary(at, false), false),
+        (touch(4, egui::TouchPhase::Start, at), false),
+        (primary(at, false), false),
+        (touch(4, egui::TouchPhase::End, at), false),
+        (primary(at, true), false),
+        (touch(5, egui::TouchPhase::Cancel, at), false),
         (primary(at, false), false),
     ];
     let events: Vec<egui::Event> = frame.iter().map(|(event, _)| event.clone()).collect();

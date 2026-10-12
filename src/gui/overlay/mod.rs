@@ -48,8 +48,8 @@ pub use panels::Panel;
 pub use start::StartCommand;
 
 use egui::{
-    Align, Align2, Area, Event, Frame, Id, Layout, MenuBar, Order, PointerButton, Pos2, Rect, Vec2,
-    Window, vec2,
+    Align, Align2, Area, Event, Frame, Id, Layout, MenuBar, Order, PointerButton, Pos2, Rect,
+    TouchPhase, Vec2, Window, vec2,
 };
 
 use super::meter::Meter;
@@ -478,24 +478,33 @@ fn keyboard_taken(ctx: &egui::Context) -> bool {
 /// The events of a frame, each with whether it is a finger's echo. The
 /// first finger is egui's pointer as well, and the hosts put the pointer's
 /// events of a finger right after its touch (egui-winit, and
-/// `platform::egui_events` in a browser): a press or a release of the
-/// primary button that follows a touch, with nothing but moves of the
-/// pointer between them, is that touch's echo.
+/// `platform::egui_events` in a browser): a press of the primary button
+/// that follows a finger coming down, or a release that follows one
+/// lifting, with nothing but moves of the pointer between them, is that
+/// touch's echo. Any other press or release is the pointer's own, the
+/// mouse's release next to a finger coming down, or its press next to one
+/// lifting, among them. The mouse's button going down right after a finger
+/// came down, or coming up right after one lifted, in one frame, are the
+/// two cases the events cannot tell from an echo.
 fn with_echoes(events: &[Event]) -> impl Iterator<Item = (&Event, bool)> {
-    let mut after_touch = false;
+    // The phase of the touch just before, with nothing but moves since.
+    let mut after: Option<TouchPhase> = None;
     events.iter().map(move |event| {
-        let echo = after_touch
-            && matches!(
-                event,
-                Event::PointerButton {
-                    button: PointerButton::Primary,
-                    ..
-                }
-            );
-        after_touch = match event {
-            Event::Touch { .. } => true,
-            Event::PointerMoved(_) => after_touch,
+        let echo = match event {
+            Event::PointerButton {
+                button: PointerButton::Primary,
+                pressed,
+                ..
+            } => matches!(
+                (after, pressed),
+                (Some(TouchPhase::Start), true) | (Some(TouchPhase::End), false)
+            ),
             _ => false,
+        };
+        after = match event {
+            Event::Touch { phase, .. } => Some(*phase),
+            Event::PointerMoved(_) => after,
+            _ => None,
         };
         (event, echo)
     })
