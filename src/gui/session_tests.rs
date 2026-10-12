@@ -226,8 +226,9 @@ fn a_finger_down_before_the_overlay_showed_presses_nothing_when_it_lifts() {
     session.target.overlay_key(ElementState::Pressed, false);
     assert!(!session.target.overlay.visible());
 
-    // While the overlay is hidden, the window drops what egui would make
-    // of the finger.
+    // While the overlay is hidden the window hands egui nothing of the
+    // finger (`offer_to_overlay`, in the window, outside the suite): the
+    // press is in no frame's events here, as it is in none there.
     let start = Instant::now();
     session.target.touch(1, TouchPhase::Started, machine, start);
     session.target.hold(start + HOLD);
@@ -329,6 +330,32 @@ fn the_on_screen_keys_are_let_go_when_the_keyboard_leaves_the_screen() {
     lost.extend(first_finger_up(5, w));
     assert!(!session.frame(lost).pressed("W"));
     assert_eq!(sent(&events), NOTHING);
+}
+
+/// A modifier latched on the on-screen keyboard is let go in the guest when
+/// the keyboard's window is collapsed to its title bar, which draws no key:
+/// opened out again, the keyboard holds nothing, and the next key typed
+/// comes up alone.
+#[test]
+fn a_latched_modifier_is_let_go_when_the_keyboards_window_is_collapsed() {
+    let (mut session, events) = shown(&BUSY_ROM);
+    session.toggle_in_view_menu(KEYBOARD);
+    session.click(Role::Button, "Left Shift");
+    assert_eq!(sent(&events), [Scancode(0x2A)], "latched");
+
+    session.click(Role::Button, "Hide");
+    session.wait(1.0);
+    assert!(!session.screen().has(Role::Button, "A"), "collapsed");
+    assert_eq!(sent(&events), [ScanRelease(0xAA)]);
+
+    session.click(Role::Button, "Show");
+    session.wait(1.0);
+    // Opened out below its title bar, the window reaches past the foot of
+    // the screen, and egui puts it back inside in the frame after.
+    session.frame(Vec::new());
+    assert!(!session.screen().pressed("Left Shift"));
+    session.click(Role::Button, "A");
+    assert_eq!(sent(&events), [Scancode(0x1E), ScanRelease(0x9E)]);
 }
 
 /// A finger that holds a key of the on-screen keyboard is on the overlay:
