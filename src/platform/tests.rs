@@ -1,8 +1,8 @@
 //! The rule of `platform` (`mod.rs`), checked against the app's own
 //! sources: the suite fails when a file outside this directory asks which
 //! host it is built for, reaches for a browser's own API, sleeps, starts a
-//! thread, waits on a channel, a lock, a future or the terminal, or names a
-//! clock of `std::time`.
+//! thread, waits on a channel, a lock, a barrier, a future or the terminal,
+//! or names a clock of `std::time`.
 //!
 //! The invariant: a failure is a decision to take, not a list to extend.
 //! What depends on the host gets a name in `platform` that every host
@@ -30,7 +30,9 @@ const HOST_NAMES: [&str; 6] = [
 
 /// What only some hosts can do: a browser's one thread cannot be put to
 /// sleep, nor stand still until a future is ready, a channel has an answer,
-/// a lock is given up or a line is typed, and it cannot start another.
+/// a lock is given up, a barrier is passed or a line is typed, and it
+/// cannot start another. One of these named in the braces of a `use`, as
+/// `use std::thread::{sleep, spawn}`, is caught as well (`offences`).
 const HOST_CALLS: [&str; 11] = [
     "thread::sleep",
     "thread::park",
@@ -71,8 +73,9 @@ fn rust_sources(dir: &Path, found: &mut Vec<PathBuf>) {
 /// starts there: a string, to its closing quote, past the characters it
 /// escapes; a raw string, `r"..."` or `r#"..."#`, which escapes nothing, to
 /// the quote followed by as many hashes as opened it; a character literal,
-/// such as '"' or '\'', whole. A lifetime, such as 'a, is no literal. One
-/// that never closes runs to the end.
+/// such as '"' or '\'', whole. A lifetime, such as 'a, is no literal. A
+/// string that never closes runs to the end; a character literal that
+/// never closes is no literal.
 fn literal_len(rest: &str) -> Option<usize> {
     let bytes = rest.as_bytes();
     if rest.starts_with('"') {
@@ -99,7 +102,11 @@ fn literal_len(rest: &str) -> Option<usize> {
     }
     if let Some(quoted) = rest.strip_prefix('\'') {
         if let Some(escaped) = quoted.strip_prefix('\\') {
-            return escaped.find('\'').map(|end| 2 + end + 1);
+            // The escaped character is the literal's, a quote too.
+            let skipped = escaped.chars().next()?.len_utf8();
+            return escaped[skipped..]
+                .find('\'')
+                .map(|end| 2 + skipped + end + 1);
         }
         let mut chars = quoted.chars();
         let first = chars.next()?;
@@ -173,6 +180,21 @@ fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
             found.push((line_of(at), name.to_string()));
         }
     }
+    // A call named in the braces of a `use` of its module, `use
+    // std::thread::{sleep, spawn}`, which rustfmt may spread over lines.
+    for name in calls {
+        let Some((module, item)) = name.split_once("::") else {
+            continue;
+        };
+        for (at, _) in code.match_indices(&format!("{module}::{{")) {
+            let group = &code[at..];
+            let group = &group[..group.find('}').unwrap_or(group.len())];
+            let names = group.split(|c: char| !c.is_alphanumeric() && c != '_');
+            if names.into_iter().any(|named| named == item) {
+                found.push((line_of(at), name.to_string()));
+            }
+        }
+    }
 
     // A clock of std is named by its path below `time`, whatever comes
     // before it (`std::time::Instant`, `time::Instant` after `use std::time`,
@@ -200,7 +222,8 @@ fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
 
 /// No file of the app outside `platform` asks which host it is built for,
 /// names a browser's API, sleeps, starts a thread, waits on a channel, a
-/// lock, a future or the terminal, or names a clock of `std::time`: what
+/// lock, a barrier, a future or the terminal, or names a clock of
+/// `std::time`: what
 /// depends on the host is called by the name `platform` gives it.
 #[test]
 fn only_platform_knows_the_host() {
@@ -269,6 +292,9 @@ fn what_depends_on_the_host_is_caught() {
         "std::thread::park();",
         "std::thread::spawn(move || run());",
         "std::thread::scope(|scope| scope.spawn(run));",
+        "use std::thread::{sleep, spawn};",
+        "use std::thread::{\n    Builder,\n    scope,\n};",
+        "use std::io::{self, stdin};",
         "let worker = std::thread::Builder::new().spawn(run);",
         "let answer = answers.recv();",
         "let answer = answers.recv_timeout(PATIENCE);",
@@ -287,6 +313,7 @@ fn what_depends_on_the_host_is_caught() {
         "let now = std::time::SystemTime::now();",
         "let site = \"https://example.org\"; let started = std::time::Instant::now();",
         "let quote = '\"'; std::thread::sleep(FRAME);",
+        "let quote = '\\''; std::thread::sleep(FRAME);",
         "let raw = r#\"say \"hi\"\"#; std::thread::sleep(FRAME);",
         "let prefix = r\"\\\\?\\\"; std::thread::sleep(FRAME);",
         "/* a */ std::thread::sleep(FRAME);",
@@ -331,6 +358,8 @@ fn what_every_host_can_do_is_not_caught() {
         "/// Never `std::time::Instant` here.",
         "let site = \"https://example.org\"; // std::thread::sleep(FRAME)",
         "let quote = '\"'; // std::thread::sleep(FRAME)",
+        "let quote = '\\''; // std::thread::sleep(FRAME)",
+        "use std::io::{self, Read};",
         "let prefix = r\"\\\\?\\\"; // std::thread::sleep(FRAME)",
         "let raw = r#\"say \"hi\"\"#; // block_on",
         "fn first<'a>(words: &'a [&str]) -> &'a str { words[0] } // block_on",
