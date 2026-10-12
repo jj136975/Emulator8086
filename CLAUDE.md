@@ -108,7 +108,7 @@ The tool, in `crates/dos_images/`:
 | `fetch-inputs.sh` | fetches the inputs into a new directory, each checked against its pin: curl and `sha256sum --check`, unzip of the files needed, and `v4.0` of the commit by a sparse, depth-1 git fetch whose commit and tree are checked, its files checked out as committed |
 | `msdos400-binaries.sha256`, `disks.sha256` | the lists the workflow checks the output against: the 62 files the build makes (61 of the MS-DOS 4.00 release of 1988, and XMAEM.SYS) and the two disks |
 | `src/main.rs` | the command line (`--freedos`, `--msdos`, `--doom8088`, `--out`), the stages run, a failure printed, the exit code |
-| `src/stages/` | the stages in their order (`mod.rs`, `run`), each with its error type: `host` (FreeDOS's floppy with its own FDCONFIG.SYS and FDAUTO.BAT), `build_disk` (the source on a 100 MB FAT16 disk, with BUILD.BAT), `build` (the run: its markers in turn, its budgets, a line a module), `collect` (what CPY.BAT copied, the boot sector, the master boot record, a clean BUILD.LOG), `floppy`, `hard_disk`; `msdos` puts MS-DOS on a volume for both, `check` has CHKDSK check each from a copy of the floppy; before stage 1 `run` removes the outputs of an earlier run and reads the input files the disks take (`InputFiles`: the source's LICENSE, Doom8088's four files), so that one missing fails the run at once |
+| `src/stages/` | the stages in their order (`mod.rs`, `run`), each with its error type: `host` (FreeDOS's floppy with its own FDCONFIG.SYS and FDAUTO.BAT), `build_disk` (the source on a 100 MB FAT16 disk, with BUILD.BAT), `build` (the run: its markers in turn, its budgets, a line a module), `collect` (what CPY.BAT copied, the boot sector, the master boot record, a clean BUILD.LOG with the part of each module built), `floppy`, `hard_disk`; `msdos` puts MS-DOS on a volume for both, `check` has CHKDSK check each from a copy of the floppy; before it touches the output directory `run` reads the input files the disks take (`InputFiles`: the source's LICENSE, Doom8088's four files), so that one missing fails the run at once and leaves an earlier run's outputs as they were, and then removes those outputs, so that a run leaves only what it made and checked |
 | `src/guest.rs` | the machine as the tool runs it: batches of instructions credited with guest time, budgets of guest time, the port E9h's new lines, the text screen, the hash of the Mode 13h picture, a disk's contents |
 | `src/makefiles.rs` | the modules, from the makefiles that only dispatch; BUILD.BAT; the files of CPY.BAT |
 | `src/markers.rs` | E9.COM, and the markers the batch files send through it |
@@ -394,8 +394,8 @@ widened from `pub(crate)` when one of them needs it, not before.
   stage that fails prints an `::error` annotation, what the emulated
   screen showed, the last lines of port E9h and, for the build, the
   failing module's part of BUILD.LOG. An input file the disks take that
-  cannot be read fails the run before stage 1, with an `::error`
-  annotation titled Inputs that names it.
+  cannot be read fails the run before it touches the output directory,
+  with an `::error` annotation titled Inputs that names it.
 - **A colour of the overlay**: a slot of `PALETTE` in
   `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
   under `src/gui/overlay/` spells a colour.
@@ -454,10 +454,12 @@ the notices, the pins, the account of a build told its markers by hand,
 the guest (its lines of port E9h, its time a batch and its budgets, on the
 built-in BIOS with no disk and on programs of the tests'), the stages
 that write the outputs, on disks made by hand (each writes its output only
-once it has passed its checks), and the run's start: it removes the
-outputs of an earlier run first, and fails before stage 1 when the
-inputs lack a file the disks take. Run the tool with `--release`: the
-emulator of a debug build is many times slower.
+once it has passed its checks, and stage 4 refuses a log without the
+part of a module built), and the run's start: it stops before it changes
+the output directory when the inputs lack a file the disks take, and
+removes the outputs of an earlier run before its first stage. Run the
+tool with `--release`: the emulator of a debug build is many times
+slower.
 
 The browser build is trunk's (0.21, `cargo install trunk`): `trunk serve`
 builds it, serves it on http://127.0.0.1:8080 and rebuilds on change, and
