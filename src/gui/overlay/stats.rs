@@ -321,19 +321,19 @@ fn parts(frames: &Frames) -> [Duration; 5] {
     ]
 }
 
-/// The parts of the frames' host time side by side, each as long as its
-/// share, in a bar as wide as a chart. Before the first average the bar is
-/// empty.
-fn bar(ui: &mut Ui, frames: Option<&Frames>) {
+/// The parts of the frames' host time, `measured` of the frames, side by
+/// side, each as long as its share, in a bar as wide as a chart. Before the
+/// first average the bar is empty.
+fn bar(ui: &mut Ui, measured: Option<(&Frames, [Duration; 5])>) {
     let size = vec2(METRICS.chart.x, METRICS.bar);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, PALETTE.well);
-    let Some(frames) = frames else {
+    let Some((frames, parts)) = measured else {
         return;
     };
     let mut left = rect.left();
-    for ((_, colour, _), part) in PARTS.iter().zip(parts(frames)) {
+    for ((_, colour, _), part) in PARTS.iter().zip(parts) {
         let width = frames.share(part) as f32 * rect.width();
         let segment = Rect::from_min_size(pos2(left, rect.top()), vec2(width, rect.height()));
         painter.rect_filled(segment, 0.0, *colour);
@@ -346,8 +346,8 @@ fn bar(ui: &mut Ui, frames: Option<&Frames>) {
 /// the frames themselves, how long and how many a second.
 fn frames(ui: &mut Ui, frames: Option<&Frames>) {
     ui.strong("Where the time goes");
-    bar(ui, frames);
     let measured = frames.map(|frames| (frames, parts(frames)));
+    bar(ui, measured);
     Grid::new("stats_frames").num_columns(3).show(ui, |ui| {
         for (index, (name, colour, holds)) in PARTS.into_iter().enumerate() {
             ui.horizontal(|ui| {
