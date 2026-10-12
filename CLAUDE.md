@@ -446,9 +446,12 @@ desktop: there is no ignored test of it, since its inputs are not in the
 repository and the check of its output is sha256sum's. `cargo test
 --workspace` runs the tool's unit tests, which need no input: the
 makefiles, the layouts, the markers and E9.COM, the log, CHKDSK's report,
-the notices, the pins, and the account of a build told its markers by
-hand. Run the tool with `--release`: the emulator of a debug build is many
-times slower.
+the notices, the pins, the account of a build told its markers by hand,
+the guest (its lines of port E9h, its time a batch and its budgets, on the
+built-in BIOS with no disk and on programs of the tests'), and the stages
+that write the outputs, on disks made by hand: each writes its output only
+once it has passed its checks. Run the tool with `--release`: the
+emulator of a debug build is many times slower.
 
 The browser build is trunk's (0.21, `cargo install trunk`): `trunk serve`
 builds it, serves it on http://127.0.0.1:8080 and rebuilds on change, and
