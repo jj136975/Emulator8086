@@ -159,10 +159,11 @@ impl OverlayInput {
         self.0.on_window_event(window, event).consumed
     }
 
-    /// Drops what was gathered: no pass will take it.
+    /// Drops what was gathered, but for the releases of the pointer's
+    /// buttons (`keep_releases`): no pass will take the rest.
     pub fn discard(&mut self) {
         let input = self.0.egui_input_mut();
-        input.events.clear();
+        super::keep_releases(&mut input.events);
         input.hovered_files.clear();
         input.dropped_files.clear();
     }

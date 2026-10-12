@@ -285,6 +285,29 @@ fn the_first_finger_is_a_touch_and_the_pointer() {
     );
 }
 
+/// What no pass is run for is dropped, but for the releases of the
+/// pointer's buttons, the last of each: the lift of a finger whose press a
+/// pass took reaches egui with the next pass, and the mouse's last release
+/// with it, while the presses, the moves, the touches and the press of a
+/// button still down are gone.
+#[test]
+fn what_no_pass_takes_is_dropped_but_for_the_releases() {
+    let (mut events, _ctx) = events(1.0);
+    events.on_window_event(&finger(1, TouchPhase::Started, 10.0, 10.0));
+    taken(&mut events, 1.0);
+
+    events.on_window_event(&finger(1, TouchPhase::Ended, 10.0, 10.0));
+    events.on_window_event(&moved(30.0, 30.0));
+    events.on_window_event(&button(ElementState::Pressed, MouseButton::Left));
+    events.on_window_event(&button(ElementState::Released, MouseButton::Left));
+    events.on_window_event(&button(ElementState::Pressed, MouseButton::Right));
+    events.discard();
+    assert_eq!(
+        taken(&mut events, 1.0),
+        [primary(egui::pos2(30.0, 30.0), false)]
+    );
+}
+
 /// A finger that comes down while the first one is still down is a touch of
 /// its own and nothing more: the pointer stays with the first, until that
 /// one lifts.

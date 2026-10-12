@@ -250,7 +250,8 @@ impl OverlayInput {
         self.0.on_window_event(event)
     }
 
-    /// Drops what was gathered: no pass will take it.
+    /// Drops what was gathered, but for the releases of the pointer's
+    /// buttons (`keep_releases`): no pass will take the rest.
     pub fn discard(&mut self) {
         self.0.discard();
     }

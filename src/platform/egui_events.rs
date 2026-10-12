@@ -333,9 +333,10 @@ impl EguiEvents {
         self.input.take()
     }
 
-    /// Drops what was gathered: no pass will take it.
+    /// Drops what was gathered, but for the releases of the pointer's
+    /// buttons (`keep_releases`): no pass will take the rest.
     pub fn discard(&mut self) {
-        self.input.events.clear();
+        super::keep_releases(&mut self.input.events);
     }
 
     /// What the window's cursor has to become after a pass that asked for

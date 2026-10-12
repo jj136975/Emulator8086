@@ -22,7 +22,9 @@
 //!   viewport, and the title is the page's.
 //! - `spawn`: runs a future to its end: at once on a desktop, which may
 //!   block; later in a browser, which may not.
-//! - `OverlayInput`: the window's events as egui's input.
+//! - `OverlayInput`: the window's events as egui's input. What no pass is
+//!   run for is dropped, but for the releases of the pointer's buttons
+//!   (`keep_releases`).
 //! - `OVERLAY_SWITCH`: how the user shows and hides the overlay
 //!   (`OverlaySwitch`).
 //! - `wait`: lets host time go by, and says whether the host could: a
@@ -139,6 +141,31 @@ pub enum Wanted {
 /// What became of a file asked of the site (`fetch`): its bytes, or why
 /// none came, in words for the user that name the file.
 pub type Fetched = Result<Vec<u8>, String>;
+
+/// Drops the events gathered for a pass that will not be run, but for the
+/// releases of the pointer's buttons, the last of each: egui is told that a
+/// button came up wherever it may have been told that it went down. A
+/// finger held on the picture until the overlay hides was egui's pointer
+/// when it came down, and lifts once no pass is run: dropped, its release
+/// would leave the button down in egui, which would then not claim the
+/// pointer over the overlay until the next click.
+fn keep_releases(events: &mut Vec<egui::Event>) {
+    let mut kept: Vec<egui::Event> = Vec::new();
+    for event in events.drain(..) {
+        if let egui::Event::PointerButton {
+            button,
+            pressed: false,
+            ..
+        } = event
+        {
+            kept.retain(|earlier| {
+                !matches!(earlier, egui::Event::PointerButton { button: same, .. } if *same == button)
+            });
+            kept.push(event);
+        }
+    }
+    *events = kept;
+}
 
 #[cfg(test)]
 mod tests;
