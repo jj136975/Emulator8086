@@ -199,11 +199,6 @@ pub(crate) fn make(
     })
     .map_err(Error::Put)?;
     let bytes = disk.into_bytes();
-    println!(
-        "  {HARD_DISK_IMAGE}: {} files, {} bytes free",
-        files.len() + doom.len(),
-        grouped(free)
-    );
 
     let image = DiskImage::hard_disk_from_bytes(bytes.clone(), "doom8088.img", false);
     let mut guest = Guest::power_on(vec![(0x80, image)]);
@@ -246,6 +241,11 @@ pub(crate) fn make(
 
     let path = out.join(HARD_DISK_IMAGE);
     std::fs::write(&path, &bytes).map_err(|error| Error::Output(path, error))?;
+    println!(
+        "  {HARD_DISK_IMAGE}: {} files, {} bytes free",
+        files.len() + doom.len(),
+        grouped(free)
+    );
     Ok(DoomDisk {
         bytes,
         free,

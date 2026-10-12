@@ -129,11 +129,6 @@ pub(crate) fn make(
         msdos::write(volume, &stamp::MSDOS, None, &files)
     })
     .map_err(Error::Put)?;
-    println!(
-        "  {FLOPPY_IMAGE}: {} files, {} bytes free",
-        files.len(),
-        grouped(free)
-    );
 
     let image = DiskImage::from_bytes(bytes.clone(), "msdos400.img", false);
     let mut guest = Guest::power_on(vec![(0x00, image)]);
@@ -153,6 +148,11 @@ pub(crate) fn make(
 
     let path = out.join(FLOPPY_IMAGE);
     std::fs::write(&path, &bytes).map_err(|error| Error::Output(path, error))?;
+    println!(
+        "  {FLOPPY_IMAGE}: {} files, {} bytes free",
+        files.len(),
+        grouped(free)
+    );
     Ok(Floppy {
         bytes,
         files: files.len(),
