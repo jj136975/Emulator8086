@@ -1,8 +1,9 @@
 //! The window's side of the renderer: `Renderer` holds the wgpu surface on
 //! the winit window, configures it (`window_format`, vsync, two frames in
-//! flight) and records one frame into it per redraw (`record_frame`), and
-//! each redraw reports how long the surface kept it waiting for that frame,
-//! apart from the drawing (`Drawn`).
+//! flight), makes it anew when it is lost, and records one frame into it
+//! per redraw (`record_frame`), and each redraw reports how long the
+//! surface kept it waiting for that frame, apart from the drawing
+//! (`Drawn`).
 //!
 //! The invariant: the overlay's paint is taken only once the surface has
 //! given a frame to draw on. The texture changes it carries come once, and
@@ -44,6 +45,10 @@ pub struct Drawn {
 }
 
 pub struct Renderer {
+    /// What the surface was made with, and on: a surface that is lost is
+    /// made anew from them.
+    instance: wgpu::Instance,
+    window: Arc<Window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
@@ -122,6 +127,8 @@ impl Renderer {
         let overlay = OverlayPass::new(&device, surface_format);
 
         Self {
+            instance,
+            window,
             device,
             queue,
             surface,
@@ -176,9 +183,11 @@ impl Renderer {
         }
     }
 
-    /// Draws on the frame `current` gave the surface, if it gave one: a lost
-    /// surface is configured again for the next frame, and a hidden window
-    /// has nothing to draw on.
+    /// Draws on the frame `current` gave the surface, if it gave one, as
+    /// wgpu prescribes for each answer: an outdated surface is configured
+    /// again for the next frame, a lost one made anew and configured, a
+    /// frame that did not come in time skipped, and a hidden window has
+    /// nothing to draw on.
     fn draw_on(
         &mut self,
         current: wgpu::CurrentSurfaceTexture,
@@ -191,17 +200,33 @@ impl Renderer {
             // made it so configures the surface again.
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+            wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.surface_config);
+                return;
+            }
+            // A surface that is lost gives no frame again, however it is
+            // configured: a new one on the window takes its place.
+            wgpu::CurrentSurfaceTexture::Lost => {
+                match self.instance.create_surface(self.window.clone()) {
+                    Ok(surface) => {
+                        self.surface = surface;
+                        self.surface.configure(&self.device, &self.surface_config);
+                    }
+                    // Through the log, which every host shows somewhere: a
+                    // browser has no stderr.
+                    Err(error) => log::error!("The window's surface was lost: {error}"),
+                }
                 return;
             }
             // A hidden window has nothing to draw on; it is not an error.
             wgpu::CurrentSurfaceTexture::Occluded => return,
-            status @ (wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Validation) => {
-                // Through the log, which every host shows somewhere: a
-                // browser has no stderr.
-                log::error!("Surface error: {:?}", status);
+            // The next redraw asks again.
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                log::warn!("The surface gave no frame in time: a frame is skipped");
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                log::error!("The surface refused to give a frame");
                 return;
             }
         };
