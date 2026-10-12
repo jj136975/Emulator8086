@@ -25,7 +25,8 @@ pub(crate) struct Built {
     /// The boot sector of the BOOT module, and FDISK's master boot record.
     pub boot_sector: [u8; SECTOR],
     pub master_boot_record: [u8; SECTOR],
-    /// The bytes of BUILD.LOG, and the warnings of the tools in it.
+    /// How many bytes BUILD.LOG holds, as the guest wrote them, and the
+    /// warnings of the tools in it.
     pub log_bytes: usize,
     pub warnings: usize,
 }
@@ -110,7 +111,8 @@ pub(crate) fn collect(disk: &[u8], out: &Path) -> Result<Built, Error> {
     let read =
         |path: &'static str| fat::get(&root, path).map_err(|error| Error::Unreadable(path, error));
 
-    let log = String::from_utf8_lossy(&read("BUILD.LOG")?).into_owned();
+    let raw_log = read("BUILD.LOG")?;
+    let log = String::from_utf8_lossy(&raw_log);
     let findings = log_scan::errors(&log);
     if !findings.is_empty() {
         return Err(Error::LogErrors(findings));
@@ -158,7 +160,7 @@ pub(crate) fn collect(disk: &[u8], out: &Path) -> Result<Built, Error> {
         files,
         boot_sector,
         master_boot_record,
-        log_bytes: log.len(),
+        log_bytes: raw_log.len(),
         warnings,
     })
 }

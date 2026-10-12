@@ -70,11 +70,14 @@ fn signed(length: usize) -> Vec<u8> {
     image
 }
 
-/// A build disk as a build leaves it: a BUILD.LOG of no error, a CPY.BAT
-/// that copies IO.SYS and FIND.EXE, both in C:\BIN, and `msboot_bin` and
+/// A BUILD.LOG of no error.
+const CLEAN_LOG: &[u8] = b"===== MESSAGES\r\n";
+
+/// A build disk as a build leaves it: `log` as BUILD.LOG, a CPY.BAT that
+/// copies IO.SYS and FIND.EXE, both in C:\BIN, and `msboot_bin` and
 /// `fdboot_bin` as the images of the boot sector and of FDISK's master boot
 /// record.
-fn build_disk(msboot_bin: &[u8], fdboot_bin: &[u8]) -> Vec<u8> {
+fn build_disk(log: &[u8], msboot_bin: &[u8], fdboot_bin: &[u8]) -> Vec<u8> {
     let mut disk = HardDisk::new(1, 0x01, None);
     let sectors = disk.volume().len() / SECTOR;
     let options = fatfs::FormatVolumeOptions::new()
@@ -84,7 +87,7 @@ fn build_disk(msboot_bin: &[u8], fdboot_bin: &[u8]) -> Vec<u8> {
     let volume = fat::mount(disk.volume(), &stamp::MSDOS).unwrap();
     {
         let root = volume.root_dir();
-        fat::put(&root, "BUILD.LOG", b"===== MESSAGES\r\n").unwrap();
+        fat::put(&root, "BUILD.LOG", log).unwrap();
         let src = root.create_dir("SRC").unwrap();
         let cpy = b"copy .\\bios\\io.sys %1\r\ncopy .\\cmd\\find\\find.exe %1\r\n";
         fat::put(&src, "CPY.BAT", cpy).unwrap();
@@ -136,8 +139,8 @@ fn the_files_of_the_build_go_into_bin_once_all_of_it_is_checked() {
         (&vec![0; 0x7E00], &master_boot_record),
         (&boot_sector, &vec![0; 0x800]),
     ] {
-        let Err(error) = collect::collect(&build_disk(msboot_bin, fdboot_bin), &scratch.out())
-        else {
+        let disk = build_disk(CLEAN_LOG, msboot_bin, fdboot_bin);
+        let Err(error) = collect::collect(&disk, &scratch.out()) else {
             panic!("an image without the boot signature is taken");
         };
         assert!(
@@ -147,15 +150,24 @@ fn the_files_of_the_build_go_into_bin_once_all_of_it_is_checked() {
         assert_eq!(scratch.written(BUILT_FILES), Vec::<String>::new());
     }
 
-    let built = collect::collect(
-        &build_disk(&boot_sector, &master_boot_record),
-        &scratch.out(),
-    )
-    .unwrap();
+    let disk = build_disk(CLEAN_LOG, &boot_sector, &master_boot_record);
+    let built = collect::collect(&disk, &scratch.out()).unwrap();
     assert_eq!(built.files.len(), 2);
     assert_eq!(scratch.written(BUILT_FILES), ["FIND.EXE", "IO.SYS"]);
     let io_sys = scratch.out().join(BUILT_FILES).join("IO.SYS");
     assert_eq!(std::fs::read(io_sys).unwrap(), b"IO");
+}
+
+/// The size of BUILD.LOG is that of its bytes as the guest wrote them: a
+/// byte of DOS's code page that is no UTF-8, as the lines a listing draws
+/// with, counts as one byte.
+#[test]
+fn the_size_of_build_log_is_that_of_its_bytes() {
+    let scratch = Scratch::new("log");
+    let log = b"===== MESSAGES\r\n\xC4\xC4\xC4 \xB3 MESSAGES\r\n";
+    let disk = build_disk(log, &signed(0x7E00), &signed(0x800));
+    let built = collect::collect(&disk, &scratch.out()).unwrap();
+    assert_eq!(built.log_bytes, log.len());
 }
 
 /// A floppy that does not boot to MS-DOS 4.00's prompt is never written:
