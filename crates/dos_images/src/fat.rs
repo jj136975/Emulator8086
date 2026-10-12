@@ -1,7 +1,7 @@
 //! FAT volumes as the host writes and reads them, through fatfs: a volume
-//! in memory mounted at a stamp (`mount`), files put onto it and taken off
-//! it, a host directory copied onto it, the names DOS can have, and text as
-//! DOS reads it.
+//! in memory mounted at a stamp (`mount`), or to be read alone
+//! (`mount_to_read`), files put onto it and taken off it, a host directory
+//! copied onto it, the names DOS can have, and text as DOS reads it.
 //!
 //! The invariant: every name the tool writes is a short name that DOS takes
 //! as it is (`dos_name`). fatfs, without its `alloc` feature, writes no long
@@ -9,7 +9,7 @@
 
 use crate::stamp::Stamp;
 use fatfs::{Dir, FileSystem, ReadWriteSeek};
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// A FAT volume held in memory.
@@ -19,6 +19,46 @@ pub(crate) type Volume<'a> = FileSystem<Cursor<&'a mut [u8]>>;
 /// stamped with `stamp`.
 pub(crate) fn mount<'a>(bytes: &'a mut [u8], stamp: &'static Stamp) -> io::Result<Volume<'a>> {
     FileSystem::new(Cursor::new(bytes), stamp.options())
+}
+
+/// A FAT volume held in memory, mounted to be read alone.
+pub(crate) type ReadVolume<'a> = FileSystem<ReadOnly<'a>>;
+
+/// The bytes of a volume, as fatfs reads them and cannot write them.
+pub(crate) struct ReadOnly<'a>(Cursor<&'a [u8]>);
+
+impl Read for ReadOnly<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buffer)
+    }
+}
+
+impl Seek for ReadOnly<'_> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.0.seek(to)
+    }
+}
+
+impl Write for ReadOnly<'_> {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the volume is mounted to be read alone",
+        ))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Mounts the FAT volume that `bytes` hold to be read alone, at `stamp` as
+/// `mount` does: a write to it fails, and the bytes stay as they are.
+pub(crate) fn mount_to_read<'a>(
+    bytes: &'a [u8],
+    stamp: &'static Stamp,
+) -> io::Result<ReadVolume<'a>> {
+    FileSystem::new(ReadOnly(Cursor::new(bytes)), stamp.options())
 }
 
 /// `name` as DOS spells it, if DOS can have it: upper case, a base of one

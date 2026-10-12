@@ -96,6 +96,27 @@ fn a_file_put_on_a_volume_is_stamped_with_the_mounts_stamp() {
     );
 }
 
+/// A volume mounted to be read alone is read as it was written, and a
+/// write to it fails.
+#[test]
+fn a_volume_mounted_to_be_read_alone_takes_no_write() {
+    let mut bytes = floppy();
+    {
+        let volume = mount(&mut bytes, &stamp::MSDOS).unwrap();
+        let root = volume.root_dir();
+        put(&root, "HELLO.TXT", b"hello").unwrap();
+        root.create_dir("SUB").unwrap();
+    }
+    let volume = mount_to_read(&bytes, &stamp::MSDOS).unwrap();
+    let root = volume.root_dir();
+    assert_eq!(get(&root, "HELLO.TXT").unwrap(), b"hello");
+    assert_eq!(file_names(&root).unwrap(), ["HELLO.TXT"]);
+    let refused = put(&root, "HELLO.TXT", b"again").unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+    assert!(root.create_dir("OTHER").is_err());
+    assert_eq!(get(&root, "HELLO.TXT").unwrap(), b"hello");
+}
+
 /// A host directory is copied in the order of its names, whatever order
 /// the host lists them in, with the names in capitals and its directories
 /// below it; a name DOS cannot have stops the copy, naming the file.

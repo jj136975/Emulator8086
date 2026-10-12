@@ -146,6 +146,27 @@ pub(crate) fn partition_entry(kind: u8, start: usize, sectors: usize) -> [u8; 16
     entry
 }
 
+/// The word `at` bytes into the first partition entry of the master boot
+/// record of `disk`.
+fn entry_word(disk: &[u8], at: usize) -> usize {
+    let at = PARTITION_TABLE + at;
+    u32::from_le_bytes(disk[at..at + 4].try_into().unwrap()) as usize
+}
+
+/// Where the partition of `disk` lies, as its first entry says. Of a disk
+/// whose entry says more than it holds, as much as it holds.
+fn partition(disk: &[u8]) -> std::ops::Range<usize> {
+    let start = (entry_word(disk, 8) * SECTOR).min(disk.len());
+    let end = (start + entry_word(disk, 12) * SECTOR).min(disk.len());
+    start..end
+}
+
+/// The volume of `disk`, a disk as the guest left it: the partition where
+/// its first entry says.
+pub(crate) fn volume_of(disk: &[u8]) -> &[u8] {
+    &disk[partition(disk)]
+}
+
 /// A hard disk of whole cylinders, whose master boot record holds one
 /// partition: active, primary, from the second track, which is where FDISK
 /// starts the first, to the end of the disk.
@@ -170,31 +191,17 @@ impl HardDisk {
         Self { bytes }
     }
 
-    /// A disk as the guest left it, the partition where its first entry
-    /// says.
-    pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self { bytes }
-    }
-
-    fn entry_word(&self, at: usize) -> usize {
-        let at = PARTITION_TABLE + at;
-        u32::from_le_bytes(self.bytes[at..at + 4].try_into().unwrap()) as usize
-    }
-
-    /// The bytes of the partition: the volume. Of a disk whose entry says
-    /// more than it holds, as much as it holds.
+    /// The bytes of the partition: the volume.
     pub(crate) fn volume(&mut self) -> &mut [u8] {
-        let length = self.bytes.len();
-        let start = (self.entry_word(8) * SECTOR).min(length);
-        let end = (start + self.entry_word(12) * SECTOR).min(length);
-        &mut self.bytes[start..end]
+        let partition = partition(&self.bytes);
+        &mut self.bytes[partition]
     }
 
     /// Formats the partition with `options`. fatfs counts no hidden
     /// sectors, and DOS finds the volume's sectors on the disk by adding
     /// them: they are set to the sectors before the partition.
     pub(crate) fn format(&mut self, options: fatfs::FormatVolumeOptions) -> io::Result<()> {
-        let hidden = self.entry_word(8) as u32;
+        let hidden = entry_word(&self.bytes, 8) as u32;
         let volume = self.volume();
         fatfs::format_volume(Cursor::new(&mut *volume), options)?;
         volume[HIDDEN_SECTORS..HIDDEN_SECTORS + 4].copy_from_slice(&hidden.to_le_bytes());

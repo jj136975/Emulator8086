@@ -61,12 +61,13 @@ fn the_partition_entry_of_the_doom_disk() {
 
 /// A new hard disk holds the code of its master boot record, its one
 /// partition entry and the boot signature. Its volume is the partition, as
-/// the entry says, also of a disk the guest left; formatting the volume
-/// counts the sectors before it as hidden.
+/// the entry says, also of a disk the guest left; of a disk that holds less
+/// than its entry says, it is as much as the disk holds. Formatting the
+/// volume counts the sectors before it as hidden.
 #[test]
 fn a_hard_disk_holds_its_record_and_one_partition() {
     let record = signed_sector(0xEE);
-    let bytes = HardDisk::new(5, 0x01, Some(&record)).into_bytes();
+    let mut bytes = HardDisk::new(5, 0x01, Some(&record)).into_bytes();
     assert_eq!(bytes.len(), 5 * 16 * 63 * SECTOR);
     assert_eq!(bytes[..PARTITION_TABLE], record[..PARTITION_TABLE]);
     assert_eq!(
@@ -80,14 +81,10 @@ fn a_hard_disk_holds_its_record_and_one_partition() {
             .all(|&b| b == 0)
     );
 
-    let mut disk = HardDisk::from_bytes(bytes);
-    assert_eq!(disk.volume().len(), 4977 * SECTOR);
-    disk.volume()[0] = 0xAB;
-    assert_eq!(
-        disk.into_bytes()[63 * SECTOR],
-        0xAB,
-        "the volume begins at sector 63"
-    );
+    bytes[63 * SECTOR] = 0xAB;
+    assert_eq!(volume_of(&bytes).len(), 4977 * SECTOR);
+    assert_eq!(volume_of(&bytes)[0], 0xAB, "the volume begins at sector 63");
+    assert_eq!(volume_of(&bytes[..100 * SECTOR]).len(), 37 * SECTOR);
 
     let mut disk = HardDisk::new(5, 0x01, None);
     let options = fatfs::FormatVolumeOptions::new()

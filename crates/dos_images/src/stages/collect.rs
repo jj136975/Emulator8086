@@ -10,7 +10,7 @@
 //! no file there.
 
 use crate::fat;
-use crate::layout::{self, HardDisk, LayoutError, SECTOR};
+use crate::layout::{self, LayoutError, SECTOR};
 use crate::log_scan::{self, Finding};
 use crate::makefiles;
 use crate::stamp;
@@ -95,8 +95,7 @@ impl fmt::Display for Error {
 
 /// BUILD.LOG of the build disk `disk`, if it has one.
 pub(crate) fn build_log(disk: &[u8]) -> Option<String> {
-    let mut disk = HardDisk::from_bytes(disk.to_vec());
-    let volume = fat::mount(disk.volume(), &stamp::MSDOS).ok()?;
+    let volume = fat::mount_to_read(layout::volume_of(disk), &stamp::MSDOS).ok()?;
     let log = fat::get(&volume.root_dir(), "BUILD.LOG").ok()?;
     Some(String::from_utf8_lossy(&log).into_owned())
 }
@@ -104,8 +103,7 @@ pub(crate) fn build_log(disk: &[u8]) -> Option<String> {
 /// What the build made on the build disk `disk`, checked; its files then
 /// go into the directory `bin` of `out`.
 pub(crate) fn collect(disk: &[u8], out: &Path) -> Result<Built, Error> {
-    let mut disk = HardDisk::from_bytes(disk.to_vec());
-    let volume = fat::mount(disk.volume(), &stamp::MSDOS)
+    let volume = fat::mount_to_read(layout::volume_of(disk), &stamp::MSDOS)
         .map_err(|error| Error::Unreadable("the build disk", error))?;
     let root = volume.root_dir();
     let read =
