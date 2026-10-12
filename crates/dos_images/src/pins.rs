@@ -20,12 +20,14 @@ fn is_name(name: &str) -> bool {
 
 /// Whether `value` is made of what the pins need alone, for their URLs,
 /// hashes, branch, tag and file names: letters, digits, `.`, `-`, `_`, `/`
-/// and `:`. A shell that sources the file takes these as they are; it
-/// would run, redirect or expand what else a value held (`;`, `&`, `|`,
-/// `<`, `>`, `(`, `)`, `$`, a backtick, a quote, a backslash, a `~`, a
-/// blank).
+/// and `:`, not beginning with a `-`. A shell that sources the file takes
+/// these as they are; it would run, redirect or expand what else a value
+/// held (`;`, `&`, `|`, `<`, `>`, `(`, `)`, `$`, a backtick, a quote, a
+/// backslash, a `~`, a blank), and the programs it hands a value to would
+/// take one that begins with a `-` for an option.
 fn is_plain(value: &str) -> bool {
     !value.is_empty()
+        && !value.starts_with('-')
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || ".-_/:".contains(c))

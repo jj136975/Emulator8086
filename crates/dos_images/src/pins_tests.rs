@@ -61,7 +61,8 @@ fn the_downloads_are_those_of_the_pinned_tag_and_commit() {
 /// `<` or `>`, a parenthesis, a `$`, a backtick, a quote, a backslash, a
 /// `~` at the start or after a colon, a blank. The tool refuses a line
 /// whose name is of other than capitals, digits and underscores, or begins
-/// with a digit, and one whose value is empty or holds anything but those
+/// with a digit, and one whose value is empty, begins with a `-` (an option
+/// to the programs the script hands it to) or holds anything but those
 /// characters, as it refuses a line of no pin, a pin given twice and a file
 /// without a pin it names. Comments, blank lines and CR LF line endings are
 /// read past.
@@ -80,7 +81,7 @@ fn only_plain_pins_are_read() {
     for line in [
         "A=b c", "A=\"b\"", "A='b'", "A=$HOME", "A=`b`", "A=b\\", "A=b;c", "A=b&c", "A=b&&c",
         "A=b|c", "A=<b", "A=b>c", "A=(b)", "A=~", "A=~/b", "A=b:~/c", "A=b*", "A=b?c", "A=b=c",
-        "A=b\rc", "A=", "A/B=c", "A-B=c", "8A=b", "a=b", "=b",
+        "A=b\rc", "A=", "A=-b", "A=--b", "A/B=c", "A-B=c", "8A=b", "a=b", "=b",
     ] {
         assert_eq!(
             with(line).unwrap_err(),
