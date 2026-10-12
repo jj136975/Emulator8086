@@ -93,21 +93,37 @@ fn uncommented_line(line: &str) -> &str {
     line
 }
 
-/// The paths below `dist/` that `workflow` names outside its comments.
-fn named_in_dist(workflow: &str) -> Vec<String> {
-    let mut named = Vec::new();
-    for line in workflow.lines().map(uncommented_line) {
-        for (at, opening) in line.match_indices("dist/") {
-            let path: String = line[at + opening.len()..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || "._-/".contains(*c))
+/// What `workflow` compares, outside its comments, with what it publishes
+/// below `dist/`: for each `cmp` of a file and a path below `dist/`, whole,
+/// the file and that path.
+fn compared_in_dist(workflow: &str) -> Vec<(String, String)> {
+    workflow
+        .lines()
+        .map(uncommented_line)
+        .filter_map(|line| {
+            let words: Vec<&str> = line
+                .split_whitespace()
+                .map(|word| word.trim_matches(['"', '\'']))
                 .collect();
-            if !path.is_empty() {
-                named.push(path);
-            }
-        }
-    }
-    named
+            let command = words.iter().position(|word| *word == "cmp")?;
+            let operands: Vec<&str> = words[command + 1..]
+                .iter()
+                .copied()
+                .filter(|word| !word.starts_with('-'))
+                .collect();
+            // Offsets after the two files would compare their tails alone.
+            let [first, second] = operands[..] else {
+                return None;
+            };
+            let (file, published) =
+                match (first.strip_prefix("dist/"), second.strip_prefix("dist/")) {
+                    (None, Some(published)) => (first, published),
+                    (Some(published), None) => (second, published),
+                    _ => return None,
+                };
+            Some((file.to_string(), published.to_string()))
+        })
+        .collect()
 }
 
 /// The paths below `dist/` that `workflow` copies a file to, outside its
@@ -129,13 +145,15 @@ fn copied_into_dist(workflow: &str) -> Vec<String> {
 /// Every file of the table is published beside the page. A file of the
 /// repository is copied there by trunk (`index.html`), in the build the
 /// workflow publishes as in the one `trunk serve` serves, and the workflow
-/// checks it there before it publishes it. A file the workflow builds is
-/// copied there by the workflow, and the page does not name it.
+/// compares it there with the file of the repository before it publishes
+/// it. A file the workflow builds is copied there by the workflow, and the
+/// page does not name it.
 #[test]
 fn every_file_of_the_site_is_published_beside_the_page() {
+    let links = copy_links(&source(PAGE));
     let copied = copied_beside_the_page(&source(PAGE));
     let workflow = source(WORKFLOW);
-    let checked = named_in_dist(&workflow);
+    let compared = compared_in_dist(&workflow);
     let built = copied_into_dist(&workflow);
     assert!(
         workflow.contains("trunk build") && workflow.contains("path: dist"),
@@ -143,14 +161,17 @@ fn every_file_of_the_site_is_published_beside_the_page() {
     );
     for file in &FILES {
         if from_the_repository(file.kind) {
+            let Some((href, _)) = links.iter().find(|(_, beside)| beside == file.path) else {
+                panic!(
+                    "{PAGE} does not have trunk copy {} beside the page: it copies {copied:?}",
+                    file.path
+                );
+            };
             assert!(
-                copied.iter().any(|path| path == file.path),
-                "{PAGE} does not have trunk copy {} beside the page: it copies {copied:?}",
-                file.path
-            );
-            assert!(
-                checked.iter().any(|path| path == file.path),
-                "{WORKFLOW} does not check {} in dist/: it names {checked:?}",
+                compared
+                    .iter()
+                    .any(|(source, published)| source == href && published == file.path),
+                "{WORKFLOW} does not compare dist/{} with {href}: it compares {compared:?}",
                 file.path
             );
         } else {
@@ -207,9 +228,10 @@ fn the_page_is_built_of_the_repository_alone() {
 
 /// The sweep reads the page and the workflow as trunk and the runner do: a
 /// link in a comment copies nothing, a link without a target path copies
-/// into the page's own directory, a link of another kind copies nothing, a
-/// path in a comment of the workflow is not checked, and a file is copied
-/// below `dist/` by a `cp` that names it there last.
+/// into the page's own directory, a link of another kind copies nothing; a
+/// file is compared with what is published below `dist/` by a `cmp` of the
+/// two, whole, outside a comment, and by nothing else that names the path;
+/// and a file is copied below `dist/` by a `cp` that names it there last.
 #[test]
 fn the_sweep_reads_what_trunk_and_the_runner_read() {
     let html = r#"<head>
@@ -229,8 +251,14 @@ fn the_sweep_reads_what_trunk_and_the_runner_read() {
         )
     );
 
-    let workflow = "      # trunk copies dist/old.bin\n      run: cmp a.bin dist/rom/bios.bin # dist/x.bin\n      path: dist\n";
-    assert_eq!(named_in_dist(workflow), ["rom/bios.bin"]);
+    let workflow = "      # cmp old.bin dist/old.bin\n      run: cmp a.bin dist/rom/bios.bin # cmp x.bin dist/x.bin\n          ls dist/c.bin\n          cmp -s dist/d.bin \"d.bin\"\n          cmp e.bin dist/e.bin 512 512\n          cmp f.bin g.bin\n      path: dist\n";
+    assert_eq!(
+        compared_in_dist(workflow),
+        [
+            ("a.bin".to_string(), "rom/bios.bin".to_string()),
+            ("d.bin".to_string(), "d.bin".to_string()),
+        ]
+    );
 
     let workflow = "        run: |\n          mkdir -p dist/disks\n          cp \"$OUT/a.img\" dist/disks/a.img\n          # cp b.img dist/disks/b.img\n          cp dist/c.img elsewhere/c.img\n          cp -r out 'dist/d'\n";
     assert_eq!(copied_into_dist(workflow), ["disks/a.img", "d"]);
