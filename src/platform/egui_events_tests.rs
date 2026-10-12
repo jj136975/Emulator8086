@@ -285,26 +285,40 @@ fn the_first_finger_is_a_touch_and_the_pointer() {
     );
 }
 
-/// What no pass is run for is dropped, but for the releases of the
-/// pointer's buttons, the last of each: the lift of a finger whose press a
-/// pass took reaches egui with the next pass, and the mouse's last release
-/// with it, while the presses, the moves, the touches and the press of a
-/// button still down are gone.
+/// What no pass is run for is dropped, but for what places the pointer and
+/// the fingers for the next pass, in their order: the lifts of the fingers,
+/// the one that was the pointer with the release of the button it was, the
+/// pointer's last move, and the mouse's last release; the presses, a
+/// finger's coming down, the earlier moves, the pointer's going before a
+/// later move, and the press of a button still down are gone.
 #[test]
-fn what_no_pass_takes_is_dropped_but_for_the_releases() {
+fn what_no_pass_takes_is_dropped_but_for_what_places_the_pointer_and_the_fingers() {
     let (mut events, _ctx) = events(1.0);
     events.on_window_event(&finger(1, TouchPhase::Started, 10.0, 10.0));
     taken(&mut events, 1.0);
 
+    events.on_window_event(&finger(2, TouchPhase::Started, 40.0, 40.0));
+    events.on_window_event(&finger(2, TouchPhase::Ended, 40.0, 40.0));
     events.on_window_event(&finger(1, TouchPhase::Ended, 10.0, 10.0));
+    events.on_window_event(&moved(20.0, 20.0));
     events.on_window_event(&moved(30.0, 30.0));
     events.on_window_event(&button(ElementState::Pressed, MouseButton::Left));
     events.on_window_event(&button(ElementState::Released, MouseButton::Left));
     events.on_window_event(&button(ElementState::Pressed, MouseButton::Right));
     events.discard();
+    let (other, pointer, moved_to) = (
+        egui::pos2(40.0, 40.0),
+        egui::pos2(10.0, 10.0),
+        egui::pos2(30.0, 30.0),
+    );
     assert_eq!(
         taken(&mut events, 1.0),
-        [primary(egui::pos2(30.0, 30.0), false)]
+        [
+            touched(2, egui::TouchPhase::End, other),
+            touched(1, egui::TouchPhase::End, pointer),
+            Event::PointerMoved(moved_to),
+            primary(moved_to, false),
+        ]
     );
 }
 
@@ -557,7 +571,8 @@ fn modifiers_are_on_the_events_that_follow() {
 
 /// The input of a pass holds what was gathered since the pass before, once:
 /// the events are taken, the time moves on, and what was dropped is not
-/// replayed.
+/// replayed (a turn of the wheel: what places the pointer is kept,
+/// `what_no_pass_takes_is_dropped_but_for_what_places_the_pointer_and_the_fingers`).
 #[test]
 fn a_take_empties_what_was_gathered() {
     let (mut events, _ctx) = events(1.0);
@@ -576,7 +591,7 @@ fn a_take_empties_what_was_gathered() {
         second.time
     );
 
-    events.on_window_event(&moved(3.0, 4.0));
+    events.on_window_event(&wheel(MouseScrollDelta::LineDelta(0.0, 1.0)));
     events.discard();
     assert_eq!(events.take(SIZE, 1.0).events, []);
 }

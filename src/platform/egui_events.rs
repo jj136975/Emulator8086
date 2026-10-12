@@ -333,8 +333,9 @@ impl EguiEvents {
         self.input.take()
     }
 
-    /// Drops what was gathered, but for the releases of the pointer's
-    /// buttons (`keep_releases`): no pass will take the rest.
+    /// Drops what was gathered, but for what places the pointer and the
+    /// fingers for the next pass (`keep_releases`): no pass will take the
+    /// rest.
     pub fn discard(&mut self) {
         super::keep_releases(&mut self.input.events);
     }

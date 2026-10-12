@@ -23,8 +23,9 @@
 //! - `spawn`: runs a future to its end: at once on a desktop, which may
 //!   block; later in a browser, which may not.
 //! - `OverlayInput`: the window's events as egui's input. What no pass is
-//!   run for is dropped, but for the releases of the pointer's buttons
-//!   (`keep_releases`).
+//!   run for is dropped, but for what places the pointer and the fingers
+//!   for the next pass: the releases of the pointer's buttons, its last
+//!   move, and the lifts of the fingers (`keep_releases`).
 //! - `OVERLAY_SWITCH`: how the user shows and hides the overlay
 //!   (`OverlaySwitch`).
 //! - `wait`: lets host time go by, and says whether the host could: a
@@ -142,29 +143,49 @@ pub enum Wanted {
 /// none came, in words for the user that name the file.
 pub type Fetched = Result<Vec<u8>, String>;
 
-/// Drops the events gathered for a pass that will not be run, but for the
-/// releases of the pointer's buttons, the last of each: egui is told that a
-/// button came up wherever it may have been told that it went down. A
-/// finger held on the picture until the overlay hides was egui's pointer
-/// when it came down, and lifts once no pass is run: dropped, its release
-/// would leave the button down in egui, which would then not claim the
-/// pointer over the overlay until the next click.
+/// Drops the events gathered for a pass that will not be run, but for what
+/// places the pointer and the fingers for the next pass: the last release
+/// of each of the pointer's buttons, the pointer's last move (or its going),
+/// and the last lift of each finger, in their order. egui is told that a
+/// button came up, and a finger lifted, wherever it may have been told that
+/// they went down, and where the pointer is now. A finger held on the
+/// picture until the overlay hides was egui's pointer when it came down,
+/// and lifts once no pass is run: dropped, its release would leave the
+/// button down in egui, which would then not claim the pointer over the
+/// overlay until the next click, and its lift would leave the finger on
+/// the screen in egui, where a mouse button held still then counts as a
+/// long touch.
 fn keep_releases(events: &mut Vec<egui::Event>) {
-    let mut kept: Vec<egui::Event> = Vec::new();
-    for event in events.drain(..) {
-        if let egui::Event::PointerButton {
+    /// What a kept event is the last of.
+    #[derive(PartialEq)]
+    enum Kind {
+        Release(egui::PointerButton),
+        Position,
+        Lift(egui::TouchDeviceId, egui::TouchId),
+    }
+    let kind = |event: &egui::Event| match event {
+        egui::Event::PointerButton {
             button,
             pressed: false,
             ..
-        } = event
-        {
-            kept.retain(|earlier| {
-                !matches!(earlier, egui::Event::PointerButton { button: same, .. } if *same == button)
-            });
-            kept.push(event);
+        } => Some(Kind::Release(*button)),
+        egui::Event::PointerMoved(_) | egui::Event::PointerGone => Some(Kind::Position),
+        egui::Event::Touch {
+            device_id,
+            id,
+            phase: egui::TouchPhase::End | egui::TouchPhase::Cancel,
+            ..
+        } => Some(Kind::Lift(*device_id, *id)),
+        _ => None,
+    };
+    let mut kept: Vec<(Kind, egui::Event)> = Vec::new();
+    for event in events.drain(..) {
+        if let Some(kind) = kind(&event) {
+            kept.retain(|(earlier, _)| *earlier != kind);
+            kept.push((kind, event));
         }
     }
-    *events = kept;
+    events.extend(kept.into_iter().map(|(_, event)| event));
 }
 
 #[cfg(test)]

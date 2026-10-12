@@ -146,8 +146,9 @@ impl EmulatorApp {
         if !self.session.overlay.draws() {
             // No pass will take the input this event became: left where
             // it is, it would pile up and be replayed when the overlay is
-            // shown. The release of a button is kept for the next pass:
-            // egui may have been told of its press.
+            // shown. What places the pointer and the fingers is kept for
+            // the next pass: egui may have been told of a press, or of a
+            // finger coming down, and is told where the pointer is now.
             front.egui.discard();
         }
         self.session.overlay.visible() && kept

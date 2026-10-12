@@ -159,8 +159,9 @@ impl OverlayInput {
         self.0.on_window_event(window, event).consumed
     }
 
-    /// Drops what was gathered, but for the releases of the pointer's
-    /// buttons (`keep_releases`): no pass will take the rest.
+    /// Drops what was gathered, but for what places the pointer and the
+    /// fingers for the next pass (`keep_releases`): no pass will take the
+    /// rest.
     pub fn discard(&mut self) {
         let input = self.0.egui_input_mut();
         super::keep_releases(&mut input.events);
