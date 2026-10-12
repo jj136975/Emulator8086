@@ -39,6 +39,23 @@ impl DiskStorage {
     }
 }
 
+/// A new file at `path` of `size` bytes, filled with zeros: never a file
+/// that existed. One made here that could not be given its size is removed
+/// again, so that it does not stand in the way of a later try.
+fn new_image_file(path: &Path, size: u64) -> std::io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    // On an error the file goes with the closure that was to hand it on, and
+    // is closed by the time it is removed: a host may refuse to remove a
+    // file that is open.
+    file.set_len(size).map(|()| file).inspect_err(|_| {
+        let _ = std::fs::remove_file(path);
+    })
+}
+
 /// What `DiskImage::save_to_file` did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SaveOutcome {
@@ -133,14 +150,10 @@ impl DiskImage {
     }
 
     /// Creates a new image file of `size` bytes, filled with zeros. An
-    /// existing file is never replaced.
+    /// existing file is never replaced, and a file that could not be given
+    /// its size is not left behind.
     pub fn create(path: &Path, size: u64) -> std::io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        file.set_len(size)?;
+        let file = new_image_file(path, size)?;
         Ok(Self::on_file(file, path, geometry_from_size(size), false))
     }
 
@@ -163,15 +176,11 @@ impl DiskImage {
     }
 
     /// Create a new hard disk image of the given size in MB. An existing
-    /// file is never replaced.
+    /// file is never replaced, and a file that could not be given its size
+    /// is not left behind.
     pub fn create_hard_disk(path: &Path, size_mb: u64) -> std::io::Result<Self> {
         let geometry = hd_geometry_from_size(size_mb * 1024 * 1024);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        file.set_len(geometry_bytes(geometry))?;
+        let file = new_image_file(path, geometry_bytes(geometry))?;
         Ok(Self::on_file(file, path, geometry, false))
     }
 

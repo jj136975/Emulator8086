@@ -313,7 +313,14 @@ fn create(
         ))
     } else {
         let mut image = DiskImage::create(path, FLOPPY_144_SIZE).map_err(cannot_create)?;
-        image.format_fat(clock).map_err(cannot_create)?;
+        if let Err(error) = image.format_fat(clock) {
+            // The file was made here: left unformatted, it would stand in
+            // the way of the next try, since a new image never replaces a
+            // file.
+            drop(image);
+            let _ = std::fs::remove_file(path);
+            return Err(cannot_create(error));
+        }
         disks.attach(drive, image);
         Ok(format!(
             "{} now holds the new formatted {}KB image {}",

@@ -193,6 +193,19 @@ fn numbered_sectors() -> Vec<u8> {
         .collect()
 }
 
+/// A new image whose file cannot be given its size leaves no file behind:
+/// one left there, empty, would refuse the next try, since a new image
+/// never replaces a file. No file system takes 2^64 - 1 bytes.
+#[test]
+fn an_image_that_cannot_be_made_leaves_no_file_behind() {
+    let scratch = ScratchFile::new("unmade.img");
+    assert!(DiskImage::create(scratch.path(), u64::MAX).is_err());
+    assert!(!scratch.path().exists());
+
+    let image = DiskImage::create(scratch.path(), FLOPPY_144_SIZE).unwrap();
+    assert_eq!(image.total_bytes(), FLOPPY_144_SIZE);
+}
+
 // -----------------------------------------------------------------------
 // Saving an image to a host file
 // -----------------------------------------------------------------------
