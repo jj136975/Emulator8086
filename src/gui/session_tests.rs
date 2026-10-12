@@ -764,6 +764,29 @@ fn a_start_pressed_with_the_pointer_hides_the_overlay() {
     );
 }
 
+/// A start carried out runs the machine it restarted, a paused one too:
+/// what the Start panel's buttons promise is a machine to type at or to
+/// play, and the overlay that marked the pause hides with the start.
+#[test]
+fn a_start_runs_a_paused_machine() {
+    let (mut session, host) = at_the_start_panel();
+    session.click(Role::Button, "Machine");
+    session.click(Role::Button, "Pause");
+    assert!(session.target.paused());
+
+    session.click(Role::Button, BOOT);
+    let (_, answer) = host.fetch_asked();
+    answer.send(Ok(vec![0xF6; 163_840])).unwrap();
+    frame_after_the_answer(&mut session);
+    assert!(!session.target.overlay.visible());
+    assert!(!session.target.paused());
+    assert_eq!(
+        session.target.runtime.cpu.memory.read_word(MARK_AT),
+        0x4D52,
+        "the machine restarted and ran"
+    );
+}
+
 /// A start pressed with a finger: once the disk has come the hard disk is
 /// the first hard disk, the bootstrap tries it first, A: keeps its floppy,
 /// and the machine has restarted and run. The Start panel closes, and the

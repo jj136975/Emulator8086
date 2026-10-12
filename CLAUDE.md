@@ -353,9 +353,10 @@ widened from `pub(crate)` when one of them needs it, not before.
   restarts as Reset does: "Restarted with MS-DOS 4.00, the floppy in A:".
   A fetch that failed, a site without the disk, or an image the Insert
   refuses (one of no bytes) changes nothing and says why: "... The machine
-  runs on as it was". A start carried out closes the Start panel; pressed
-  with a finger it opens the on-screen keyboard and leaves the overlay
-  shown, otherwise the overlay hides (`Overlay::hide`), so that the keys
+  runs on as it was". A start carried out closes the Start panel and runs
+  the machine, a paused one too (`Pacer::set_paused`); pressed with a
+  finger it opens the on-screen keyboard and leaves the overlay shown,
+  otherwise the overlay hides (`Overlay::hide`), so that the keys
   are the guest's, and the window forgets what the overlay asked of the
   cursor. The app's own showing and hiding of the overlay ends no hint:
   the hint's seconds are those of the first bare picture. A test answers

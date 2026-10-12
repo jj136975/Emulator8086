@@ -9,9 +9,9 @@
 //! the Start panel asks for by `starter`: all three have answers of the
 //! host's to wait for. On a host that came from a site, a machine with no
 //! disk to boot starts with the overlay shown and the Start panel open; a
-//! start carried out puts the overlay away for the guest: the Start panel
-//! closes, and the overlay hides, or, for a finger, makes way for the
-//! on-screen keyboard.
+//! start carried out runs the guest, a paused one too, and puts the overlay
+//! away for it: the Start panel closes, and the overlay hides, or, for a
+//! finger, makes way for the on-screen keyboard.
 //!
 //! The invariants: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -247,13 +247,15 @@ impl Session {
     }
 
     /// The machine was started as `start` asked: the Start panel has done
-    /// its work, and closes. The guest is to be typed at now. A finger
-    /// pressed the button on a touch screen, which has no keys: the
-    /// on-screen keyboard opens, in an overlay left as it is. Otherwise the
-    /// overlay hides, and the keys are the guest's, whatever of the overlay
-    /// had the keyboard.
+    /// its work, and closes. The guest is to be typed at now, and runs, a
+    /// paused one too: the panel's buttons promise a machine to type at or
+    /// to play. A finger pressed the button on a touch screen, which has no
+    /// keys: the on-screen keyboard opens, in an overlay left as it is.
+    /// Otherwise the overlay hides, and the keys are the guest's, whatever
+    /// of the overlay had the keyboard.
     fn started(&mut self, start: StartCommand) {
         self.overlay.close(Panel::Start);
+        self.pacer.set_paused(false);
         if start.by_finger {
             self.overlay.open(Panel::OnScreenKeyboard);
         } else if self.overlay.visible() {
