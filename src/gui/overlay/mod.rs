@@ -144,6 +144,9 @@ enum Hint {
 pub struct Overlay {
     ctx: egui::Context,
     visible: bool,
+    /// The app showed the overlay by itself (`show`) and no pass has laid
+    /// it out since: where it lies is not known yet.
+    unseen: bool,
     hint: Hint,
     /// Whether the host came from a site: only then are the panels that
     /// need one offered (`Panel::needs_site`).
@@ -185,6 +188,7 @@ impl Overlay {
         Self {
             ctx,
             visible: false,
+            unseen: false,
             hint: Hint::Unstarted,
             has_site,
             open: Vec::new(),
@@ -214,16 +218,19 @@ impl Overlay {
         if self.visible {
             self.hide();
         } else {
-            self.show();
+            self.visible = true;
         }
         self.hint = Hint::Over;
     }
 
     /// Shows the overlay, as the app does by itself where the user has a
     /// choice to make first: the user did not work the switch for it, and
-    /// the hint waits for the picture to be bare.
+    /// the hint waits for the picture to be bare. Until a pass has laid it
+    /// out, as at the start while a browser's window readies its drawing,
+    /// it is taken to cover the whole screen (`covers`).
     pub fn show(&mut self) {
         self.visible = true;
+        self.unseen = true;
     }
 
     /// Hides the overlay, as the app does by itself once its work is done:
@@ -274,10 +281,16 @@ impl Overlay {
     /// Whether the overlay shows something at `at`, in points, as its last
     /// pass laid it out: the menu bar, a window, an open menu or a message.
     /// Anywhere else is the picture. A hidden overlay covers nothing: the
-    /// hint is not one to touch.
+    /// hint is not one to touch. One the app showed by itself and no pass
+    /// has laid out yet covers everything: nothing of it was seen, and a
+    /// finger held then, before the user could see where the picture is
+    /// bare, does not work the switch.
     pub fn covers(&self, at: Pos2) -> bool {
         if !self.visible {
             return false;
+        }
+        if self.unseen {
+            return true;
         }
         if self.messages.covers(at) {
             return true;
@@ -393,6 +406,7 @@ impl Overlay {
         // and the messages go to its corner.
         let below_bar = ui.available_rect_before_wrap();
         self.below_bar = below_bar;
+        self.unseen = false;
         for (index, panel) in offered.into_iter().enumerate() {
             let mut is_open = open.contains(&panel);
             // A window takes the size of what its panel shows: a tool over

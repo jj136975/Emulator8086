@@ -235,7 +235,11 @@ widened from `pub(crate)` when one of them needs it, not before.
   decided then, at the finger's own position, from what the overlay's last
   pass laid out (`Overlay::covers`: egui's layers there, the menu bar,
   which egui draws on its background layer, and the messages, which take
-  no input). What egui kept of a finger that just came down says nothing:
+  no input). An overlay the app showed by itself (`Overlay::show`) covers
+  everything until a pass has laid it out: at the start, while a browser
+  readies its drawing, a finger held anywhere on the page is the overlay's,
+  and the Start panel stays shown for the visitor to choose from.
+  What egui kept of a finger that just came down says nothing:
   egui answers for where its pointer last was, which after a finger lifted
   is nowhere. The browser's switch is named for both ("Right-click or
   touch and hold"). Every other event of the window goes to egui first. A

@@ -182,7 +182,7 @@ The window stays at hand in the View menu. A disk started from it lives in memor
 
 ### Phones and tablets
 
-On a touch screen a finger works the tools overlay as the mouse does: a tap is a click. There is no right-click to show the overlay with: a finger held still on the picture for half a second shows it or hides it, as soon as the time is up (on a desktop's touch screen as well). A finger held on the overlay itself, on its menu bar, a window or a message, is the overlay's however long it stays there. The page keeps the fingers on the picture for itself: the browser neither scrolls nor zooms it.
+On a touch screen a finger works the tools overlay as the mouse does: a tap is a click. There is no right-click to show the overlay with: a finger held still on the picture for half a second shows it or hides it, as soon as the time is up (on a desktop's touch screen as well). A finger held on the overlay itself, on its menu bar, a window or a message, is the overlay's however long it stays there, and so is one held while the page is still starting, before the tools were first drawn. The page keeps the fingers on the picture for itself: the browser neither scrolls nor zooms it.
 
 A finger that presses a button of the Start window shows the tools once the machine has restarted, hidden meanwhile or not, with the On-screen keyboard open in place of the Start window: one tap, and the phone can type at `A:\>` or play.
 

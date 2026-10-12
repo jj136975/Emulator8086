@@ -171,6 +171,32 @@ fn a_finger_held_still_on_the_picture_works_the_switch() {
     );
 }
 
+/// The overlay a site's session shows at the start covers the whole screen
+/// until a pass has laid it out, as while a browser's window readies its
+/// drawing: a finger held then is taken for the overlay's, and the Start
+/// panel stays shown. Once a pass has laid the overlay out, a finger held
+/// on the picture works the switch as ever.
+#[test]
+fn a_finger_held_before_the_overlay_was_laid_out_leaves_it_shown() {
+    let (mut session, _host) = on_a_site(machine_running(&BUSY_ROM, false));
+    assert!(session.overlay.visible());
+    let start = Instant::now();
+    session.touch(1, TouchPhase::Started, middle(), start);
+    session.hold(start + 10 * HOLD);
+    assert!(session.overlay.visible(), "the finger is the overlay's");
+    session.touch(1, TouchPhase::Ended, middle(), start + 10 * HOLD);
+
+    let mut session = Driver::new(session);
+    session.frame(Vec::new());
+    assert!(session.screen().has(Role::Window, "Start"));
+    let again = start + 20 * HOLD;
+    session
+        .target
+        .touch(2, TouchPhase::Started, middle(), again);
+    session.target.hold(again + HOLD);
+    assert!(!session.target.overlay.visible());
+}
+
 /// A finger held on what the overlay shows is the overlay's, however long it
 /// stays there: held on the menu bar or on the window of a panel, it leaves
 /// the overlay shown.
