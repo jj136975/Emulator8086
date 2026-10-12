@@ -333,6 +333,39 @@ fn one_image_file_cannot_be_given_to_two_drives() {
     );
 }
 
+/// An image file that exists and holds no bytes is no disk, for a floppy
+/// drive as for a hard disk, as the disk tools' Insert refuses it: the
+/// error names the file and the drive, and says why.
+#[test]
+fn an_empty_image_file_is_refused() {
+    let dir = ScratchDir::new("empty");
+    std::fs::write(dir.path("empty.img"), []).unwrap();
+
+    for drive in ["a", "b"] {
+        let error = open_drives(vec![dir.spec(drive, "empty.img")], &[], &FixedClock)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            format!(
+                "disk image '{}' for drive {}: is empty: an image of no bytes is no disk",
+                dir.path("empty.img").display(),
+                drive.to_uppercase()
+            )
+        );
+    }
+
+    let hd = dir.path("empty.img").display().to_string();
+    let error = open_drives(Vec::new(), std::slice::from_ref(&hd), &FixedClock)
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        format!("hard disk image '{hd}' for HD0 is empty: an image of no bytes is no disk")
+    );
+    assert_eq!(std::fs::metadata(dir.path("empty.img")).unwrap().len(), 0);
+}
+
 #[test]
 fn a_directory_given_as_an_image_is_an_error_not_a_panic() {
     let dir = ScratchDir::new("dir-as-image");

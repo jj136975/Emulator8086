@@ -188,6 +188,20 @@ pub fn parse_boot_order(spec: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// Refuses the image file at `path` if it holds no bytes, as the disk
+/// tools' Insert does (`disk_ops`): the disk made of it would be a blank one
+/// of a geometry nobody chose, which the guest cannot read. `named` is how
+/// the error names the image and its drive.
+fn require_bytes(path: &Path, named: &str) -> Result<(), String> {
+    if path
+        .metadata()
+        .is_ok_and(|file| file.is_file() && file.len() == 0)
+    {
+        return Err(format!("{named} is empty: an image of no bytes is no disk"));
+    }
+    Ok(())
+}
+
 /// The drives of a machine that is about to start, as `open_drives` made
 /// them of the command line.
 pub struct OpenedDrives {
@@ -203,7 +217,8 @@ pub struct OpenedDrives {
 /// disks 0, 1, ... in the order given.
 ///
 /// The image for floppy drive A: has to exist. An image for another floppy
-/// drive or for a hard disk is created when its file does not exist. That,
+/// drive or for a hard disk is created when its file does not exist; one
+/// whose file exists and is empty is refused, as an Insert refuses it. That,
 /// and a hard disk image too large to be used in full, is among the notes
 /// returned. A floppy held in memory is formatted, at the time `clock`
 /// shows. The disks a machine starts with are no change to a guest that
@@ -228,6 +243,10 @@ pub fn open_drives(
             }
             DiskSource::FilePath(path) if spec.drive == 0x00 || path.exists() => {
                 require_unshared(&controller, &path, spec.drive)?;
+                require_bytes(
+                    &path,
+                    &format!("disk image '{}' for drive {}", path.display(), label),
+                )?;
                 DiskImage::open(&path, spec.readonly).map_err(|error| {
                     format!(
                         "cannot open disk image '{}' for drive {}: {}",
@@ -268,6 +287,10 @@ pub fn open_drives(
             DiskSource::Memory(_) => DiskImage::new_in_memory_hard_disk(HD_DEFAULT_SIZE_MB),
             DiskSource::FilePath(path) if path.exists() => {
                 require_unshared(&controller, &path, drive)?;
+                require_bytes(
+                    &path,
+                    &format!("hard disk image '{}' for {}", path.display(), label),
+                )?;
                 let image = DiskImage::open_hard_disk(&path, readonly).map_err(|error| {
                     format!(
                         "cannot open hard disk image '{}' for {}: {}",
