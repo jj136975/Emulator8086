@@ -103,3 +103,42 @@ fn a_modules_part_is_the_lines_below_its_line() {
     assert_eq!(section(LOG, "CMD\\IFS"), None);
     assert_eq!(section("", "MESSAGES"), None);
 }
+
+/// The line BUILD.BAT has ECHO write into the log before a module, all
+/// that ECHO writes of it up to the redirection, begins the module's part.
+#[test]
+fn the_line_build_bat_echoes_begins_the_modules_part() {
+    let bat = crate::makefiles::build_bat(&["CMD\\FIND".to_string()]);
+    let echoed = bat
+        .lines()
+        .find_map(|line| line.strip_prefix("ECHO ")?.strip_suffix(">> C:\\BUILD.LOG"))
+        .expect("BUILD.BAT echoes a line into the log");
+    assert_eq!(section_start(echoed), Some("CMD\\FIND"));
+}
+
+/// No other line begins a part: a tool's own line of `=` signs, or one
+/// that begins as BUILD.BAT's line does but is not one, is a line of the
+/// part it is in, and an error below it is that module's.
+#[test]
+fn no_other_line_begins_a_part() {
+    let log = "===== CMD\\FIND \r\n\
+               ==========\r\n\
+               ===== Pass 2 =====\r\n\
+               ===== ===== \r\n\
+               ===== cmd\\fc \r\n\
+               =====CMD\\FC \r\n\
+               ===== CMD\\FC\r\n\
+               ===== CMD\\FC  \r\n\
+               \x20===== CMD\\FC \r\n\
+               fc.c(3) : error C2065: 'y' : undefined\r\n";
+    assert_eq!(
+        errors(log),
+        [Finding {
+            module: "CMD\\FIND".to_string(),
+            line: "fc.c(3) : error C2065: 'y' : undefined".to_string(),
+        }]
+    );
+    assert_eq!(section(log, "CMD\\FIND").unwrap().lines().count(), 9);
+    assert_eq!(section(log, "CMD\\FC"), None);
+    assert_eq!(section(log, "====="), None);
+}

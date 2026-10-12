@@ -1,7 +1,8 @@
 //! BUILD.LOG as the build leaves it: what NMAKE and every tool it ran
 //! printed, module by module, each module's part below the line BUILD.BAT
-//! writes before it (`SECTION` and the module's name). `errors` finds the
-//! lines that tell of an error, and `section` gives a module's part.
+//! writes before it (`SECTION` and the module's name, `section_start`).
+//! `errors` finds the lines that tell of an error, and `section` gives a
+//! module's part.
 //!
 //! The invariant: a build is good only if its log tells of no error. NMAKE
 //! stops at an error, and BUILD.BAT tells the host of it, but a makefile
@@ -9,8 +10,10 @@
 //! MASM, C, LINK and NMAKE themselves, and for a tool that ran out of
 //! memory. Their warnings are no errors.
 
-/// What BUILD.BAT writes into the log before a module's part, followed by
-/// the module's name.
+use crate::fat;
+
+/// What BUILD.BAT has ECHO write into the log before a module's part,
+/// followed by a blank and the module's name.
 pub(crate) const SECTION: &str = "=====";
 
 /// A line of the log that tells of an error, and the module whose part
@@ -28,10 +31,19 @@ fn lines(log: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.trim().is_empty())
 }
 
-/// The module whose part begins at `line`, if one does.
+/// The module whose part begins at `line`, if the line is the one BUILD.BAT
+/// has ECHO write before it and nothing else: `SECTION`, a blank, the
+/// module's name, a DOS path in capitals (`CMD\FIND`), and the blank before
+/// the redirection, which ECHO writes too. A tool's own line of `=` signs
+/// is none.
 fn section_start(line: &str) -> Option<&str> {
-    let name = line.trim().strip_prefix(SECTION)?.trim();
-    (!name.is_empty()).then_some(name)
+    let name = line
+        .strip_prefix(SECTION)?
+        .strip_prefix(' ')?
+        .strip_suffix(' ')?;
+    name.split('\\')
+        .all(|part| fat::dos_name(part).as_deref() == Some(part))
+        .then_some(name)
 }
 
 /// Whether a message of `line` is `word`, a blank, and a code of the tools

@@ -71,7 +71,7 @@ fn signed(length: usize) -> Vec<u8> {
 }
 
 /// A BUILD.LOG of no error.
-const CLEAN_LOG: &[u8] = b"===== MESSAGES\r\n";
+const CLEAN_LOG: &[u8] = b"===== MESSAGES \r\n";
 
 /// A build disk as a build leaves it: `log` as BUILD.LOG, a CPY.BAT that
 /// copies IO.SYS and FIND.EXE, both in C:\BIN, and `msboot_bin` and
@@ -189,7 +189,7 @@ fn the_files_of_the_build_go_into_bin_once_all_of_it_is_checked() {
 #[test]
 fn the_size_of_build_log_is_that_of_its_bytes() {
     let scratch = Scratch::new("log");
-    let log = b"===== MESSAGES\r\n\xC4\xC4\xC4 \xB3 MESSAGES\r\n";
+    let log = b"===== MESSAGES \r\n\xC4\xC4\xC4 \xB3 MESSAGES\r\n";
     let disk = build_disk(log, &signed(0x7E00), &signed(0x800));
     let built = collect::collect(&disk, &scratch.out()).unwrap();
     assert_eq!(built.log_bytes, log.len());
