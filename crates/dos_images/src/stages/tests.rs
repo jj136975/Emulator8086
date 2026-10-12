@@ -127,6 +127,31 @@ fn built(master_boot_record: [u8; SECTOR]) -> Built {
     }
 }
 
+/// A run begins by removing the outputs an earlier run left: the two disks,
+/// every file of `bin`, the report and a failed build's disk. What else the
+/// output directory holds is left alone.
+#[test]
+fn a_run_removes_the_outputs_of_an_earlier_run_first() {
+    let scratch = Scratch::new("clear");
+    let out = scratch.out();
+    for name in [FLOPPY_IMAGE, HARD_DISK_IMAGE, REPORT, FAILED_BUILD_DISK] {
+        std::fs::write(out.join(name), b"earlier").unwrap();
+    }
+    for name in ["IO.SYS", "FIND.EXE"] {
+        std::fs::write(out.join(BUILT_FILES).join(name), b"earlier").unwrap();
+    }
+    std::fs::write(out.join("notes.txt"), b"the user's").unwrap();
+
+    clear_outputs(&out).unwrap();
+    for name in [FLOPPY_IMAGE, HARD_DISK_IMAGE, REPORT, FAILED_BUILD_DISK] {
+        assert!(!out.join(name).exists(), "{name}");
+    }
+    assert!(scratch.written(BUILT_FILES).is_empty());
+    assert!(scratch.written("disks").is_empty());
+    assert!(out.join("notes.txt").exists());
+    clear_outputs(&out).unwrap();
+}
+
 /// What the build made goes into `bin` only once all of it has passed its
 /// checks: a boot sector or a master boot record that is not one (an image
 /// without the boot signature) writes no file there, and once both are

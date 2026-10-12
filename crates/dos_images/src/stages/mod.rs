@@ -17,7 +17,8 @@
 //! inputs, and hands what it made to those after it; only a stage that
 //! makes an output of the tool writes into the output directory, and only
 //! once the output has passed every check of the stage: a run writes no
-//! output it has not checked.
+//! output it has not checked, and it begins by removing those of an earlier
+//! run, so that what it leaves there is what it made and checked.
 
 pub(crate) mod build;
 pub(crate) mod build_disk;
@@ -59,6 +60,33 @@ pub(crate) const REPORT: &str = "report.txt";
 /// The build disk as a failed build left it.
 pub(crate) const FAILED_BUILD_DISK: &str = "failed-build.img";
 
+/// Removes from `out` the outputs an earlier run may have left there: the
+/// disks, the files of `bin`, the report and a failed build's disk. A run
+/// that fails then leaves none of them, where a check by hand of the disks
+/// would pass on the earlier run's.
+fn clear_outputs(out: &Path) -> Result<(), Failure> {
+    let bin = out.join(BUILT_FILES);
+    let mut stale: Vec<PathBuf> = [FLOPPY_IMAGE, HARD_DISK_IMAGE, REPORT, FAILED_BUILD_DISK]
+        .iter()
+        .map(|name| out.join(name))
+        .collect();
+    for entry in std::fs::read_dir(&bin).map_err(|error| Failure::Output(bin.clone(), error))? {
+        stale.push(
+            entry
+                .map_err(|error| Failure::Output(bin.clone(), error))?
+                .path(),
+        );
+    }
+    for path in stale {
+        if let Err(error) = std::fs::remove_file(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(Failure::Output(path, error));
+        }
+    }
+    Ok(())
+}
+
 /// Runs the stages on `inputs`, into the directory `out`, and returns the
 /// report it wrote there.
 pub(crate) fn run(inputs: &Inputs, out: &Path) -> Result<Report, Failure> {
@@ -67,6 +95,7 @@ pub(crate) fn run(inputs: &Inputs, out: &Path) -> Result<Report, Failure> {
     for directory in [out.join("disks"), out.join(BUILT_FILES)] {
         std::fs::create_dir_all(&directory).map_err(|error| Failure::Output(directory, error))?;
     }
+    clear_outputs(out)?;
 
     println!("Stage 1: the FreeDOS host floppy");
     let host = host::floppy(&inputs.freedos).map_err(Failure::Host)?;
