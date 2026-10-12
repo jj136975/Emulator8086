@@ -644,10 +644,11 @@ paths, local build dirs) go in `CLAUDE.local.md` (gitignored), never here.
   `target_family`), `wasm_bindgen`, `web_sys` or `js_sys`, and none sleeps
   (`thread::sleep`, `thread::park`), starts a thread (`thread::spawn`,
   `thread::scope`, `thread::Builder`), waits on a channel (`recv`,
-  `recv_timeout`), a lock (`Condvar`, `Barrier`), a future (`block_on`) or
-  the terminal (`io::stdin`), or names a clock of `std::time` (`Instant`,
-  `SystemTime`, `UNIX_EPOCH`, by any path or `use`): a browser has one
-  thread, which must return to the page, and no clock std can read. What
+  `recv_timeout`), a lock or a barrier (`Condvar`, `Barrier`), a future
+  (`block_on`) or the terminal (`io::stdin`), or names a clock of
+  `std::time` (`Instant`, `SystemTime`, `UNIX_EPOCH`, by any path or
+  `use`): a browser has one thread, which must return to the page, and no
+  clock std can read. What
   depends on the host is a name of `platform` that both sides define; the
   clocks are `platform::Instant` and `platform::SystemTime`. The rule is a
   test: `platform::tests::only_platform_knows_the_host` sweeps `src/`. A
