@@ -153,9 +153,13 @@ fn entry_word(disk: &[u8], at: usize) -> usize {
     u32::from_le_bytes(disk[at..at + 4].try_into().unwrap()) as usize
 }
 
-/// Where the partition of `disk` lies, as its first entry says. Of a disk
-/// whose entry says more than it holds, as much as it holds.
+/// Where the partition of `disk` lies, as its first entry says. A disk too
+/// short to hold the entry has none; of a disk whose entry says more than
+/// it holds, as much as it holds.
 fn partition(disk: &[u8]) -> std::ops::Range<usize> {
+    if disk.len() < PARTITION_TABLE + 16 {
+        return 0..0;
+    }
     let start = (entry_word(disk, 8) * SECTOR).min(disk.len());
     let end = (start + entry_word(disk, 12) * SECTOR).min(disk.len());
     start..end

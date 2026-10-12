@@ -62,8 +62,9 @@ fn the_partition_entry_of_the_doom_disk() {
 /// A new hard disk holds the code of its master boot record, its one
 /// partition entry and the boot signature. Its volume is the partition, as
 /// the entry says, also of a disk the guest left; of a disk that holds less
-/// than its entry says, it is as much as the disk holds. Formatting the
-/// volume counts the sectors before it as hidden.
+/// than its entry says, it is as much as the disk holds, and a disk too
+/// short to hold the entry has none, which fails a mount at the end of its
+/// bytes. Formatting the volume counts the sectors before it as hidden.
 #[test]
 fn a_hard_disk_holds_its_record_and_one_partition() {
     let record = signed_sector(0xEE);
@@ -85,6 +86,13 @@ fn a_hard_disk_holds_its_record_and_one_partition() {
     assert_eq!(volume_of(&bytes).len(), 4977 * SECTOR);
     assert_eq!(volume_of(&bytes)[0], 0xAB, "the volume begins at sector 63");
     assert_eq!(volume_of(&bytes[..100 * SECTOR]).len(), 37 * SECTOR);
+    assert!(volume_of(&bytes[..PARTITION_TABLE + 15]).is_empty());
+    assert!(volume_of(&bytes[..4]).is_empty());
+    let mounted = fat::mount_to_read(volume_of(&bytes[..4]), &stamp::MSDOS);
+    assert_eq!(
+        mounted.err().map(|error| error.kind()),
+        Some(io::ErrorKind::UnexpectedEof)
+    );
 
     let mut disk = HardDisk::new(5, 0x01, None);
     let options = fatfs::FormatVolumeOptions::new()
