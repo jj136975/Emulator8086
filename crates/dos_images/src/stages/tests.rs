@@ -71,8 +71,9 @@ fn signed(length: usize) -> Vec<u8> {
     image
 }
 
-/// A BUILD.LOG of no error.
+/// A BUILD.LOG of no error, of a build of the one module `MODULES` names.
 const CLEAN_LOG: &[u8] = b"===== MESSAGES \r\n";
+const MODULES: [&str; 1] = ["MESSAGES"];
 
 /// A build disk as a build leaves it: `log` as BUILD.LOG, a CPY.BAT that
 /// copies IO.SYS and FIND.EXE, both in C:\BIN, and `msboot_bin` and
@@ -166,7 +167,7 @@ fn the_files_of_the_build_go_into_bin_once_all_of_it_is_checked() {
         (&boot_sector, &vec![0; 0x800]),
     ] {
         let disk = build_disk(CLEAN_LOG, msboot_bin, fdboot_bin);
-        let Err(error) = collect::collect(&disk, &scratch.out()) else {
+        let Err(error) = collect::collect(&disk, &MODULES, &scratch.out()) else {
             panic!("an image without the boot signature is taken");
         };
         assert!(
@@ -177,7 +178,7 @@ fn the_files_of_the_build_go_into_bin_once_all_of_it_is_checked() {
     }
 
     let disk = build_disk(CLEAN_LOG, &boot_sector, &master_boot_record);
-    let built = collect::collect(&disk, &scratch.out()).unwrap();
+    let built = collect::collect(&disk, &MODULES, &scratch.out()).unwrap();
     assert_eq!(built.files.len(), 2);
     assert_eq!(scratch.written(BUILT_FILES), ["FIND.EXE", "IO.SYS"]);
     let io_sys = scratch.out().join(BUILT_FILES).join("IO.SYS");
@@ -192,8 +193,34 @@ fn the_size_of_build_log_is_that_of_its_bytes() {
     let scratch = Scratch::new("log");
     let log = b"===== MESSAGES \r\n\xC4\xC4\xC4 \xB3 MESSAGES\r\n";
     let disk = build_disk(log, &signed(0x7E00), &signed(0x800));
-    let built = collect::collect(&disk, &scratch.out()).unwrap();
+    let built = collect::collect(&disk, &MODULES, &scratch.out()).unwrap();
     assert_eq!(built.log_bytes, log.len());
+}
+
+/// What the build made is taken only from a log that holds the part of
+/// each module built: a log whose line before the module lacks the blank
+/// ECHO writes, or names a module the build did not run, holds none, and
+/// is refused, naming the module, before its errors are laid to no module;
+/// nothing goes into `bin`.
+#[test]
+fn a_log_without_the_part_of_a_module_built_is_refused() {
+    let scratch = Scratch::new("parts");
+    for log in [
+        &b"===== MESSAGES\r\n"[..],
+        b"===== MESSAGES\r\nfc.c(3) : error C2065: 'y' : undefined\r\n",
+        b"===== MAPPER \r\n",
+    ] {
+        let disk = build_disk(log, &signed(0x7E00), &signed(0x800));
+        let Err(error) = collect::collect(&disk, &MODULES, &scratch.out()) else {
+            panic!("a log without the part of MESSAGES is taken");
+        };
+        assert!(
+            matches!(&error, collect::Error::NoPart(modules) if modules == &MODULES),
+            "{error}"
+        );
+        assert_eq!(error.to_string(), "BUILD.LOG has no part of MESSAGES");
+        assert_eq!(scratch.written(BUILT_FILES), Vec::<String>::new());
+    }
 }
 
 /// A floppy that does not boot to MS-DOS 4.00's prompt is never written:

@@ -143,9 +143,11 @@ pub(crate) fn run(inputs: &Inputs, out: &Path) -> Result<Report, Failure> {
     println!("Stage 3: the build");
     let (build, build_disk) = build::run(host, disk).map_err(Failure::Build)?;
     println!("Stage 4: what the build made");
-    let built = collect::collect(&build_disk, out).map_err(|error| Failure::Collect {
-        error,
-        disk: build_disk,
+    let built = collect::collect(&build_disk, &build.module_names(), out).map_err(|error| {
+        Failure::Collect {
+            error,
+            disk: build_disk,
+        }
     })?;
     println!("Stage 5: the MS-DOS 4.00 floppy");
     let floppy = floppy::make(&built, &input_files, &pins, out).map_err(Failure::Floppy)?;

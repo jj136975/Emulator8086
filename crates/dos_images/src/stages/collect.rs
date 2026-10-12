@@ -1,11 +1,14 @@
 //! Stage 4: what the build made, taken off the build disk: the files
 //! CPY.BAT copied into C:\BIN, which go into the output's `bin`; the boot
 //! sector the BOOT module assembled and FDISK's master boot record; and
-//! BUILD.LOG, which must tell of no error.
+//! BUILD.LOG, which must hold the part of each module built and tell of no
+//! error.
 //!
 //! The invariant: what goes on to the disks is exactly what CPY.BAT
 //! copies, every file of it and nothing else, from a build whose log is
-//! clean. Nothing goes into `bin` before all of it has passed its checks,
+//! clean. A log is read for errors only once each module built is found to
+//! have its part in it: otherwise its errors could not be laid to their
+//! modules. Nothing goes into `bin` before all of it has passed its checks,
 //! the boot sector and the master boot record too: what fails one writes
 //! no file there.
 
@@ -46,6 +49,9 @@ impl Built {
 pub(crate) enum Error {
     /// The build disk, or a file on it, cannot be read.
     Unreadable(&'static str, io::Error),
+    /// Modules built that BUILD.LOG has no part of: no line of it is the
+    /// one BUILD.BAT writes before each.
+    NoPart(Vec<String>),
     /// BUILD.LOG tells of errors.
     LogErrors(Vec<Finding>),
     /// Files of CPY.BAT that are not in C:\BIN.
@@ -72,6 +78,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unreadable(what, error) => write!(f, "{what} cannot be read: {error}"),
+            Self::NoPart(modules) => write!(f, "BUILD.LOG has no part of {}", modules.join(", ")),
             Self::LogErrors(findings) => {
                 write!(f, "BUILD.LOG tells of {} errors:", findings.len())?;
                 for finding in findings {
@@ -100,9 +107,10 @@ pub(crate) fn build_log(disk: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(&log).into_owned())
 }
 
-/// What the build made on the build disk `disk`, checked; its files then
-/// go into the directory `bin` of `out`.
-pub(crate) fn collect(disk: &[u8], out: &Path) -> Result<Built, Error> {
+/// What the build of `modules`, their names in its order, made on the
+/// build disk `disk`, checked; its files then go into the directory `bin`
+/// of `out`.
+pub(crate) fn collect(disk: &[u8], modules: &[&str], out: &Path) -> Result<Built, Error> {
     let volume = fat::mount_to_read(layout::volume_of(disk), &stamp::MSDOS)
         .map_err(|error| Error::Unreadable("the build disk", error))?;
     let root = volume.root_dir();
@@ -111,6 +119,14 @@ pub(crate) fn collect(disk: &[u8], out: &Path) -> Result<Built, Error> {
 
     let raw_log = read("BUILD.LOG")?;
     let log = String::from_utf8_lossy(&raw_log);
+    let no_part: Vec<String> = modules
+        .iter()
+        .filter(|module| log_scan::section(&log, module).is_none())
+        .map(|module| module.to_string())
+        .collect();
+    if !no_part.is_empty() {
+        return Err(Error::NoPart(no_part));
+    }
     let findings = log_scan::errors(&log);
     if !findings.is_empty() {
         return Err(Error::LogErrors(findings));

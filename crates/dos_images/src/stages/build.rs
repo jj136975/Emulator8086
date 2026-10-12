@@ -55,6 +55,18 @@ pub(crate) struct Build {
     pub seconds: f64,
 }
 
+impl Build {
+    /// The names of the modules built, in their order: the copy
+    /// (`COPYING`) is none.
+    pub(crate) fn module_names(&self) -> Vec<&str> {
+        self.modules
+            .iter()
+            .map(|run| run.name.as_str())
+            .filter(|name| *name != COPYING)
+            .collect()
+    }
+}
+
 /// Why the build failed.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Error {

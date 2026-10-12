@@ -24,7 +24,8 @@ fn tell(progress: &mut Progress<'_>, line: &str, now: Mark) -> Result<Option<Bui
 
 /// The markers of a build in BUILD.BAT's order make its account: when
 /// FreeDOS started it, each module's instructions from its marker to the
-/// next, the copy's last, and the build's from its start to its end.
+/// next, the copy's last, and the build's from its start to its end. The
+/// modules built are named without the copy.
 #[test]
 fn the_markers_in_order_make_the_account_of_the_build() {
     let modules = modules();
@@ -59,6 +60,7 @@ fn the_markers_in_order_make_the_account_of_the_build() {
             (COPYING, 20_000_000)
         ]
     );
+    assert_eq!(build.module_names(), ["MESSAGES", "CMD\\FIND"]);
 }
 
 /// A marker BUILD.BAT does not send then stops the build, whatever it is:
