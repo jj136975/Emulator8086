@@ -182,10 +182,12 @@ widened from `pub(crate)` when one of them needs it, not before.
   clock and its wait are the host's (`platform::Instant`, `platform::wait`):
   a desktop sleeps a millisecond at a time; a browser cannot wait, so there
   the slice of a halted or paused guest ends at once and the page's next
-  frame comes back to it, the time between the two credited by the next
-  slice like any other. The window's cursor blink is the one thing drawn on
-  host time, and the overlay's only time is that of egui's input. A test
-  states the time: `credit_pit_time`, then `step_frame`.
+  frame comes back to it. The time between the two is credited by the
+  next slice like any other, to a halted guest; to a paused one, nothing
+  is credited, there as on a desktop. The window's cursor blink is the
+  one thing drawn on host time, and the overlay's only time is that of
+  egui's input. A test states the time: `credit_pit_time`, then
+  `step_frame`.
 - **A measurement of the emulation**: `Meter` (`src/gui/meter.rs`). The
   session tells it of every frame, shown or hidden, after the slice: the
   pacer's `Slice` (when it began and ended, what it waited) and `Counts`,
