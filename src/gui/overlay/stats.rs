@@ -347,13 +347,14 @@ fn bar(ui: &mut Ui, frames: Option<&Frames>) {
 fn frames(ui: &mut Ui, frames: Option<&Frames>) {
     ui.strong("Where the time goes");
     bar(ui, frames);
+    let measured = frames.map(|frames| (frames, parts(frames)));
     Grid::new("stats_frames").num_columns(3).show(ui, |ui| {
         for (index, (name, colour, holds)) in PARTS.into_iter().enumerate() {
             ui.horizontal(|ui| {
                 swatch(ui, colour);
                 ui.label(name).on_hover_text(holds);
             });
-            let part = frames.map(|frames| (frames, parts(frames)[index]));
+            let part = measured.map(|(frames, parts)| (frames, parts[index]));
             ui.label(figure(
                 part.map(|(frames, part)| span(part / frames.count.max(1))),
             ));
