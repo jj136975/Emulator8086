@@ -11,7 +11,7 @@
 //! disk to boot starts with the overlay shown and the Start panel open; a
 //! start carried out runs the guest, a paused one too, and puts the overlay
 //! away for it: the Start panel closes, and the overlay hides, or, for a
-//! finger, makes way for the on-screen keyboard.
+//! finger, shows with the on-screen keyboard.
 //!
 //! The invariants: the keyboard has one owner at a time. A key goes to the
 //! guest unless the overlay kept it, and the moment the overlay has the
@@ -250,14 +250,19 @@ impl Session {
     /// its work, and closes. The guest is to be typed at now, and runs, a
     /// paused one too: the panel's buttons promise a machine to type at or
     /// to play. A finger pressed the button on a touch screen, which has no
-    /// keys: the on-screen keyboard opens, in an overlay left as it is.
-    /// Otherwise the overlay hides, and the keys are the guest's, whatever
-    /// of the overlay had the keyboard.
+    /// keys: the overlay shows with the on-screen keyboard open, even if it
+    /// was hidden while the disk was on its way. Otherwise the overlay
+    /// hides, and the keys are the guest's, whatever of the overlay had the
+    /// keyboard.
     fn started(&mut self, start: StartCommand) {
         self.overlay.close(Panel::Start);
         self.pacer.set_paused(false);
         if start.by_finger {
+            self.overlay.show();
             self.overlay.open(Panel::OnScreenKeyboard);
+            // An overlay shown again with the focus where it was left has
+            // the keyboard at once.
+            self.yield_keyboard();
         } else if self.overlay.visible() {
             self.overlay.hide();
             self.release_unshown_keys();

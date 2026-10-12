@@ -828,6 +828,28 @@ fn a_start_pressed_with_a_finger_opens_the_on_screen_keyboard() {
     assert_eq!(target.runtime.cpu.memory.read_word(MARK_AT), 0x4D52);
 }
 
+/// A start pressed with a finger shows the on-screen keyboard once the disk
+/// has come, even if the overlay was hidden while the disk was on its way:
+/// a touch screen has no other keys to type at the guest with.
+#[test]
+fn a_finger_start_shows_the_keyboard_after_the_overlay_was_hidden_meanwhile() {
+    let (mut session, host) = at_the_start_panel();
+    let boot = session.screen().rect(Role::Button, BOOT).center();
+    session.frame(first_finger_down(1, boot));
+    session.frame(first_finger_up(1, boot));
+    let (_, answer) = host.fetch_asked();
+    session.target.overlay_key(ElementState::Pressed, false);
+    assert!(!session.target.overlay.visible());
+
+    answer.send(Ok(vec![0xF6; 163_840])).unwrap();
+    frame_after_the_answer(&mut session);
+    assert!(session.target.overlay.visible());
+    let screen = session.wait(1.0);
+    assert!(screen.has(Role::Window, "On-screen keyboard"));
+    assert!(!screen.has(Role::Window, "Start"));
+    assert!(!session.target.overlay.wants_keyboard());
+}
+
 /// A start that fails changes nothing of the overlay either: the Start
 /// panel stays open, its buttons offered again, and the message says why.
 #[test]

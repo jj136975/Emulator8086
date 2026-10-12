@@ -184,7 +184,7 @@ The window stays at hand in the View menu. A disk started from it lives in memor
 
 On a touch screen a finger works the tools overlay as the mouse does: a tap is a click. There is no right-click to show the overlay with: a finger held still on the picture for half a second shows it or hides it, as soon as the time is up (on a desktop's touch screen as well). A finger held on the overlay itself, on its menu bar, a window or a message, is the overlay's however long it stays there. The page keeps the fingers on the picture for itself: the browser neither scrolls nor zooms it.
 
-A finger that presses a button of the Start window leaves the tools shown once the machine has restarted, with the On-screen keyboard open in place of the Start window: one tap, and the phone can type at `A:\>` or play.
+A finger that presses a button of the Start window shows the tools once the machine has restarted, hidden meanwhile or not, with the On-screen keyboard open in place of the Start window: one tap, and the phone can type at `A:\>` or play.
 
 The guest's keys come from View > On-screen keyboard, which fits the width of a phone held upright and is easier to hit with the phone on its side. It first opens at the foot of the screen, as the phone's own keyboard does, and leaves the top of the picture, where DOS shows its prompt, in view. Each finger holds a key of its own, so that keys are held together, an arrow while Ctrl fires in DOOM; a modifier tapped alone stays down for the next key, for Ctrl+C or Ctrl+Alt+Del. The keyboard is a panel of the overlay: hidden with it, it lets go of whatever a finger held. The phone's own keyboard is not used: it types characters rather than pressing keys, holds none down, and has no Esc, function keys, Ctrl, Alt or arrows.
 
