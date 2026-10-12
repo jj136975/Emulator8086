@@ -236,12 +236,16 @@ fn a_hard_disk_that_does_not_start_doom8088_is_not_written() {
     assert_eq!(scratch.written("disks"), Vec::<String>::new());
 }
 
-/// The files of the inputs that go onto the disks are read before the
-/// first stage: inputs that lack one fail the run on it, naming it, and
-/// inputs that lack none fail it in stage 1, on the boot floppy they lack.
+/// The files of the inputs that go onto the disks are read before the run
+/// touches the output directory: inputs that lack one fail the run on it,
+/// naming it, and leave an earlier run's outputs as they were; inputs that
+/// lack none go on to remove them, and fail the run in stage 1, on the
+/// boot floppy they lack.
 #[test]
-fn an_input_file_missing_fails_the_run_before_the_first_stage() {
+fn an_input_file_missing_fails_the_run_before_it_changes_the_outputs() {
     let scratch = Scratch::new("inputs");
+    let earlier = scratch.out().join(FLOPPY_IMAGE);
+    std::fs::write(&earlier, b"earlier").unwrap();
     for missing in [
         scratch.0.join("msdos").join("LICENSE"),
         scratch.0.join("doom8088").join("DOOM1.WAD"),
@@ -255,10 +259,12 @@ fn an_input_file_missing_fails_the_run_before_the_first_stage() {
             matches!(&failure, Failure::Input(path, _) if *path == missing),
             "{failure}"
         );
+        assert_eq!(std::fs::read(&earlier).unwrap(), b"earlier");
         std::fs::write(&missing, kept).unwrap();
     }
     let Err(failure) = run(&scratch.inputs(), &scratch.out()) else {
         panic!("the run went on without the boot floppy");
     };
     assert!(matches!(failure, Failure::Host(_)), "{failure}");
+    assert!(!earlier.exists());
 }

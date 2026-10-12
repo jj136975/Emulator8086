@@ -13,16 +13,19 @@
 //! `msdos` puts MS-DOS 4.00 on a volume for the floppy and the hard disk,
 //! and `check` has DOS 4's CHKDSK check each.
 //!
-//! Before stage 1, `run` reads the files of the inputs that stages 5 and 6
-//! put on the disks (`InputFiles`), so that one missing fails the run at
-//! once, not after the build; stages 1 and 2 read theirs first thing.
+//! Before it touches the output directory, `run` reads the files of the
+//! inputs that stages 5 and 6 put on the disks (`InputFiles`): one missing
+//! fails the run at once, not after the build, and leaves the outputs of an
+//! earlier run as they were. Stages 1 and 2 read theirs first thing.
 //!
 //! The invariant: a stage takes what the stages before it made, and the
 //! inputs, and hands what it made to those after it; only a stage that
 //! makes an output of the tool writes into the output directory, and only
 //! once the output has passed every check of the stage: a run writes no
-//! output it has not checked, and it begins by removing those of an earlier
-//! run, so that what it leaves there is what it made and checked.
+//! output it has not checked. Once its input files are read, a run begins
+//! by removing the outputs of an earlier run, so that what it leaves there
+//! is what it made and checked; a run that cannot read them changes nothing
+//! there.
 
 pub(crate) mod build;
 pub(crate) mod build_disk;
@@ -90,8 +93,8 @@ pub(crate) const FAILED_BUILD_DISK: &str = "failed-build.img";
 
 /// Removes from `out` the outputs an earlier run may have left there: the
 /// disks, the files of `bin`, the report and a failed build's disk. A run
-/// that fails then leaves none of them, where a check by hand of the disks
-/// would pass on the earlier run's.
+/// that fails once it has read its input files then leaves none of them,
+/// where a check by hand of the disks would pass on the earlier run's.
 fn clear_outputs(out: &Path) -> Result<(), Failure> {
     let bin = out.join(BUILT_FILES);
     let mut stale: Vec<PathBuf> = [FLOPPY_IMAGE, HARD_DISK_IMAGE, REPORT, FAILED_BUILD_DISK]
@@ -116,16 +119,17 @@ fn clear_outputs(out: &Path) -> Result<(), Failure> {
 }
 
 /// Runs the stages on `inputs`, into the directory `out`, and returns the
-/// report it wrote there.
+/// report it wrote there. The input files are read first: a run that
+/// cannot read one stops before it changes anything in `out`.
 pub(crate) fn run(inputs: &Inputs, out: &Path) -> Result<Report, Failure> {
     let started = Instant::now();
     let pins = Pins::compiled_in();
+    let input_files =
+        InputFiles::read(inputs).map_err(|(path, error)| Failure::Input(path, error))?;
     for directory in [out.join("disks"), out.join(BUILT_FILES)] {
         std::fs::create_dir_all(&directory).map_err(|error| Failure::Output(directory, error))?;
     }
     clear_outputs(out)?;
-    let input_files =
-        InputFiles::read(inputs).map_err(|(path, error)| Failure::Input(path, error))?;
 
     println!("Stage 1: the FreeDOS host floppy");
     let host = host::floppy(&inputs.freedos).map_err(Failure::Host)?;
