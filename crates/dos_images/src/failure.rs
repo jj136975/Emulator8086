@@ -98,7 +98,9 @@ impl Failure {
             println!("--- what CHKDSK reported\n{}", report.trim_end());
         }
         if let Some((disk, module)) = self.build_disk() {
-            if let (Some(module), Some(log)) = (module, stages::build_log(disk)) {
+            if let Some(module) = module
+                && let Some(log) = stages::build_log(disk)
+            {
                 match log_scan::section(&log, module) {
                     Some(part) => println!("--- BUILD.LOG, {module}\n{part}"),
                     None => println!("--- BUILD.LOG has no part of {module}"),
