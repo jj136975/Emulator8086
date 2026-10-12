@@ -107,6 +107,39 @@ fn the_makefiles_are_refused_when_they_lead_nowhere_or_twice() {
     ));
 }
 
+/// Makefiles that lead to one another stop the reading, the root among
+/// them: the one that runs NMAKE in a directory whose makefile led to it is
+/// named, with that directory.
+#[test]
+fn makefiles_that_lead_to_one_another_are_refused() {
+    let mut ring = source(&[
+        ("", "all:\n\tcd a\n\t$(make)\n"),
+        ("A", "all:\n\tcd ..\\b\n\t$(make)\n"),
+        ("B", "all:\n\tcd ..\\a\n\t$(make)\n"),
+    ]);
+    let error = modules(&mut ring).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            MakefileError::Loops { directory, back_to } if directory == "B" && back_to == "A"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "the makefile of B runs NMAKE in A, which leads to it"
+    );
+
+    let mut to_the_root = source(&[
+        ("", "all:\n\tcd a\n\t$(make)\n"),
+        ("A", "all:\n\tcd ..\n\t$(make)\n"),
+    ]);
+    assert_eq!(
+        modules(&mut to_the_root).unwrap_err().to_string(),
+        "the makefile of A runs NMAKE in the root, which leads to it"
+    );
+}
+
 /// BUILD.BAT sets the environment up, then for each module changes into
 /// it, tells the host, marks the log, runs NMAKE into the log and tells the
 /// host when it failed, and at the end copies what was built into C:\BIN.

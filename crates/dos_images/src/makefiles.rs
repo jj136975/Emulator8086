@@ -45,8 +45,10 @@ pub(crate) enum MakefileError {
     Unreadable { directory: String, error: io::Error },
     /// A makefile changes into a directory above the source's root.
     Escapes { directory: String, command: String },
-    /// A makefile runs NMAKE in its own directory again.
-    Loops { directory: String },
+    /// The makefile of `directory` runs NMAKE in `back_to`, whose makefile
+    /// leads to it, or which is its own directory: the recursion would not
+    /// end.
+    Loops { directory: String, back_to: String },
     /// The makefiles lead to a module twice.
     Twice { module: String },
 }
@@ -73,10 +75,16 @@ impl fmt::Display for MakefileError {
                 "the makefile of {} leaves the source with `{command}`",
                 named(directory)
             ),
-            Self::Loops { directory } => write!(
+            Self::Loops { directory, back_to } if directory == back_to => write!(
                 f,
                 "the makefile of {} runs NMAKE in its own directory",
                 named(directory)
+            ),
+            Self::Loops { directory, back_to } => write!(
+                f,
+                "the makefile of {} runs NMAKE in {}, which leads to it",
+                named(directory),
+                named(back_to)
             ),
             Self::Twice { module } => write!(f, "the makefiles lead to {module} twice"),
         }
@@ -91,13 +99,17 @@ pub(crate) fn modules(
     makefile: &mut dyn FnMut(&str) -> io::Result<String>,
 ) -> Result<Vec<String>, MakefileError> {
     let mut found = Vec::new();
-    walk("", makefile, &mut found)?;
+    walk("", makefile, &mut Vec::new(), &mut found)?;
     Ok(found)
 }
 
+/// Adds to `found` the modules the makefile of `directory` leads to, or
+/// the directory itself if it is a module. `path` holds the directories
+/// whose makefiles led to it, from the root.
 fn walk(
     directory: &str,
     makefile: &mut dyn FnMut(&str) -> io::Result<String>,
+    path: &mut Vec<String>,
     found: &mut Vec<String>,
 ) -> Result<(), MakefileError> {
     let text = makefile(directory).map_err(|error| MakefileError::Unreadable {
@@ -113,6 +125,7 @@ fn walk(
         found.push(directory.to_string());
         return Ok(());
     };
+    path.push(directory.to_string());
     let mut here: Vec<String> = directory
         .split('\\')
         .filter(|part| !part.is_empty())
@@ -121,10 +134,13 @@ fn walk(
     for command in commands {
         if command == "$(make)" {
             let below = here.join("\\");
-            if below == directory {
-                return Err(MakefileError::Loops { directory: below });
+            if path.contains(&below) {
+                return Err(MakefileError::Loops {
+                    directory: directory.to_string(),
+                    back_to: below,
+                });
             }
-            walk(&below, makefile, found)?;
+            walk(&below, makefile, path, found)?;
             continue;
         }
         for part in command[3..].trim().split('\\') {
@@ -142,6 +158,7 @@ fn walk(
             }
         }
     }
+    path.pop();
     Ok(())
 }
 
