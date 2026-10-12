@@ -55,9 +55,9 @@
 //! The invariant: this directory is the only part of the app that knows
 //! which host it is built for. Outside it no source file names
 //! `cfg(target_arch`, `wasm_bindgen`, `web_sys` or `js_sys`, and none
-//! sleeps, blocks on a future (`block_on`) or names a clock of `std::time`:
-//! a browser has no thread that may stand still and no clock std can read.
-//! The rule is a test (`tests.rs`).
+//! sleeps, starts a thread, waits on a channel or a future (`block_on`), or
+//! names a clock of `std::time`: a browser has one thread, which may not
+//! stand still, and no clock std can read. The rule is a test (`tests.rs`).
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;

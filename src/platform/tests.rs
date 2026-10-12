@@ -1,7 +1,8 @@
 //! The rule of `platform` (`mod.rs`), checked against the app's own
 //! sources: the suite fails when a file outside this directory asks which
-//! host it is built for, reaches for a browser's own API, sleeps, blocks on
-//! a future, or names a clock of `std::time`.
+//! host it is built for, reaches for a browser's own API, sleeps, starts a
+//! thread, waits on a channel or blocks on a future, or names a clock of
+//! `std::time`.
 //!
 //! The invariant: a failure is a decision to take, not a list to extend.
 //! What depends on the host gets a name in `platform` that every host
@@ -28,8 +29,17 @@ const HOST_NAMES: [&str; 6] = [
 ];
 
 /// What only some hosts can do: a browser's one thread cannot be put to
-/// sleep, nor stand still until a future is ready.
-const HOST_CALLS: [&str; 2] = ["thread::sleep", "block_on"];
+/// sleep, nor stand still until a future is ready or a channel has an
+/// answer, and it cannot start another.
+const HOST_CALLS: [&str; 7] = [
+    "thread::sleep",
+    "thread::park",
+    "thread::spawn",
+    "thread::Builder",
+    "block_on",
+    ".recv(",
+    ".recv_timeout(",
+];
 
 /// The clocks of `std::time`, which panic on a host std has no clock for.
 /// `Duration` is not one of them: it reads nothing.
@@ -52,15 +62,44 @@ fn rust_sources(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
+/// What `line` holds of code: all of it but a comment, which a `//` begins
+/// outside a string and a character literal. A string is read as a line
+/// holds it: one that runs on over lines is not followed.
+fn code_of(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut in_string = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        match (in_string, bytes[at]) {
+            // The escaped character is the string's, whatever it is.
+            (true, b'\\') => at += 1,
+            (true, b'"') => in_string = false,
+            (false, b'"') => in_string = true,
+            // A character literal, such as '"' or '\'', is passed over
+            // whole; a lifetime, such as 'a, has no quote to close it.
+            (false, b'\'') => {
+                if bytes.get(at + 1) == Some(&b'\\') {
+                    at += 2;
+                    while at < bytes.len() && bytes[at] != b'\'' {
+                        at += 1;
+                    }
+                } else if bytes.get(at + 2) == Some(&b'\'') {
+                    at += 2;
+                }
+            }
+            (false, b'/') if bytes.get(at + 1) == Some(&b'/') => return &line[..at],
+            _ => {}
+        }
+        at += 1;
+    }
+    line
+}
+
 /// What `source` does that only `platform` may: the line of each offence,
 /// and what it is. Comments are not read. `is_test` says that the source is
 /// a test's, which may make the calls of `HOST_CALLS`.
 fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
-    let code: String = source
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let code: String = source.lines().map(code_of).collect::<Vec<_>>().join("\n");
     let line_of = |at: usize| code[..at].matches('\n').count() + 1;
     let mut found = Vec::new();
 
@@ -71,26 +110,34 @@ fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
         }
     }
 
-    // A clock of std is named in the statement that names `std::time`: a
-    // `use`, whose braces rustfmt may spread over lines, or a full path.
-    for (at, _) in code.match_indices("std::time") {
-        let statement = &code[at..];
-        let statement = &statement[..statement.find(';').unwrap_or(statement.len())];
-        for clock in STD_CLOCKS
-            .iter()
-            .filter(|clock| statement.contains(**clock))
-        {
+    // A clock of std is named by its path below `time`, whatever comes
+    // before it (`std::time::Instant`, `time::Instant` after `use std::time`,
+    // `time::Instant` in the braces of `use std::{...}`), or in the braces
+    // that follow `time::`, which rustfmt may spread over lines, or by a
+    // glob of `time`.
+    for clock in STD_CLOCKS {
+        for (at, _) in code.match_indices(&format!("time::{clock}")) {
             found.push((line_of(at), format!("std::time's {clock}")));
         }
+    }
+    for (at, _) in code.match_indices("time::{") {
+        let group = &code[at..];
+        let group = &group[..group.find('}').unwrap_or(group.len())];
+        for clock in STD_CLOCKS.iter().filter(|clock| group.contains(**clock)) {
+            found.push((line_of(at), format!("std::time's {clock}")));
+        }
+    }
+    for (at, _) in code.match_indices("time::*") {
+        found.push((line_of(at), "std::time's clocks".to_string()));
     }
     found.sort();
     found
 }
 
 /// No file of the app outside `platform` asks which host it is built for,
-/// names a browser's API, sleeps, blocks on a future or names a clock of
-/// `std::time`: what depends on the host is called by the name `platform`
-/// gives it.
+/// names a browser's API, sleeps, starts a thread, waits on a channel or
+/// blocks on a future, or names a clock of `std::time`: what depends on the
+/// host is called by the name `platform` gives it.
 #[test]
 fn only_platform_knows_the_host() {
     let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join(SOURCES);
@@ -121,7 +168,9 @@ fn only_platform_knows_the_host() {
 }
 
 /// The sweep sees an offence where there is one: this directory, which it
-/// would report if it were not exempt, is full of them.
+/// would report if it were not exempt, is full of them. A desktop sleeps,
+/// blocks on the GPU's start-up and waits for a dialog on a thread of its
+/// own.
 #[test]
 fn the_sweep_finds_what_platform_itself_does() {
     let native = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -129,7 +178,7 @@ fn the_sweep_finds_what_platform_itself_does() {
         .join(HOME)
         .join("native.rs");
     let found = offences(&std::fs::read_to_string(native).unwrap(), false);
-    for expected in HOST_CALLS {
+    for expected in ["thread::sleep", "block_on", "thread::Builder"] {
         assert!(
             found.iter().any(|(_, offence)| offence == expected),
             "{expected} in {found:?}"
@@ -138,7 +187,8 @@ fn the_sweep_finds_what_platform_itself_does() {
 }
 
 /// Each way of doing what only `platform` may is caught, wherever rustfmt
-/// puts it, and reported with its line.
+/// puts it and whatever a line holds before it, and reported with its
+/// line.
 #[test]
 fn what_depends_on_the_host_is_caught() {
     for offence in [
@@ -152,12 +202,23 @@ fn what_depends_on_the_host_is_caught() {
         "let now = js_sys::Date::now();",
         "std::thread::sleep(duration);",
         "thread::sleep(IDLE_POLL);",
+        "std::thread::park();",
+        "std::thread::spawn(move || run());",
+        "let worker = std::thread::Builder::new().spawn(run);",
+        "let answer = answers.recv();",
+        "let answer = answers.recv_timeout(PATIENCE);",
         "let adapter = pollster::block_on(instance.request_adapter(&options));",
         "use std::time::Instant;",
         "use std::time::{Duration, Instant};",
         "use std::time::{\n    Duration,\n    SystemTime,\n    UNIX_EPOCH,\n};",
+        "use std::{sync::Arc, time::Instant};",
+        "use std::{\n    sync::Arc,\n    time::{Duration, SystemTime},\n};",
+        "use std::time;\nlet started = time::Instant::now();",
+        "use std::time::*;",
         "let started = std::time::Instant::now();",
         "let now = std::time::SystemTime::now();",
+        "let site = \"https://example.org\"; let started = std::time::Instant::now();",
+        "let quote = '\"'; std::thread::sleep(FRAME);",
     ] {
         assert!(
             !offences(offence, false).is_empty(),
@@ -172,18 +233,24 @@ fn what_depends_on_the_host_is_caught() {
 }
 
 /// A duration reads no clock, a clock that comes from `platform` is the
-/// host's own, and a comment does nothing. A test may sleep and block; it
-/// may not ask for the host.
+/// host's own, an answer looked for without waiting waits for nothing, and
+/// a comment does nothing, after a string as well. A test may sleep, block
+/// and wait; it may not ask for the host.
 #[test]
 fn what_every_host_can_do_is_not_caught() {
     for innocent in [
         "use std::time::Duration;",
+        "use std::time::{self, Duration};",
         "const SLICE: std::time::Duration = std::time::Duration::from_millis(10);",
         "use crate::platform::{self, Instant};",
         "let started = Instant::now();",
         "let since = SystemTime::now().duration_since(UNIX_EPOCH);",
+        "let answer = answers.try_recv();",
         "// std::thread::sleep would block the page: #[cfg(target_arch)] is platform's",
         "/// Never `std::time::Instant` here.",
+        "let site = \"https://example.org\"; // std::thread::sleep(FRAME)",
+        "let quote = '\"'; // std::thread::sleep(FRAME)",
+        "fn first<'a>(words: &'a [&str]) -> &'a str { words[0] } // block_on",
         "platform::wait(duration);",
         "platform::spawn(async move { ready.send(start_up.await) });",
     ] {
@@ -197,6 +264,7 @@ fn what_every_host_can_do_is_not_caught() {
         )
         .is_empty()
     );
+    assert!(offences("let answer = answers.recv();", true).is_empty());
     assert!(!offences("#[cfg(target_arch = \"wasm32\")]", true).is_empty());
     assert!(!offences("use std::time::Instant;", true).is_empty());
 }

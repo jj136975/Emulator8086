@@ -633,8 +633,10 @@ paths, local build dirs) go in `CLAUDE.local.md` (gitignored), never here.
 - **Only `src/platform` knows the host.** Outside that directory no source
   file of the app names `cfg(target_arch` (or `target_os`,
   `target_family`), `wasm_bindgen`, `web_sys` or `js_sys`, and none sleeps
-  (`thread::sleep`), blocks on a future (`block_on`) or names a clock of
-  `std::time` (`Instant`, `SystemTime`, `UNIX_EPOCH`): a browser has one
+  (`thread::sleep`, `thread::park`), starts a thread (`thread::spawn`,
+  `thread::Builder`), waits on a channel (`recv`, `recv_timeout`) or on a
+  future (`block_on`), or names a clock of `std::time` (`Instant`,
+  `SystemTime`, `UNIX_EPOCH`, by any path or `use`): a browser has one
   thread, which must return to the page, and no clock std can read. What
   depends on the host is a name of `platform` that both sides define; the
   clocks are `platform::Instant` and `platform::SystemTime`. The rule is a
