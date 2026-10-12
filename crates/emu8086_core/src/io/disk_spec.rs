@@ -257,7 +257,7 @@ pub fn open_drives(
                 )?;
                 DiskImage::open(&path, spec.readonly).map_err(|error| {
                     format!(
-                        "cannot open disk image '{}' for drive {}: {}",
+                        "disk image '{}' for drive {} cannot be opened: {}",
                         path.display(),
                         label,
                         error
@@ -267,7 +267,7 @@ pub fn open_drives(
             DiskSource::FilePath(path) => {
                 let mut image = DiskImage::create(&path, FLOPPY_144_SIZE).map_err(|error| {
                     format!(
-                        "cannot create disk image '{}' for drive {}: {}",
+                        "disk image '{}' for drive {} cannot be created: {}",
                         path.display(),
                         label,
                         error
@@ -301,7 +301,7 @@ pub fn open_drives(
                 )?;
                 let image = DiskImage::open_hard_disk(&path, readonly).map_err(|error| {
                     format!(
-                        "cannot open hard disk image '{}' for {}: {}",
+                        "hard disk image '{}' for {} cannot be opened: {}",
                         path.display(),
                         label,
                         error
@@ -316,7 +316,7 @@ pub fn open_drives(
                 let image =
                     DiskImage::create_hard_disk(&path, HD_DEFAULT_SIZE_MB).map_err(|error| {
                         format!(
-                            "cannot create hard disk image '{}' for {}: {}",
+                            "hard disk image '{}' for {} cannot be created: {}",
                             path.display(),
                             label,
                             error
