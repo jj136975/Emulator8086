@@ -262,3 +262,7 @@ impl Guest {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "guest_tests.rs"]
+mod tests;
