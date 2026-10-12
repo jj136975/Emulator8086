@@ -170,7 +170,9 @@ widened from `pub(crate)` when one of them needs it, not before.
   the machine at the reset vector as Reset does, its memory, devices and
   drives as they are. Its dialog asks for a ROM (`Wanted::Rom`), of which
   a browser reads no more than `ROM_MAX_SIZE` and a byte: a disk image of
-  gigabytes chosen by mistake is refused there unread as well.
+  gigabytes chosen by mistake is refused there after its first 64 KB and
+  a byte; a file the page cannot read is answered as none chosen, the
+  reason in the console.
 - **Guest time**: the machine is told the time, it never reads a clock.
   `Runtime::credit_pit_time` turns host time into the 8253 clocks the guest
   is owed (the debt, its 250 ms cap) and `Runtime::run` pays them out, four

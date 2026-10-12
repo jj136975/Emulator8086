@@ -250,8 +250,9 @@ impl OverlayInput {
         self.0.on_window_event(event)
     }
 
-    /// Drops what was gathered, but for the releases of the pointer's
-    /// buttons (`keep_releases`): no pass will take the rest.
+    /// Drops what was gathered, but for what places the pointer and the
+    /// fingers for the next pass (`keep_releases`): no pass will take the
+    /// rest.
     pub fn discard(&mut self) {
         self.0.discard();
     }
@@ -377,8 +378,10 @@ impl FileDialogs {
     /// at once. The answer arrives later through the channel returned: the
     /// files chosen, each by its name and its contents, or none if the user
     /// chose nothing. Of a ROM image, no more is read than the longest
-    /// image and a byte. What a page cannot ask for, a folder or a file to
-    /// write, is answered with none.
+    /// image and a byte; one the page cannot read, gone or changed since
+    /// it was picked, is answered as none chosen, the reason in the
+    /// console. What a page cannot ask for, a folder or a file to write,
+    /// is answered with none.
     ///
     /// A browser opens its picker only for a page its user has just
     /// clicked in or typed at. Asked later than that, the picker's library
@@ -397,7 +400,15 @@ impl FileDialogs {
             let mut files = Vec::with_capacity(picked.len());
             for file in picked {
                 let bytes = match most {
-                    Some(most) => read_at_most(&file, most).await,
+                    Some(most) => match read_at_most(&file, most).await {
+                        Ok(bytes) => bytes,
+                        // The picker's own read of such a file never
+                        // settles: whoever asked would wait for ever.
+                        Err(error) => {
+                            log::warn!("Cannot read {}: {}", file.file_name(), reason(&error));
+                            continue;
+                        }
+                    },
                     None => file.read().await,
                 };
                 files.push(HostFile::Contents {
@@ -413,19 +424,13 @@ impl FileDialogs {
 }
 
 /// The first `most` bytes of the file `handle` holds, or all of it if it is
-/// shorter, read without the rest of it.
-async fn read_at_most(handle: &rfd::FileHandle, most: usize) -> Vec<u8> {
+/// shorter, read without the rest of it; or why the page could not read
+/// it.
+async fn read_at_most(handle: &rfd::FileHandle, most: usize) -> Result<Vec<u8>, JsValue> {
     let file = handle.inner();
-    let read = match file.slice_with_f64_and_f64(0.0, file.size().min(most as f64)) {
-        Ok(part) => JsFuture::from(part.array_buffer()).await,
-        Err(error) => Err(error),
-    };
-    match read {
-        Ok(part) => js_sys::Uint8Array::new(&part).to_vec(),
-        // A part the page cannot read is read whole, as every other file
-        // is: rfd's read of a file the page cannot read fails as before.
-        Err(_) => handle.read().await,
-    }
+    let part = file.slice_with_f64_and_f64(0.0, file.size().min(most as f64))?;
+    let bytes = JsFuture::from(part.array_buffer()).await?;
+    Ok(js_sys::Uint8Array::new(&bytes).to_vec())
 }
 
 /// The app came from the site that served the page.
