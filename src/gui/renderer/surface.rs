@@ -55,6 +55,9 @@ pub struct Renderer {
     surface_config: wgpu::SurfaceConfiguration,
     blit: FrameBlit,
     overlay: OverlayPass,
+    /// No new surface could be made for the one lost, and the log was told:
+    /// the redraws that try again say nothing more.
+    told_lost: bool,
 
     /// Reference point for the blink phase of cursor and text.
     started: Instant,
@@ -135,6 +138,7 @@ impl Renderer {
             surface_config,
             blit,
             overlay,
+            told_lost: false,
             started: Instant::now(),
         }
     }
@@ -204,17 +208,30 @@ impl Renderer {
                 self.surface.configure(&self.device, &self.surface_config);
                 return;
             }
-            // A surface that is lost gives no frame again, however it is
-            // configured: a new one on the window takes its place.
+            // On a desktop a surface that is lost gives no frame again,
+            // however it is configured: a new one on the window takes its
+            // place, configured as the old one was, since the same window
+            // on the same adapter has the same formats and alpha modes. In
+            // a browser wgpu reports as lost a surface whose configuration
+            // the page refused, which a new surface on the same canvas is
+            // refused too: there the report repeats, as it did before.
             wgpu::CurrentSurfaceTexture::Lost => {
                 match self.instance.create_surface(self.window.clone()) {
                     Ok(surface) => {
                         self.surface = surface;
                         self.surface.configure(&self.device, &self.surface_config);
+                        self.told_lost = false;
                     }
-                    // Through the log, which every host shows somewhere: a
-                    // browser has no stderr.
-                    Err(error) => log::error!("The window's surface was lost: {error}"),
+                    // Told once, through the log, which every host shows
+                    // somewhere (a browser has no stderr); the next redraw
+                    // tries again, quietly.
+                    Err(error) if !self.told_lost => {
+                        log::error!(
+                            "The window's surface was lost, and no new one could be made: {error}"
+                        );
+                        self.told_lost = true;
+                    }
+                    Err(_) => {}
                 }
                 return;
             }
