@@ -464,9 +464,15 @@ nothing there. The runner installs the toolchain `rust-toolchain` pins, and
 takes trunk from its releases at the version the workflow names, checked
 against the checksum beside it: a new version of trunk changes both. The
 workflow runs no test and no lint (the bar above is run by hand before a
-commit), and uses GitHub's own actions alone (the ledger below). Its
-deployment needs the repository's Settings > Pages to name "GitHub Actions"
-as the source of the site.
+commit), and uses GitHub's own actions alone (the ledger below), each
+pinned to the commit of the release named beside it: a new release is
+taken by changing both. Each job's token can do what that job needs and
+no more: the build, which runs the build scripts of every crate and the
+tools it downloads, reads the repository and the Pages settings, and its
+checkout keeps no token; only the deployment has `pages: write` and
+`id-token: write`. Its deployment needs the repository's Settings > Pages
+to name "GitHub Actions" as the source of the site; the `github-pages`
+environment there takes deployments of `main` alone.
 
 The site publishes the BIOS beside the page, as `rom/bios.bin`, assembled
 on the runner. The workflow installs nasm from Ubuntu's packages and
@@ -673,7 +679,7 @@ not listed has not been asked: ask first, and add the answer here.
 | 2026-10-04 | `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys`, `js-sys`, `web-time` | approved | the browser (wasm32) build. In use: `web-time` in the app on both hosts (the clocks of `src/platform`), the other four as dependencies of the wasm32 target only, `web-sys` with the features the root manifest lists and no other (beside those `rfd` asks for itself). `Response` and `Headers` were added on 2026-10-10 with the fetch of the site's files (`platform::fetch`), and `File` on 2026-10-12 with the part of a ROM's file the picker reads |
 | 2026-10-04 | `trunk` (`cargo install trunk`) | approved | build tool for the browser build, not a dependency of the crate. In use: 0.21, with `index.html` at the root |
 | 2026-10-04 | `console_error_panic_hook`, `console_log` | refused | the browser build's panic hook and console logger are written by hand: they are in `src/platform/web.rs` |
-| 2026-10-10 | GitHub's own actions: `actions/checkout`, `actions/cache`, `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` | requested with the deployment (the user asked for the browser build to be built by CI and published on GitHub Pages), not asked one by one | `.github/workflows/pages.yml` alone. No action of a third party: the runner's rustup installs the toolchain, and trunk comes from its releases, checked against the checksum the workflow holds |
+| 2026-10-10 | GitHub's own actions: `actions/checkout`, `actions/cache`, `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` | requested with the deployment (the user asked for the browser build to be built by CI and published on GitHub Pages), not asked one by one | `.github/workflows/pages.yml` alone. No action of a third party: the runner's rustup installs the toolchain, and trunk comes from its releases, checked against the checksum the workflow holds. Since 2026-10-12 each is pinned to the commit of a release, the one the major tag named then (checkout v7.0.1, cache v6.1.0, configure-pages v6.0.0, upload-pages-artifact v5.0.0, deploy-pages v5.0.1) |
 | 2026-10-10 | `nasm`, from Ubuntu's packages on the runner | requested with the user's "compile + upload" of the BIOS on 2026-10-10 (CI assembles the BIOS and publishes it with the site), not asked apart | `.github/workflows/pages.yml` alone: the runner installs it with apt for the core's build script to assemble `assets/rom`. A build tool, not a dependency of either crate; a desktop build uses whatever nasm is on PATH, or none |
 | 2026-10-10 | MS-DOS 4.00's source, restored: lotharsm/MS-DOS, branch `dos-4.00-reconstructed`, commit `500867d` (Microsoft's 2d04cac with its damaged files mended), MIT License | the user's choice on 2026-10-10: MS-DOS 4.00, built from source in CI, over FreeDOS as the DOS of the site's disks. MS-DOS 6.22, which Microsoft never licensed for redistribution, is never published | an input of `crates/dos_images` alone, fetched pinned (`pins.env`: the commit, and the git tree of `v4.0`): built inside the emulator, and published on the two disks with its MIT notice (`LICENSE.TXT`) and a `README.TXT` that names the source |
 | 2026-10-11 | FreeDOS 1.4, the boot floppy of its Floppy Edition (kernel 2043, FreeCOM 0.86; GPL) | requested with the CI build of MS-DOS 4.00 (the user's choice of 2026-10-10), as its build host; not asked apart | `crates/dos_images` alone: fetched pinned (`pins.env`: the zip's and the floppy's SHA-256), booted in the emulator to run the build, and never published. Nothing of it is on the disks |

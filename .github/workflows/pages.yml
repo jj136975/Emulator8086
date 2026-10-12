@@ -32,6 +32,13 @@
 # those listed in crates/dos_images/msdos400-binaries.sha256 and the disks
 # those of crates/dos_images/disks.sha256: the same inputs make the same
 # disks, byte for byte.
+#
+# Each job's token can do what that job needs and nothing more. The build,
+# which runs the build scripts of every crate it compiles and the tools it
+# downloads, reads the repository and the settings of its Pages site, and
+# its checkout keeps no token; only the deployment deploys. The actions are
+# GitHub's own (CLAUDE.md, the ledger), each pinned to the commit of the
+# release named beside it: a tag can be moved, a commit cannot.
 
 name: Pages
 
@@ -40,10 +47,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
 # One deployment at a time. A run queued behind another replaces any queued
 # before it; the run in progress is never cancelled.
@@ -58,8 +62,15 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # The repository, and the settings of its Pages site (configure-pages).
+    permissions:
+      contents: read
+      pages: read
     steps:
-      - uses: actions/checkout@v7
+      # Nothing after the checkout fetches or pushes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: nasm
         run: |
@@ -86,7 +97,7 @@ jobs:
 
       # The crates and what was built of them, kept for as long as the
       # toolchain and the manifests stay the same.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -98,7 +109,7 @@ jobs:
 
       - name: Pages
         id: pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Build
         run: trunk build --release --public-url "$PUBLIC_URL"
@@ -129,7 +140,7 @@ jobs:
       # the toolchain. Any of them may change what the build makes.
       - name: MS-DOS disks of an earlier run
         id: dos-disks
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/dos-images
           key: dos-images-${{ runner.os }}-${{ hashFiles('crates/dos_images/pins.env', 'crates/dos_images/**', 'crates/emu8086_core/**', 'assets/rom/bios.bin', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain') }}
@@ -180,17 +191,22 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # A deployment of Pages, and the OIDC token that tells Pages which run,
+    # of which branch, it comes from.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
