@@ -1,8 +1,9 @@
 //! Parsing of what the user types to name drives and disk images, and the
 //! opening of the images the command line names: the `--disk`, `--hd` and
-//! `--boot` options. The disk tools (`disk_ops`) name the drives and refuse
-//! a shared image file with the functions here, so that a drive is called
-//! the same wherever the user reads of it.
+//! `--boot` options. The disk tools (`disk_ops`) name the drives, and refuse
+//! a shared image file and an image of no bytes, with the functions here,
+//! so that a drive is called the same wherever the user reads of it, and
+//! a refusal reads the same.
 //!
 //! The invariant: a colon separates the parts of a specification
 //! (`b:disk.img:ro`, `memory:720`) and is also part of a Windows path, so
@@ -188,16 +189,23 @@ pub fn parse_boot_order(spec: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// Refuses the image file at `path` if it holds no bytes, as the disk
-/// tools' Insert does (`disk_ops`): the disk made of it would be a blank one
-/// of a geometry nobody chose, which the guest cannot read. `named` is how
-/// the error names the image and its drive.
-fn require_bytes(path: &Path, named: &str) -> Result<(), String> {
+/// Why the image the user knows as `shown` is refused: it has no bytes, and
+/// the disk made of it would be a blank one of a geometry nobody chose,
+/// which the guest cannot read.
+pub(crate) fn no_disk(shown: &str) -> String {
+    format!("{shown} is empty: an image of no bytes is no disk")
+}
+
+/// Refuses the image file at `path` if it holds no bytes (`no_disk`), for
+/// the command line and for the disk tools' Insert alike. `named` is how
+/// the refusal names the image, and its drive where the user did not name
+/// it in the same breath.
+pub(crate) fn require_bytes(path: &Path, named: &str) -> Result<(), String> {
     if path
         .metadata()
         .is_ok_and(|file| file.is_file() && file.len() == 0)
     {
-        return Err(format!("{named} is empty: an image of no bytes is no disk"));
+        return Err(no_disk(named));
     }
     Ok(())
 }
