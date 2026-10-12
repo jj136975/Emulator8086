@@ -292,11 +292,11 @@ pub(crate) fn run(host: DiskImage, build_disk: BuildDisk) -> Result<(Build, Vec<
     };
     loop {
         guest.step();
-        let lines = match guest.new_lines() {
-            Ok(lines) => lines,
-            Err(lost) => return Err(fail(&guest, Error::LinesLost(lost), &progress)),
-        };
-        for line in lines {
+        let lines = guest.new_lines();
+        if lines.lost > 0 {
+            return Err(fail(&guest, Error::LinesLost(lines.lost), &progress));
+        }
+        for line in lines.kept {
             let Some(marker) = Marker::parse(&line) else {
                 continue;
             };

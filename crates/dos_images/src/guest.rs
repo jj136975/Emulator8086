@@ -57,6 +57,15 @@ pub(crate) struct Guest {
     read: u64,
 }
 
+/// The lines the guest finished on the port E9h between two reads.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PortLines {
+    /// How many of them the port no longer kept: the first ones.
+    pub lost: u64,
+    /// The rest, which it kept, in their order.
+    pub kept: Vec<String>,
+}
+
 /// What a stage saw of the guest when it gave up on it.
 #[derive(Debug)]
 pub(crate) struct Stopped {
@@ -144,25 +153,25 @@ impl Guest {
         Duration::from_nanos(self.nanos)
     }
 
-    /// The lines the guest finished on the port E9h since the last call;
-    /// or, if it finished more of them than the port keeps, how many of
-    /// them are lost.
-    pub(crate) fn new_lines(&mut self) -> Result<Vec<String>, u64> {
+    /// The lines the guest finished on the port E9h since the last call:
+    /// those the port kept, and how many before them it no longer kept, if
+    /// the guest finished more of them than the port keeps.
+    pub(crate) fn new_lines(&mut self) -> PortLines {
         let console = self
             .runtime
             .debug_console()
             .expect("the machine has the port E9h");
         let finished = console.lines_finished();
-        let fresh = (finished - self.read) as usize;
+        let fresh = finished - self.read;
         self.read = finished;
-        let kept: Vec<&str> = console.lines().collect();
-        if fresh > kept.len() {
-            return Err((fresh - kept.len()) as u64);
-        }
-        Ok(kept[kept.len() - fresh..]
-            .iter()
-            .map(|line| line.to_string())
-            .collect())
+        let held = console.lines().len();
+        let lost = fresh.saturating_sub(held as u64);
+        let kept = console
+            .lines()
+            .skip(held - (fresh - lost) as usize)
+            .map(str::to_string)
+            .collect();
+        PortLines { lost, kept }
     }
 
     /// The text screen, a line a row, each without the blanks at its end.
@@ -238,10 +247,11 @@ impl Guest {
 
     /// Runs batches until `done` says the guest is where a stage wants it,
     /// or until `budget` more of its time has passed. `done` is shown the
-    /// guest and the lines it finished on the port in the batch (with a
-    /// line that says how many were lost, if the port did not keep them
-    /// all). Returns the instructions the guest had run when it was done,
-    /// or what it showed when its time was up.
+    /// guest and the lines it finished on the port in the batch: those the
+    /// port kept, after a line that says how many were lost before them,
+    /// if the port did not keep them all. Returns the instructions the
+    /// guest had run when it was done, or what it showed when its time was
+    /// up.
     pub(crate) fn run_until(
         &mut self,
         budget: Duration,
@@ -250,9 +260,12 @@ impl Guest {
         let end = self.time() + budget;
         loop {
             self.step();
-            let lines = self
-                .new_lines()
-                .unwrap_or_else(|lost| vec![format!("[{lost} lines of port E9h lost]")]);
+            let PortLines { lost, kept } = self.new_lines();
+            let lines: Vec<String> = (lost > 0)
+                .then(|| format!("[{lost} lines of port E9h lost]"))
+                .into_iter()
+                .chain(kept)
+                .collect();
             if done(self, &lines) {
                 return Ok(self.instructions());
             }
