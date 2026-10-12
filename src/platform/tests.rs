@@ -1,8 +1,8 @@
 //! The rule of `platform` (`mod.rs`), checked against the app's own
 //! sources: the suite fails when a file outside this directory asks which
 //! host it is built for, reaches for a browser's own API, sleeps, starts a
-//! thread, waits on a channel or blocks on a future, or names a clock of
-//! `std::time`.
+//! thread, waits on a channel, a lock, a future or the terminal, or names a
+//! clock of `std::time`.
 //!
 //! The invariant: a failure is a decision to take, not a list to extend.
 //! What depends on the host gets a name in `platform` that every host
@@ -29,9 +29,9 @@ const HOST_NAMES: [&str; 6] = [
 ];
 
 /// What only some hosts can do: a browser's one thread cannot be put to
-/// sleep, nor stand still until a future is ready or a channel has an
-/// answer, and it cannot start another.
-const HOST_CALLS: [&str; 8] = [
+/// sleep, nor stand still until a future is ready, a channel has an answer,
+/// a lock is given up or a line is typed, and it cannot start another.
+const HOST_CALLS: [&str; 11] = [
     "thread::sleep",
     "thread::park",
     "thread::spawn",
@@ -40,6 +40,9 @@ const HOST_CALLS: [&str; 8] = [
     "block_on",
     ".recv(",
     ".recv_timeout(",
+    "Condvar",
+    "Barrier",
+    "io::stdin",
 ];
 
 /// The clocks of `std::time`, which panic on a host std has no clock for,
@@ -64,62 +67,103 @@ fn rust_sources(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// What `line` holds of code: all of it but a comment, which a `//` begins
-/// outside a string and a character literal. A string is read as a line
-/// holds it: one that runs on over lines is not followed. A block comment
-/// is read as code: the sources have none.
-fn code_of(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    let mut in_string = false;
+/// How long the literal at the start of `rest` is, with its quotes, if one
+/// starts there: a string, to its closing quote, past the characters it
+/// escapes; a raw string, `r"..."` or `r#"..."#`, which escapes nothing, to
+/// the quote followed by as many hashes as opened it; a character literal,
+/// such as '"' or '\'', whole. A lifetime, such as 'a, is no literal. One
+/// that never closes runs to the end.
+fn literal_len(rest: &str) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    if rest.starts_with('"') {
+        let mut at = 1;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'\\' => at += 2,
+                b'"' => return Some(at + 1),
+                _ => at += 1,
+            }
+        }
+        return Some(bytes.len());
+    }
+    if let Some(raw) = rest.strip_prefix("br").or_else(|| rest.strip_prefix('r')) {
+        let hashes = raw.bytes().take_while(|b| *b == b'#').count();
+        if raw.as_bytes().get(hashes) == Some(&b'"') {
+            let opening = rest.len() - raw.len() + hashes + 1;
+            let closing = format!("\"{}", "#".repeat(hashes));
+            return Some(match rest[opening..].find(&closing) {
+                Some(end) => opening + end + closing.len(),
+                None => rest.len(),
+            });
+        }
+    }
+    if let Some(quoted) = rest.strip_prefix('\'') {
+        if let Some(escaped) = quoted.strip_prefix('\\') {
+            return escaped.find('\'').map(|end| 2 + end + 1);
+        }
+        let mut chars = quoted.chars();
+        let first = chars.next()?;
+        if chars.next() == Some('\'') {
+            return Some(1 + first.len_utf8() + 1);
+        }
+    }
+    None
+}
+
+/// How long the block comment at the start of `rest` is, with the comments
+/// it holds, which Rust nests; one that never closes runs to the end.
+fn block_comment_len(rest: &str) -> usize {
+    let bytes = rest.as_bytes();
+    let mut depth = 0;
     let mut at = 0;
     while at < bytes.len() {
-        match (in_string, bytes[at]) {
-            // The escaped character is the string's, whatever it is.
-            (true, b'\\') => at += 1,
-            (true, b'"') => in_string = false,
-            (false, b'"') => {
-                // A raw string, r"..." or r#"..."#, escapes nothing: it
-                // ends at a quote followed by as many hashes as opened it.
-                let hashes = bytes[..at].iter().rev().take_while(|b| **b == b'#').count();
-                if at > hashes && bytes[at - hashes - 1] == b'r' {
-                    let closes = |end: usize| {
-                        bytes[end] == b'"'
-                            && bytes[end + 1..].iter().take(hashes).all(|b| *b == b'#')
-                            && bytes.len() > end + hashes
-                    };
-                    match (at + 1..bytes.len()).find(|end| closes(*end)) {
-                        Some(end) => at = end + hashes,
-                        None => return line,
-                    }
-                } else {
-                    in_string = true;
-                }
+        if bytes[at..].starts_with(b"/*") {
+            depth += 1;
+            at += 2;
+        } else if bytes[at..].starts_with(b"*/") {
+            depth -= 1;
+            at += 2;
+            if depth == 0 {
+                return at;
             }
-            // A character literal, such as '"' or '\'', is passed over
-            // whole; a lifetime, such as 'a, has no quote to close it.
-            (false, b'\'') => {
-                if bytes.get(at + 1) == Some(&b'\\') {
-                    at += 2;
-                    while at < bytes.len() && bytes[at] != b'\'' {
-                        at += 1;
-                    }
-                } else if bytes.get(at + 2) == Some(&b'\'') {
-                    at += 2;
-                }
-            }
-            (false, b'/') if bytes.get(at + 1) == Some(&b'/') => return &line[..at],
-            _ => {}
+        } else {
+            at += 1;
         }
-        at += 1;
     }
-    line
+    bytes.len()
+}
+
+/// What `source` holds of code: all of it but its comments, a `//` to the
+/// end of its line and a `/* */`, outside a string, a raw string and a
+/// character literal, which stay as they are. The line ends stay too, so
+/// that a line keeps its number.
+fn code_of(source: &str) -> String {
+    let mut code = String::with_capacity(source.len());
+    let mut at = 0;
+    while at < source.len() {
+        let rest = &source[at..];
+        let taken = if rest.starts_with("//") {
+            rest.find('\n').unwrap_or(rest.len())
+        } else if rest.starts_with("/*") {
+            let len = block_comment_len(rest);
+            code.extend(rest[..len].chars().filter(|c| *c == '\n'));
+            len
+        } else {
+            let len =
+                literal_len(rest).unwrap_or_else(|| rest.chars().next().map_or(1, char::len_utf8));
+            code.push_str(&rest[..len]);
+            len
+        };
+        at += taken;
+    }
+    code
 }
 
 /// What `source` does that only `platform` may: the line of each offence,
 /// and what it is. Comments are not read. `is_test` says that the source is
 /// a test's, which may make the calls of `HOST_CALLS`.
 fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
-    let code: String = source.lines().map(code_of).collect::<Vec<_>>().join("\n");
+    let code = code_of(source);
     let line_of = |at: usize| code[..at].matches('\n').count() + 1;
     let mut found = Vec::new();
 
@@ -155,9 +199,9 @@ fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
 }
 
 /// No file of the app outside `platform` asks which host it is built for,
-/// names a browser's API, sleeps, starts a thread, waits on a channel or
-/// blocks on a future, or names a clock of `std::time`: what depends on the
-/// host is called by the name `platform` gives it.
+/// names a browser's API, sleeps, starts a thread, waits on a channel, a
+/// lock, a future or the terminal, or names a clock of `std::time`: what
+/// depends on the host is called by the name `platform` gives it.
 #[test]
 fn only_platform_knows_the_host() {
     let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join(SOURCES);
@@ -229,6 +273,9 @@ fn what_depends_on_the_host_is_caught() {
         "let answer = answers.recv();",
         "let answer = answers.recv_timeout(PATIENCE);",
         "let adapter = pollster::block_on(instance.request_adapter(&options));",
+        "let ready = std::sync::Condvar::new();",
+        "let gate = std::sync::Barrier::new(2);",
+        "std::io::stdin().read_line(&mut line);",
         "use std::time::Instant;",
         "use std::time::{Duration, Instant};",
         "use std::time::{\n    Duration,\n    SystemTime,\n    UNIX_EPOCH,\n};",
@@ -242,6 +289,8 @@ fn what_depends_on_the_host_is_caught() {
         "let quote = '\"'; std::thread::sleep(FRAME);",
         "let raw = r#\"say \"hi\"\"#; std::thread::sleep(FRAME);",
         "let prefix = r\"\\\\?\\\"; std::thread::sleep(FRAME);",
+        "/* a */ std::thread::sleep(FRAME);",
+        "let é = 1; std::thread::sleep(FRAME);",
     ] {
         assert!(
             !offences(offence, false).is_empty(),
@@ -253,12 +302,21 @@ fn what_depends_on_the_host_is_caught() {
         vec![(2usize, "thread::sleep".to_string())],
         "an offence is reported with its line"
     );
+    assert_eq!(
+        offences(
+            "let a = 1;\n/* two\nlines */ std::thread::sleep(d);\n",
+            false
+        ),
+        vec![(3usize, "thread::sleep".to_string())],
+        "with its line past a block comment"
+    );
 }
 
 /// A duration reads no clock, a clock that comes from `platform` is the
 /// host's own, an answer looked for without waiting waits for nothing, and
-/// a comment does nothing, after a string as well. A test may sleep, block
-/// and wait; it may not ask for the host.
+/// a comment does nothing, after a string as well, nor a block comment,
+/// over lines or with another inside it. A test may sleep, block and wait;
+/// it may not ask for the host.
 #[test]
 fn what_every_host_can_do_is_not_caught() {
     for innocent in [
@@ -276,6 +334,10 @@ fn what_every_host_can_do_is_not_caught() {
         "let prefix = r\"\\\\?\\\"; // std::thread::sleep(FRAME)",
         "let raw = r#\"say \"hi\"\"#; // block_on",
         "fn first<'a>(words: &'a [&str]) -> &'a str { words[0] } // block_on",
+        "/* std::thread::sleep(FRAME) */ let a = 1;",
+        "/* outer /* inner: block_on */ std::thread::sleep(FRAME) */",
+        "/*\nstd::thread::sleep(FRAME);\n*/",
+        "let é = \"/* not a comment\"; // std::thread::sleep(FRAME)",
         "platform::wait(duration);",
         "platform::spawn(async move { ready.send(start_up.await) });",
     ] {
