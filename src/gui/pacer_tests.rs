@@ -5,6 +5,7 @@ use super::*;
 use crate::wall_clock::HostClock;
 use emu8086_core::BIOS_ROM;
 use emu8086_core::io::keyboard::KeyboardController;
+use emu8086_core::vm::runtime::GuestTime;
 
 /// A machine without disks, with `rom` as its ROM. Nothing ever types on
 /// its keyboard.
@@ -257,20 +258,27 @@ fn a_halted_guests_slice_waits_nothing_on_a_host_that_cannot_wait() {
     assert!(!idle.paused);
 }
 
-/// So does the slice of a paused guest, which is not run.
+/// So does the slice of a paused guest, which is not run: it says that it
+/// was paused, that it let go by no more than the instant it took, and it
+/// credits the machine with nothing, however long since the last sample.
 #[test]
 fn a_paused_guests_slice_ends_at_once_on_a_host_that_cannot_wait() {
     let mut rt = machine(&reset_code(&[0xEB, 0xFE])); // JMP $
     let mut pacer = Pacer::waiting_with(cannot_wait);
     pacer.set_paused(true);
+    std::thread::sleep(FRAME);
 
     let started = Instant::now();
-    pacer.run_slice(&mut rt, Duration::from_secs(5));
+    let slice = pacer.run_slice(&mut rt, Duration::from_secs(5));
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "the slice ended"
     );
+    assert!(slice.paused);
+    assert!(slice.end >= slice.start);
+    assert!(slice.waited < Duration::from_secs(1), "{:?}", slice.waited);
     assert_eq!(rt.instruction_count, 0);
+    assert_eq!(rt.guest_time(), GuestTime::default(), "nothing credited");
 }
 
 /// A guest that never halts runs for its whole slice there too: nothing in

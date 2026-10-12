@@ -345,6 +345,24 @@ fn a_paused_guest_contributes_no_speed() {
     assert_eq!(feed.meter.seconds().len(), 2);
 }
 
+/// On a host that cannot wait the slice of a paused guest ends at once and
+/// lets nothing go by: its frames are neither running nor idle, and all of
+/// their time is the wait for the next frame, which nothing measured.
+#[test]
+fn a_paused_guests_frames_on_a_host_that_cannot_wait_are_all_waiting() {
+    let mut feed = Feed::new();
+    let paused_at_once = Frame {
+        slice: 0,
+        waited: 0,
+        ..PAUSED
+    };
+    feed.frames(100, paused_at_once);
+    let frames = *feed.meter.frames().unwrap();
+    assert_eq!(frames.running, Duration::ZERO);
+    assert_eq!(frames.idle, Duration::ZERO);
+    assert_eq!(frames.waiting(), ms(1000));
+}
+
 /// The halted share is of the guest's own time: the timer clocks handed to
 /// it while its CPU was halted, over all the clocks handed to it in the
 /// second. A second in which it was handed no time has no share.
