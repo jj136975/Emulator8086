@@ -1,8 +1,9 @@
 //! The emulator's picture on the GPU: `FrameBlit`, the texture the frame
 //! `raster` draws on the CPU is uploaded to, and the fullscreen-triangle
-//! blit that draws it into a target of one format and one size, scaled by a
-//! whole number and centred (`compute_viewport_math`), the rest of the
-//! target black.
+//! blit that draws it into a target of one format and one size, as large
+//! as the target allows with its shape kept and centred (`viewport`), its
+//! pixels sharp at any scale of one or more and blended below, the rest of
+//! the target black.
 //!
 //! The invariant: the texture's encoding follows the target's
 //! (`framebuffer_format`). The frame holds display-encoded DAC colours that
@@ -15,39 +16,27 @@ use emu8086_core::io::raster::{self, BlinkPhase};
 use emu8086_core::io::vga::{VgaDevice, VideoMode};
 use emu8086_core::vm::memory::Memory;
 
-/// Compute an integer-scaled viewport centered in the window.
-///
-/// Returns (offset_x, offset_y, scaled_w, scaled_h) in pixels as f32.
-///
-/// Scale is at least 1 — when the window is smaller than the framebuffer we
-/// still draw at 1:1 and let the window clip. Offsets use signed arithmetic
-/// so that sub-framebuffer windows produce a negative offset (centered
-/// overflow) rather than a u32 underflow.
-pub(super) fn compute_viewport_math(
-    win_width: u32,
-    win_height: u32,
-    fb_width: u32,
-    fb_height: u32,
+/// Where a frame of `frame_width` x `frame_height` pixels goes on a target
+/// of `target_width` x `target_height`: as large as the target allows with
+/// the frame's shape kept, a whole number of pixels wide and high, in the
+/// middle of the target. A frame larger than the target is shrunk to fit,
+/// whole. Returns (offset_x, offset_y, width, height), in pixels of the
+/// target, as f32. The offset is rounded down: a border of an odd width
+/// leaves its extra pixel on the right, or below.
+pub(super) fn viewport(
+    target_width: u32,
+    target_height: u32,
+    frame_width: u32,
+    frame_height: u32,
 ) -> (f32, f32, f32, f32) {
-    let fb_w = fb_width.max(1);
-    let fb_h = fb_height.max(1);
-    let scale_x = win_width / fb_w;
-    let scale_y = win_height / fb_h;
-    let scale = scale_x.min(scale_y).max(1);
-
-    let scaled_w = fb_w * scale;
-    let scaled_h = fb_h * scale;
-    // Signed math so that win < scaled produces a negative offset instead
-    // of a u32 wrap to ~4 billion pixels.
-    let offset_x = (win_width as i32 - scaled_w as i32) / 2;
-    let offset_y = (win_height as i32 - scaled_h as i32) / 2;
-
-    (
-        offset_x as f32,
-        offset_y as f32,
-        scaled_w as f32,
-        scaled_h as f32,
-    )
+    let frame_width = frame_width.max(1) as f32;
+    let frame_height = frame_height.max(1) as f32;
+    let scale = (target_width as f32 / frame_width).min(target_height as f32 / frame_height);
+    let width = (frame_width * scale).round().max(1.0);
+    let height = (frame_height * scale).round().max(1.0);
+    let offset_x = ((target_width as f32 - width) / 2.0).floor();
+    let offset_y = ((target_height as f32 - height) / 2.0).floor();
+    (offset_x, offset_y, width, height)
 }
 
 /// Format of the frame texture for a given target format. The frame holds
@@ -119,31 +108,33 @@ fn create_blit_bind_group(
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct BlitUniforms {
-    /// The viewport in pixels: offset_x, offset_y, scaled_w, scaled_h.
+    /// The viewport in pixels of the target: offset_x, offset_y, width,
+    /// height (`viewport`).
     viewport: [f32; 4],
     /// Size of the target, which for the surface is the window's.
     window_size: [f32; 2],
-    _pad: [f32; 2],
+    /// Size of the frame, in its own pixels.
+    frame_size: [f32; 2],
 }
 
 impl BlitUniforms {
     /// The uniforms that put a frame of `fb_width` x `fb_height` on a target
     /// of `width` x `height`.
     fn new(width: u32, height: u32, fb_width: u32, fb_height: u32) -> Self {
-        let (vp_x, vp_y, vp_w, vp_h) = compute_viewport_math(width, height, fb_width, fb_height);
+        let (vp_x, vp_y, vp_w, vp_h) = viewport(width, height, fb_width, fb_height);
         Self {
             viewport: [vp_x, vp_y, vp_w, vp_h],
             window_size: [width as f32, height as f32],
-            _pad: [0.0; 2],
+            frame_size: [fb_width.max(1) as f32, fb_height.max(1) as f32],
         }
     }
 }
 
 pub(super) const SHADER_SRC: &str = r#"
 struct Uniforms {
-    viewport: vec4<f32>,    // offset_x, offset_y, scaled_w, scaled_h
+    viewport: vec4<f32>,    // offset_x, offset_y, width, height, in pixels of the target
     window_size: vec2<f32>,
-    _pad: vec2<f32>,
+    frame_size: vec2<f32>,  // the frame's pixels across and down
 }
 
 @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -178,17 +169,27 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOutput {
 fn fs_main(in: VsOutput) -> @location(0) vec4<f32> {
     // uv spans the window from 0 (top left) to 1 (bottom right).
     let pixel = in.uv * uniforms.window_size;
-    let vp = uniforms.viewport; // offset_x, offset_y, scaled_w, scaled_h
+    let vp = uniforms.viewport; // offset_x, offset_y, width, height
 
     if pixel.x < vp.x || pixel.x >= vp.x + vp.z ||
        pixel.y < vp.y || pixel.y >= vp.y + vp.w {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0); // black border
     }
 
+    // The pixel's place in the frame, in the frame's own pixels, and how
+    // many of those one pixel of the target spans: under one where the
+    // frame is enlarged, over one where it is shrunk.
+    let texel = (pixel - vp.xy) / vp.zw * uniforms.frame_size;
+    let span = uniforms.frame_size / vp.zw;
+    // Sampled at the centre of its frame pixel, but across the seam between
+    // two, for the width of one target pixel, where the two are blended: the
+    // frame's pixels stay sharp at any scale, their edges without stairs,
+    // and a frame shrunk below its size blends its neighbours throughout.
+    let seam = floor(texel + 0.5);
+    let snapped = seam + clamp((texel - seam) / span, vec2<f32>(-0.5), vec2<f32>(0.5));
     // The texture has a single level, and naming it keeps the lookup legal
     // after the conditional return above.
-    let tex_uv = (pixel - vp.xy) / vp.zw;
-    return textureSampleLevel(tex, tex_sampler, tex_uv, 0.0);
+    return textureSampleLevel(tex, tex_sampler, snapped / uniforms.frame_size, 0.0);
 }
 "#;
 
@@ -236,15 +237,17 @@ impl FrameBlit {
 
         let texture = create_framebuffer_texture(device, fb_format, fb_width, fb_height);
 
+        // Linear, for the blend across a seam between two frame pixels that
+        // the shader asks for; everywhere else it samples a pixel's centre.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Nearest Sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            label: Some("Blit Sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
-        // The same integer-scaled viewport that a resize computes, so the
-        // first frames are not stretched to the target.
+        // The same viewport that a resize computes, so the first frames are
+        // not stretched to the target.
         let (target_width, target_height) = (width.max(1), height.max(1));
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Blit Uniforms"),

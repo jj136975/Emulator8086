@@ -7,7 +7,7 @@ A bare-metal Intel 8086 emulator written in Rust that boots real operating syste
 - Boots MS-DOS 6.22, runs real DOS programs and games
 - Custom BIOS written in x86 assembly with INT 10h, 13h, 16h, 1Ah services
 - Full 8086 instruction set (70+ opcodes) validated against a real Intel P80C86A-2 CPU
-- VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) at a whole-number scale
+- VGA text mode (80x25) and Mode 13h (320x200, 256 colors), shown in a window (winit + wgpu) as large as the window allows with the picture's shape kept, its pixels sharp at any size it is enlarged to
 - A tools overlay in the window (F12): pause and resume, reset, a restart with another ROM, the guest's speed and where the time goes, viewers of memory and of each device, VGA dump, the drives (put disks in and take them out, save them, copy host files onto them), and an on-screen PC keyboard
 - Runs in a browser as well, [online](https://jj136975.github.io/Emulator8086/): the same application built for WebAssembly, drawn with WebGPU or WebGL2, on phones and tablets too, where MS-DOS 4.00 or DOOM is one press away
 - Builds MS-DOS 4.00 from Microsoft's published source inside itself, with the tools of 1988, 61 of its 62 files byte for byte as released; the site publishes an MS-DOS 4.00 boot floppy and a DOOM hard disk made of it ([The site's disks](#the-sites-disks))

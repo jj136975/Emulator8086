@@ -1,8 +1,9 @@
 //! The window's renderer. Two things are drawn, and neither needs a window:
 //! the emulator's picture (`blit`: `FrameBlit`, one texture that takes the
 //! frame `raster` draws on the CPU and a fullscreen-triangle blit that
-//! scales it by a whole number, centres it in its target and leaves the
-//! rest of the target black) and the overlay (`overlay_pass`: egui's meshes
+//! draws it as large as its target allows with its shape kept, centred,
+//! its pixels sharp at any scale of one or more, and leaves the rest of
+//! the target black) and the overlay (`overlay_pass`: egui's meshes
 //! over the picture). `record_frame`, here, puts both into one render pass,
 //! the picture first. `surface` is the window's side: `Renderer` holds the
 //! wgpu surface on the winit window and records one such frame into it per

@@ -11,7 +11,7 @@
 use std::cell::Ref;
 use std::time::Duration;
 
-use super::blit::{SHADER_SRC, compute_viewport_math, framebuffer_format};
+use super::blit::{SHADER_SRC, framebuffer_format, viewport};
 use super::surface::window_format;
 use super::*;
 use crate::gui::meter::Meter;
@@ -34,7 +34,7 @@ fn default_window_is_filled_by_both_frame_sizes() {
         DEFAULT_WINDOW_HEIGHT as f32,
     );
     assert_eq!(
-        compute_viewport_math(
+        viewport(
             DEFAULT_WINDOW_WIDTH,
             DEFAULT_WINDOW_HEIGHT,
             TEXT_WIDTH,
@@ -43,7 +43,7 @@ fn default_window_is_filled_by_both_frame_sizes() {
         filled
     );
     assert_eq!(
-        compute_viewport_math(
+        viewport(
             DEFAULT_WINDOW_WIDTH,
             DEFAULT_WINDOW_HEIGHT,
             GFX_WIDTH,
@@ -108,55 +108,41 @@ fn a_device_is_asked_for_limits_its_adapter_has() {
     assert!(asked.check_limits(&webgl2));
 }
 
-/// When the window is at least as large as the framebuffer, the viewport is
-/// integer-scaled and centered.
+/// A frame fills a target that is a whole multiple of it, and a target of
+/// another shape as far as the frame's shape allows, the rest of the target
+/// shared between the two borders.
 #[test]
-fn viewport_integer_scales_and_centers() {
-    // 960x600 window, 320x200 framebuffer (mode 13h). Integer scale = 3.
-    let (ox, oy, w, h) = compute_viewport_math(960, 600, 320, 200);
-    assert_eq!(w, 960.0); // 320 * 3
-    assert_eq!(h, 600.0); // 200 * 3
-    assert_eq!(ox, 0.0);
-    assert_eq!(oy, 0.0);
+fn the_frame_fills_the_target_as_far_as_its_shape_allows() {
+    // Three times the mode 13h frame, exactly.
+    assert_eq!(viewport(960, 600, 320, 200), (0.0, 0.0, 960.0, 600.0));
+    // Much wider than tall: the height allows twice, the width six times.
+    assert_eq!(viewport(2000, 400, 320, 200), (680.0, 0.0, 640.0, 400.0));
+    // Square: the width allows 3.125 times, which the height has room for.
+    assert_eq!(viewport(1000, 1000, 320, 200), (0.0, 187.0, 1000.0, 625.0));
+    // A 1280 by 720 window: the height allows 1.8 times the text frame.
+    assert_eq!(viewport(1280, 720, 640, 400), (64.0, 0.0, 1152.0, 720.0));
 }
 
-/// An asymmetric window letterboxes on the limiting axis.
+/// A target smaller than the frame shows the whole of it, shrunk to fit, a
+/// whole number of pixels high and wide.
 #[test]
-fn viewport_letterboxes_on_constrained_axis() {
-    // Window is much wider than tall; scale limited by height.
-    let (ox, oy, w, h) = compute_viewport_math(2000, 400, 320, 200);
-    // height allows scale 2, width would allow 6 — min is 2.
-    assert_eq!(w, 640.0);
-    assert_eq!(h, 400.0);
-    assert_eq!(ox, (2000.0 - 640.0) / 2.0);
-    assert_eq!(oy, 0.0);
+fn a_frame_larger_than_the_target_is_shrunk_to_fit() {
+    // The width allows 0.625 of the mode 13h frame, the height 0.75.
+    assert_eq!(viewport(200, 150, 320, 200), (0.0, 12.0, 200.0, 125.0));
+    // Half the text frame, with a border of 10 pixels left and right.
+    assert_eq!(viewport(340, 200, 640, 400), (10.0, 0.0, 320.0, 200.0));
+    // A phone held upright: the width allows 0.609 of the text frame,
+    // 243.75 pixels high, which is 244 whole ones.
+    assert_eq!(viewport(390, 844, 640, 400), (0.0, 300.0, 390.0, 244.0));
 }
 
-/// When the window is smaller than the framebuffer, the viewport offset is
-/// a plain negative number, not a u32 underflow that would push the
-/// viewport off-screen.
+/// A frame of no size divides nothing by zero, and the viewport is never
+/// of no size, on a target of one pixel either: the shader divides by it.
 #[test]
-fn viewport_underflow_when_window_smaller_than_framebuffer() {
-    // 200x150 window, 320x200 framebuffer.
-    let (ox, oy, w, h) = compute_viewport_math(200, 150, 320, 200);
-    // scale clamped to 1; framebuffer drawn at native size, centered
-    // with negative offsets (visible part is clipped by the window).
-    assert_eq!(w, 320.0);
-    assert_eq!(h, 200.0);
-    assert_eq!(ox, (200.0 - 320.0) / 2.0); // -60.0
-    assert_eq!(oy, (150.0 - 200.0) / 2.0); // -25.0
-    assert!(ox < 0.0, "offset_x should be negative, got {}", ox);
-    assert!(oy < 0.0, "offset_y should be negative, got {}", oy);
-}
-
-/// A zero-sized framebuffer does not divide by zero.
-#[test]
-fn viewport_handles_zero_framebuffer_dimensions() {
-    let (_, _, w, h) = compute_viewport_math(960, 600, 0, 0);
-    // With fb clamped to 1, the scale saturates huge but we still get
-    // finite numbers out instead of a panic.
-    assert!(w.is_finite());
-    assert!(h.is_finite());
+fn viewport_handles_zero_frame_dimensions() {
+    let (_, _, w, h) = viewport(960, 600, 0, 0);
+    assert!(w.is_finite() && h.is_finite());
+    assert_eq!(viewport(1, 1, 320, 200), (0.0, 0.0, 1.0, 1.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -385,15 +371,114 @@ fn frame_on_target(
     expected
 }
 
+/// The frame pixels a target pixel covers along one axis, each with the
+/// share of the target pixel it covers: pixel `k` of a target on which the
+/// frame, `frame_len` pixels long on this axis, starts at `offset` and is
+/// `scale` times its size. None where the frame does not reach.
+fn covered(k: u32, offset: u32, scale: f64, frame_len: usize) -> Vec<(usize, f64)> {
+    let Some(k) = k.checked_sub(offset) else {
+        return Vec::new();
+    };
+    let (start, end) = (f64::from(k) / scale, f64::from(k + 1) / scale);
+    let first = start.floor() as usize;
+    let last = (end.ceil() as usize).min(frame_len);
+    (first..last)
+        .map(|texel| {
+            let share = (end.min(texel as f64 + 1.0) - start.max(texel as f64)) * scale;
+            (texel, share)
+        })
+        .filter(|(_, share)| *share > 1e-9)
+        .collect()
+}
+
+/// What a `width` x `height` target is to hold of `frame`, `scale` times
+/// its size with its top left corner at `offset`: each target pixel the
+/// mean of the frame pixels it covers, each in the share of the target
+/// pixel it covers (a box filter), taken in linear light on an sRGB
+/// target, and opaque black wherever the frame does not reach. At a whole
+/// multiple that is the frame pixel itself; shrunk to half, the mean of
+/// four.
+fn frame_fitted_on_target(
+    frame: &[u8],
+    (fb_width, fb_height): (usize, usize),
+    (width, height): (u32, u32),
+    (offset_x, offset_y): (u32, u32),
+    scale: f64,
+    srgb: bool,
+) -> Vec<u8> {
+    let decode = |byte: u8| {
+        let c = f64::from(byte) / 255.0;
+        if !srgb {
+            c
+        } else if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let encode = |light: f64| {
+        let c = if !srgb {
+            light
+        } else if light <= 0.003_130_8 {
+            light * 12.92
+        } else {
+            1.055 * light.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    let mut expected = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        let rows = covered(y, offset_y, scale, fb_height);
+        for x in 0..width {
+            let columns = covered(x, offset_x, scale, fb_width);
+            if rows.is_empty() || columns.is_empty() {
+                expected.extend_from_slice(&[0, 0, 0, 255]);
+                continue;
+            }
+            let shares: f64 = rows
+                .iter()
+                .flat_map(|(_, row)| columns.iter().map(move |(_, column)| row * column))
+                .sum();
+            for channel in 0..3 {
+                let mean = rows
+                    .iter()
+                    .flat_map(|(frame_y, row)| {
+                        columns.iter().map(move |(frame_x, column)| {
+                            decode(frame[(frame_y * fb_width + frame_x) * 4 + channel])
+                                * row
+                                * column
+                        })
+                    })
+                    .sum::<f64>()
+                    / shares;
+                expected.push(encode(mean));
+            }
+            expected.push(255);
+        }
+    }
+    expected
+}
+
 /// Fails with the first pixel that differs and the number that do, rather
 /// than with two images of a megabyte each.
 fn assert_same_pixels(drawn: &[u8], expected: &[u8], width: u32, what: &str) {
+    assert_close_pixels(drawn, expected, width, 0, what);
+}
+
+/// As `assert_same_pixels`, but a channel may differ by up to `tolerance`.
+fn assert_close_pixels(drawn: &[u8], expected: &[u8], width: u32, tolerance: u8, what: &str) {
     assert_eq!(drawn.len(), expected.len(), "{what}: image size");
-    let mut differing = drawn
-        .chunks(4)
-        .zip(expected.chunks(4))
-        .enumerate()
-        .filter(|(_, (drawn, expected))| drawn != expected);
+    let mut differing =
+        drawn
+            .chunks(4)
+            .zip(expected.chunks(4))
+            .enumerate()
+            .filter(|(_, (drawn, expected))| {
+                drawn
+                    .iter()
+                    .zip(*expected)
+                    .any(|(a, b)| a.abs_diff(*b) > tolerance)
+            });
     if let Some((index, (drawn, expected))) = differing.next() {
         let (x, y) = (index as u32 % width, index as u32 / width);
         panic!(
@@ -403,12 +488,14 @@ fn assert_same_pixels(drawn: &[u8], expected: &[u8], width: u32, what: &str) {
     }
 }
 
-/// The pipeline puts the frame `raster` drew on its target byte for byte:
-/// every frame pixel is a square of whole target pixels, the picture sits
-/// in the middle (cut at the edges of a target smaller than the frame), the
-/// rest of the target is opaque black, and the colours are those of the
-/// frame whether the target is sRGB or not. A change of video mode on the
-/// same blit swaps the frame texture for one of the new size.
+/// The pipeline puts the frame `raster` drew on its target: on a target
+/// that is a whole multiple of the frame but for a border, byte for byte,
+/// every frame pixel a square of whole target pixels; the picture sits in
+/// the middle, the rest of the target is opaque black, and the colours are
+/// those of the frame whether the target is sRGB or not. A target smaller
+/// than the frame shows the whole of it, shrunk: each target pixel the mean
+/// of the frame pixels it covers. A change of video mode on the same blit
+/// swaps the frame texture for one of the new size.
 #[test]
 fn blit_draws_the_rasterised_frame_scaled_and_centred() {
     blit_puts_the_frame_on_its_target(gpu());
@@ -432,42 +519,62 @@ fn blit_puts_the_frame_on_its_target(gpu: Option<(wgpu::Device, wgpu::Queue)>) {
         let mut text_frame = vec![0; TEXT.0 * TEXT.1 * 4];
         raster::rasterize_text(&mut text_frame, &vga(&rt), &rt.cpu.memory, ALL_ON);
 
-        // Twice the text frame, with a border of 10 pixels left and right
-        // and of 15 above and below.
-        let target = (1300, 830);
+        // Twice the text frame, which the height allows exactly, with a
+        // border of 10 pixels left and right.
+        let target = (1300, 800);
         let mut blit = FrameBlit::new(&device, format, target.0, target.1);
         // No overlay is painted here: the frames are the picture alone.
         let mut overlay = OverlayPass::new(&device, format);
         blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
         assert_same_pixels(
             &draw_and_read_back(&device, &queue, &blit, &mut overlay, None, format, target),
-            &frame_on_target(&text_frame, TEXT, target, 2, (10, 15)),
+            &frame_on_target(&text_frame, TEXT, target, 2, (10, 0)),
             target.0,
             &format!("text frame doubled, {format:?}"),
         );
 
-        // A target smaller than the frame shows the middle of it.
-        let target = (500, 300);
+        // The text frame at 1.8 times, as a 1280 by 720 window shows it,
+        // but for a border of 32 pixels left and right. Every so often the
+        // seam between two frame pixels crosses a target pixel, which takes
+        // the two in the shares they cover; everywhere else a target pixel
+        // is one frame pixel, whole. An sRGB target blends in linear light,
+        // and the GPU's filtering and encoding round their own way, a step
+        // or two.
+        let target = (1216, 720);
         blit.resize(&queue, target.0, target.1);
-        assert_same_pixels(
+        assert_close_pixels(
             &draw_and_read_back(&device, &queue, &blit, &mut overlay, None, format, target),
-            &frame_on_target(&text_frame, TEXT, target, 1, (-70, -50)),
+            &frame_fitted_on_target(&text_frame, TEXT, target, (32, 0), 1.8, format.is_srgb()),
             target.0,
-            &format!("text frame cut, {format:?}"),
+            2,
+            &format!("text frame at 1.8 times, {format:?}"),
         );
 
-        // Mode 13h at three times its size. The borders are odd numbers of
-        // pixels (41 and 101), so the picture sits half a pixel off centre:
-        // 20 pixels from the left, 50 from the top.
+        // A target smaller than the frame shows the whole of it, shrunk:
+        // here to half, with a border of 10 pixels left and right. Each
+        // target pixel is then the mean of four.
+        let target = (340, 200);
+        blit.resize(&queue, target.0, target.1);
+        assert_close_pixels(
+            &draw_and_read_back(&device, &queue, &blit, &mut overlay, None, format, target),
+            &frame_fitted_on_target(&text_frame, TEXT, target, (10, 0), 0.5, format.is_srgb()),
+            target.0,
+            2,
+            &format!("text frame halved, {format:?}"),
+        );
+
+        // Mode 13h at three times its size, which the height allows
+        // exactly. The border is an odd number of pixels (41), so the
+        // picture sits half a pixel off centre: 20 pixels from the left.
         show_mode_13h_stripes(&mut rt);
         let mut gfx_frame = vec![0; GFX.0 * GFX.1 * 4];
         raster::rasterize_mode13h(&mut gfx_frame, &vga(&rt), &rt.cpu.memory);
-        let target = (1001, 701);
+        let target = (1001, 600);
         blit.resize(&queue, target.0, target.1);
         blit.upload(&device, &queue, &vga(&rt), &rt.cpu.memory, ALL_ON);
         assert_same_pixels(
             &draw_and_read_back(&device, &queue, &blit, &mut overlay, None, format, target),
-            &frame_on_target(&gfx_frame, GFX, target, 3, (20, 50)),
+            &frame_on_target(&gfx_frame, GFX, target, 3, (20, 0)),
             target.0,
             &format!("mode 13h frame tripled, {format:?}"),
         );
