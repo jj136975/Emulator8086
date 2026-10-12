@@ -108,13 +108,13 @@ The tool, in `crates/dos_images/`:
 | `fetch-inputs.sh` | fetches the inputs into a new directory, each checked against its pin: curl and `sha256sum --check`, unzip of the files needed, and `v4.0` of the commit by a sparse, depth-1 git fetch whose commit and tree are checked, its files checked out as committed |
 | `msdos400-binaries.sha256`, `disks.sha256` | the lists the workflow checks the output against: the 62 files the build makes (61 of the MS-DOS 4.00 release of 1988, and XMAEM.SYS) and the two disks |
 | `src/main.rs` | the command line (`--freedos`, `--msdos`, `--doom8088`, `--out`), the stages run, a failure printed, the exit code |
-| `src/stages/` | the stages in their order (`mod.rs`, `run`), each with its error type: `host` (FreeDOS's floppy with its own FDCONFIG.SYS and FDAUTO.BAT), `build_disk` (the source on a 100 MB FAT16 disk, with BUILD.BAT), `build` (the run: its markers in turn, its budgets, a line a module), `collect` (what CPY.BAT copied, the boot sector, the master boot record, a clean BUILD.LOG), `floppy`, `hard_disk`; `msdos` puts MS-DOS on a volume for both, `check` has CHKDSK check each from a copy of the floppy |
+| `src/stages/` | the stages in their order (`mod.rs`, `run`), each with its error type: `host` (FreeDOS's floppy with its own FDCONFIG.SYS and FDAUTO.BAT), `build_disk` (the source on a 100 MB FAT16 disk, with BUILD.BAT), `build` (the run: its markers in turn, its budgets, a line a module), `collect` (what CPY.BAT copied, the boot sector, the master boot record, a clean BUILD.LOG), `floppy`, `hard_disk`; `msdos` puts MS-DOS on a volume for both, `check` has CHKDSK check each from a copy of the floppy; before stage 1 `run` removes the outputs of an earlier run and reads the input files the disks take (`InputFiles`: the source's LICENSE, Doom8088's four files), so that one missing fails the run at once |
 | `src/guest.rs` | the machine as the tool runs it: batches of instructions credited with guest time, budgets of guest time, the port E9h's new lines, the text screen, the hash of the Mode 13h picture, a disk's contents |
 | `src/makefiles.rs` | the modules, from the makefiles that only dispatch; BUILD.BAT; the files of CPY.BAT |
 | `src/markers.rs` | E9.COM, and the markers the batch files send through it |
 | `src/log_scan.rs` | BUILD.LOG: the lines of an error, the warnings of the tools, a module's part |
-| `src/layout.rs` | the disks below their file systems: CHS and the partition entry, `HardDisk`, the build's boot sector on a volume with the volume's own BPB, IO.SYS and MSDOS.SYS sealed where the boot sector looks |
-| `src/fat.rs`, `src/stamp.rs` | fatfs mounted at a fixed stamp; DOS names, DOS text; the stamps and the volumes' serials |
+| `src/layout.rs` | the disks below their file systems: CHS and the partition entry, `HardDisk` and the volume of a disk the guest left (`volume_of`), the build's boot sector on a volume with the volume's own BPB, IO.SYS and MSDOS.SYS sealed where the boot sector looks |
+| `src/fat.rs`, `src/stamp.rs` | fatfs mounted at a fixed stamp, or to be read alone (`mount_to_read`); DOS names, DOS text; the stamps and the volumes' serials |
 | `src/notices.rs`, `src/pins.rs` | README.TXT and SOURCE.TXT of the disks; `pins.env` read |
 | `src/failure.rs`, `src/report.rs` | a failure as an `::error` annotation of GitHub Actions and what the guest showed; `report.txt` |
 
@@ -393,7 +393,9 @@ widened from `pub(crate)` when one of them needs it, not before.
   `msdos400-binaries.sha256`, which is the release's for 61 of them. A
   stage that fails prints an `::error` annotation, what the emulated
   screen showed, the last lines of port E9h and, for the build, the
-  failing module's part of BUILD.LOG.
+  failing module's part of BUILD.LOG. An input file the disks take that
+  cannot be read fails the run before stage 1, with an `::error`
+  annotation titled Inputs that names it.
 - **A colour of the overlay**: a slot of `PALETTE` in
   `src/gui/overlay/theme.rs`, a size a slot of `METRICS`. No other file
   under `src/gui/overlay/` spells a colour.
@@ -450,9 +452,11 @@ repository and the check of its output is sha256sum's. `cargo test
 makefiles, the layouts, the markers and E9.COM, the log, CHKDSK's report,
 the notices, the pins, the account of a build told its markers by hand,
 the guest (its lines of port E9h, its time a batch and its budgets, on the
-built-in BIOS with no disk and on programs of the tests'), and the stages
-that write the outputs, on disks made by hand: each writes its output only
-once it has passed its checks. Run the tool with `--release`: the
+built-in BIOS with no disk and on programs of the tests'), the stages
+that write the outputs, on disks made by hand (each writes its output only
+once it has passed its checks), and the run's start: it removes the
+outputs of an earlier run first, and fails before stage 1 when the
+inputs lack a file the disks take. Run the tool with `--release`: the
 emulator of a debug build is many times slower.
 
 The browser build is trunk's (0.21, `cargo install trunk`): `trunk serve`

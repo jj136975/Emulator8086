@@ -229,7 +229,7 @@ cargo run --release -- --disk "a:$out/disks/msdos400.img"
 cargo run --release -- --hd "$out/disks/doom8088.img" --boot hd0
 ```
 
-The tool writes the 62 files the build made into `$out/bin`, the disks into `$out/disks`, and what it did into `$out/report.txt`. A stage that fails says why, with what the emulated screen showed; a build that fails leaves its disk as `$out/failed-build.img`.
+The tool writes the 62 files the build made into `$out/bin`, the disks into `$out/disks`, and what it did into `$out/report.txt`. A stage that fails says why, with what the emulated screen showed; a build that fails leaves its disk as `$out/failed-build.img`. A run begins by removing the outputs of an earlier run in `$out`, and inputs that lack a file the disks take (MS-DOS's LICENSE, Doom8088's files) fail it at once, before the build.
 
 ## Technical Details
 
