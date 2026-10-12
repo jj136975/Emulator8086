@@ -15,7 +15,9 @@
 //!
 //! The invariant: a stage takes what the stages before it made, and the
 //! inputs, and hands what it made to those after it; only a stage that
-//! makes an output of the tool writes into the output directory.
+//! makes an output of the tool writes into the output directory, and only
+//! once the output has passed every check of the stage: a run writes no
+//! output it has not checked.
 
 pub(crate) mod build;
 pub(crate) mod build_disk;
@@ -101,3 +103,6 @@ pub(crate) fn run(inputs: &Inputs, out: &Path) -> Result<Report, Failure> {
     std::fs::write(&path, report.to_string()).map_err(|error| Failure::Output(path, error))?;
     Ok(report)
 }
+
+#[cfg(test)]
+mod tests;

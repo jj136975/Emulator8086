@@ -6,7 +6,8 @@
 //! own disks. It is then booted to its prompt, and checked by CHKDSK.
 //!
 //! The invariant: the floppy written to the output is the one that booted
-//! and that CHKDSK checked.
+//! and that CHKDSK checked, and it is written only once both have passed:
+//! a floppy that fails either is never written.
 
 use super::check::{self, CheckError, Checked};
 use super::msdos::{self, File, PutError, SYSTEM};
@@ -86,8 +87,8 @@ impl fmt::Display for Error {
     }
 }
 
-/// Makes the floppy of what the build made, writes it into `out`, boots it
-/// and checks it.
+/// Makes the floppy of what the build made, boots it and checks it, then
+/// writes it into `out`.
 pub(crate) fn make(
     built: &Built,
     inputs: &Inputs,
@@ -128,8 +129,6 @@ pub(crate) fn make(
         msdos::write(volume, &stamp::MSDOS, None, &files)
     })
     .map_err(Error::Put)?;
-    let path = out.join(FLOPPY_IMAGE);
-    std::fs::write(&path, &bytes).map_err(|error| Error::Output(path, error))?;
     println!(
         "  {FLOPPY_IMAGE}: {} files, {} bytes free",
         files.len(),
@@ -151,6 +150,9 @@ pub(crate) fn make(
     );
     let chkdsk = check::chkdsk(&bytes, Checked::Floppy(&bytes)).map_err(Error::Check)?;
     println!("  CHKDSK finds it clean");
+
+    let path = out.join(FLOPPY_IMAGE);
+    std::fs::write(&path, &bytes).map_err(|error| Error::Output(path, error))?;
     Ok(Floppy {
         bytes,
         files: files.len(),

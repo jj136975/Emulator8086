@@ -5,7 +5,9 @@
 //!
 //! The invariant: what goes on to the disks is exactly what CPY.BAT
 //! copies, every file of it and nothing else, from a build whose log is
-//! clean.
+//! clean. Nothing goes into `bin` before all of it has passed its checks,
+//! the boot sector and the master boot record too: what fails one writes
+//! no file there.
 
 use crate::fat;
 use crate::layout::{self, HardDisk, LayoutError, SECTOR};
@@ -98,8 +100,8 @@ pub(crate) fn build_log(disk: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(&log).into_owned())
 }
 
-/// What the build made on the build disk `disk`, checked; its files go
-/// into the directory `bin` of `out`.
+/// What the build made on the build disk `disk`, checked; its files then
+/// go into the directory `bin` of `out`.
 pub(crate) fn collect(disk: &[u8], out: &Path) -> Result<Built, Error> {
     let mut disk = HardDisk::from_bytes(disk.to_vec());
     let volume = fat::mount(disk.volume(), &stamp::MSDOS)
@@ -137,19 +139,21 @@ pub(crate) fn collect(disk: &[u8], out: &Path) -> Result<Built, Error> {
         return Err(Error::Unexpected(unexpected));
     }
 
-    let directory = out.join(super::BUILT_FILES);
     let mut files = Vec::new();
     for name in copied {
         let data = fat::get(&bin, &name).map_err(|error| Error::Unreadable("BIN", error))?;
-        let path = directory.join(&name);
-        std::fs::write(&path, &data).map_err(|error| Error::Output(path, error))?;
         files.push((name, data));
     }
-    println!("  {}/: {} files", super::BUILT_FILES, files.len());
-
     let boot_sector = layout::boot_sector(&read("SRC/BOOT/MSBOOT.BIN")?).map_err(Error::Layout)?;
     let master_boot_record =
         layout::master_boot_record(&read("SRC/CMD/FDISK/FDBOOT.BIN")?).map_err(Error::Layout)?;
+
+    let directory = out.join(super::BUILT_FILES);
+    for (name, data) in &files {
+        let path = directory.join(name);
+        std::fs::write(&path, data).map_err(|error| Error::Output(path, error))?;
+    }
+    println!("  {}/: {} files", super::BUILT_FILES, files.len());
     Ok(Built {
         files,
         boot_sector,

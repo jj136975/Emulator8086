@@ -8,7 +8,8 @@
 //!
 //! The invariant: the disk written to the output is the one that booted,
 //! showed Doom8088's title picture as it always has, and that CHKDSK
-//! checked.
+//! checked, and it is written only once all of that has passed: a disk
+//! that fails any of it is never written.
 
 use super::check::{self, CheckError, Checked};
 use super::msdos::{self, File, PutError, SYSTEM};
@@ -151,8 +152,8 @@ fn doom8088_files(doom8088: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
         .collect()
 }
 
-/// Makes the hard disk of what the build made and of Doom8088, writes it
-/// into `out`, boots it and checks it from `floppy`.
+/// Makes the hard disk of what the build made and of Doom8088, boots it and
+/// checks it from `floppy`, then writes it into `out`.
 pub(crate) fn make(
     built: &Built,
     floppy: &Floppy,
@@ -198,8 +199,6 @@ pub(crate) fn make(
     })
     .map_err(Error::Put)?;
     let bytes = disk.into_bytes();
-    let path = out.join(HARD_DISK_IMAGE);
-    std::fs::write(&path, &bytes).map_err(|error| Error::Output(path, error))?;
     println!(
         "  {HARD_DISK_IMAGE}: {} files, {} bytes free",
         files.len() + doom.len(),
@@ -244,6 +243,9 @@ pub(crate) fn make(
 
     let chkdsk = check::chkdsk(&floppy.bytes, Checked::HardDisk(&bytes)).map_err(Error::Check)?;
     println!("  CHKDSK finds it clean");
+
+    let path = out.join(HARD_DISK_IMAGE);
+    std::fs::write(&path, &bytes).map_err(|error| Error::Output(path, error))?;
     Ok(DoomDisk {
         bytes,
         free,
