@@ -1,7 +1,8 @@
 //! The stages that write into the output directory, run on what a test
 //! makes by hand: a build disk as a build leaves one, and what a build
 //! made, of files that are no programs, with a boot sector and a master
-//! boot record that boot nothing.
+//! boot record that boot nothing; and the reading of the inputs before
+//! them.
 
 use super::*;
 use crate::fat;
@@ -202,8 +203,9 @@ fn the_size_of_build_log_is_that_of_its_bytes() {
 fn a_floppy_that_does_not_boot_is_not_written() {
     let scratch = Scratch::new("floppy");
     let built = built([0; SECTOR]);
+    let inputs = InputFiles::read(&scratch.inputs()).unwrap();
     let pins = Pins::compiled_in();
-    let Err(error) = floppy::make(&built, &scratch.inputs(), &pins, &scratch.out()) else {
+    let Err(error) = floppy::make(&built, &inputs, &pins, &scratch.out()) else {
         panic!("the floppy booted");
     };
     assert!(matches!(error, floppy::Error::NoPrompt(_)), "{error}");
@@ -225,11 +227,38 @@ fn a_hard_disk_that_does_not_start_doom8088_is_not_written() {
         prompt_at: 0,
         chkdsk: String::new(),
     };
+    let inputs = InputFiles::read(&scratch.inputs()).unwrap();
     let pins = Pins::compiled_in();
-    let Err(error) = hard_disk::make(&built, &floppy, &scratch.inputs(), &pins, &scratch.out())
-    else {
+    let Err(error) = hard_disk::make(&built, &floppy, &inputs, &pins, &scratch.out()) else {
         panic!("the hard disk started Doom8088");
     };
     assert!(matches!(error, hard_disk::Error::NoMode13h(_)), "{error}");
     assert_eq!(scratch.written("disks"), Vec::<String>::new());
+}
+
+/// The files of the inputs that go onto the disks are read before the
+/// first stage: inputs that lack one fail the run on it, naming it, and
+/// inputs that lack none fail it in stage 1, on the boot floppy they lack.
+#[test]
+fn an_input_file_missing_fails_the_run_before_the_first_stage() {
+    let scratch = Scratch::new("inputs");
+    for missing in [
+        scratch.0.join("msdos").join("LICENSE"),
+        scratch.0.join("doom8088").join("DOOM1.WAD"),
+    ] {
+        let kept = std::fs::read(&missing).unwrap();
+        std::fs::remove_file(&missing).unwrap();
+        let Err(failure) = run(&scratch.inputs(), &scratch.out()) else {
+            panic!("the run went on without {}", missing.display());
+        };
+        assert!(
+            matches!(&failure, Failure::Input(path, _) if *path == missing),
+            "{failure}"
+        );
+        std::fs::write(&missing, kept).unwrap();
+    }
+    let Err(failure) = run(&scratch.inputs(), &scratch.out()) else {
+        panic!("the run went on without the boot floppy");
+    };
+    assert!(matches!(failure, Failure::Host(_)), "{failure}");
 }

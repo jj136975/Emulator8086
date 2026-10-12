@@ -13,7 +13,7 @@
 
 use super::check::{self, CheckError, Checked};
 use super::msdos::{self, File, PutError, SYSTEM};
-use super::{Built, Floppy, HARD_DISK_IMAGE, Inputs};
+use super::{Built, Floppy, HARD_DISK_IMAGE, InputError, InputFiles};
 use crate::fat;
 use crate::guest::{Guest, Stopped};
 use crate::layout::{self, HardDisk};
@@ -76,7 +76,6 @@ pub(crate) struct DoomDisk {
 /// Why the hard disk could not be made, or did not start Doom8088.
 #[derive(Debug)]
 pub(crate) enum Error {
-    Input(PathBuf, io::Error),
     Format(io::Error),
     Put(PutError),
     Output(PathBuf, io::Error),
@@ -108,7 +107,6 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Input(path, error) => write!(f, "{} cannot be read: {error}", path.display()),
             Self::Format(error) => write!(f, "the hard disk cannot be formatted: {error}"),
             Self::Put(error) => write!(f, "MS-DOS cannot be put on the hard disk: {error}"),
             Self::Output(path, error) => write!(f, "{} cannot be written: {error}", path.display()),
@@ -138,12 +136,12 @@ impl fmt::Display for Error {
 
 /// The files of Doom8088 in the directory `doom8088`, as the disk takes
 /// them.
-fn doom8088_files(doom8088: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
+pub(crate) fn doom8088_files(doom8088: &Path) -> Result<Vec<(String, Vec<u8>)>, InputError> {
     DOOM8088
         .iter()
         .map(|(name, text)| {
             let path = doom8088.join(name);
-            let data = std::fs::read(&path).map_err(|error| Error::Input(path, error))?;
+            let data = std::fs::read(&path).map_err(|error| (path, error))?;
             Ok((
                 name.to_string(),
                 if *text { fat::dos_text(&data) } else { data },
@@ -152,17 +150,16 @@ fn doom8088_files(doom8088: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
         .collect()
 }
 
-/// Makes the hard disk of what the build made and of Doom8088, boots it and
-/// checks it from `floppy`, then writes it into `out`.
+/// Makes the hard disk of what the build made and of the files of
+/// `inputs`, Doom8088's among them, boots it and checks it from `floppy`,
+/// then writes it into `out`.
 pub(crate) fn make(
     built: &Built,
     floppy: &Floppy,
-    inputs: &Inputs,
+    inputs: &InputFiles,
     pins: &Pins,
     out: &Path,
 ) -> Result<DoomDisk, Error> {
-    let license =
-        msdos::license(&inputs.msdos).map_err(|(path, error)| Error::Input(path, error))?;
     let config = fat::dos_text(CONFIG.as_bytes());
     let autoexec = fat::dos_text(AUTOEXEC.as_bytes());
     let readme = fat::dos_text(notices::readme(pins, Disk::Doom8088).as_bytes());
@@ -170,11 +167,11 @@ pub(crate) fn make(
     files.push(("CONFIG.SYS".to_string(), &config));
     files.push(("AUTOEXEC.BAT".to_string(), &autoexec));
     files.push(("README.TXT".to_string(), &readme));
-    files.push(("LICENSE.TXT".to_string(), &license));
+    files.push(("LICENSE.TXT".to_string(), &inputs.license));
     files.extend(msdos::built_files(built, &PROGRAMS).map_err(Error::Put)?);
-    let doom8088 = doom8088_files(&inputs.doom8088)?;
     let source = fat::dos_text(notices::doom8088_source(pins).as_bytes());
-    let mut doom: Vec<File<'_>> = doom8088
+    let mut doom: Vec<File<'_>> = inputs
+        .doom8088
         .iter()
         .map(|(name, data)| (name.clone(), data.as_slice()))
         .collect();

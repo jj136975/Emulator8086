@@ -11,7 +11,7 @@
 
 use super::check::{self, CheckError, Checked};
 use super::msdos::{self, File, PutError, SYSTEM};
-use super::{Built, FLOPPY_IMAGE, Inputs};
+use super::{Built, FLOPPY_IMAGE, InputFiles};
 use crate::fat;
 use crate::guest::{Guest, Stopped};
 use crate::notices::{self, Disk};
@@ -53,7 +53,6 @@ pub(crate) struct Floppy {
 /// Why the floppy could not be made, or did not boot.
 #[derive(Debug)]
 pub(crate) enum Error {
-    License(PathBuf, io::Error),
     Put(PutError),
     Output(PathBuf, io::Error),
     /// MS-DOS 4.00 did not show its prompt in its time.
@@ -74,7 +73,6 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::License(path, error) => write!(f, "{} cannot be read: {error}", path.display()),
             Self::Put(error) => write!(f, "MS-DOS cannot be put on the floppy: {error}"),
             Self::Output(path, error) => write!(f, "{} cannot be written: {error}", path.display()),
             Self::NoPrompt(_) => write!(
@@ -87,22 +85,20 @@ impl fmt::Display for Error {
     }
 }
 
-/// Makes the floppy of what the build made, boots it and checks it, then
-/// writes it into `out`.
+/// Makes the floppy of what the build made and of the files of `inputs`,
+/// boots it and checks it, then writes it into `out`.
 pub(crate) fn make(
     built: &Built,
-    inputs: &Inputs,
+    inputs: &InputFiles,
     pins: &Pins,
     out: &Path,
 ) -> Result<Floppy, Error> {
-    let license =
-        msdos::license(&inputs.msdos).map_err(|(path, error)| Error::License(path, error))?;
     let autoexec = fat::dos_text(AUTOEXEC.as_bytes());
     let readme = fat::dos_text(notices::readme(pins, Disk::Floppy).as_bytes());
     let mut files: Vec<File<'_>> = msdos::built_files(built, &SYSTEM).map_err(Error::Put)?;
     files.push(("AUTOEXEC.BAT".to_string(), &autoexec));
     files.push(("README.TXT".to_string(), &readme));
-    files.push(("LICENSE.TXT".to_string(), &license));
+    files.push(("LICENSE.TXT".to_string(), &inputs.license));
     let mut others: Vec<File<'_>> = built
         .files
         .iter()

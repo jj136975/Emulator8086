@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 pub(crate) enum Failure {
     /// The output directory could not be written.
     Output(PathBuf, io::Error),
+    /// A file of the inputs that goes onto the disks could not be read,
+    /// before the first stage (`stages::InputFiles`).
+    Input(PathBuf, io::Error),
     Host(stages::host::Error),
     BuildDisk(stages::build_disk::Error),
     Build(Box<stages::build::Failed>),
@@ -49,6 +52,7 @@ impl Failure {
     fn stage(&self) -> &'static str {
         match self {
             Self::Output(..) => "Output",
+            Self::Input(..) => "Inputs",
             Self::Host(_) => "Stage 1: the FreeDOS host floppy",
             Self::BuildDisk(_) => "Stage 2: the build disk",
             Self::Build(_) => "Stage 3: the build",
@@ -122,6 +126,7 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Output(path, error) => write!(f, "{} cannot be written: {error}", path.display()),
+            Self::Input(path, error) => write!(f, "{} cannot be read: {error}", path.display()),
             Self::Host(error) => write!(f, "{error}"),
             Self::BuildDisk(error) => write!(f, "{error}"),
             Self::Build(failed) => write!(f, "{}", failed.error),

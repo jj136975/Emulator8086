@@ -14,9 +14,11 @@
 //! files the build makes (`bin/`) and `report.txt`, in the place of any
 //! files of those names.
 //!
-//! The stages run in order (`stages`). A stage that fails says why on
-//! stdout, in an error annotation for GitHub Actions followed by what the
-//! guest showed (`failure`), and the tool exits with 1.
+//! The stages run in order (`stages`), once the files of the inputs that
+//! go onto the disks are read. A stage that fails, or an input that cannot
+//! be read, says why on stdout, in an error annotation for GitHub Actions
+//! followed by what the guest showed (`failure`), and the tool exits with
+//! 1.
 //!
 //! The invariant: what the tool makes is the same, byte for byte, on every
 //! run and every host. Guest time comes from the instructions run, never

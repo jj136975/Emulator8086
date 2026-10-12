@@ -8,13 +8,13 @@
 //! it was given. A file that does not fit is an error, never a file left
 //! out.
 
-use super::Built;
+use super::{Built, InputError};
 use crate::fat;
 use crate::layout::{self, LayoutError, SECTOR};
 use crate::stamp::Stamp;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The files of MS-DOS that go first onto a volume, in this order: the two
 /// the boot sector loads, and the shell.
@@ -47,7 +47,7 @@ pub(crate) type File<'a> = (String, &'a [u8]);
 
 /// The license of the source in the directory `msdos` (`v4.0/LICENSE`, the
 /// MIT License), as DOS reads text: the disks' LICENSE.TXT.
-pub(crate) fn license(msdos: &Path) -> Result<Vec<u8>, (PathBuf, io::Error)> {
+pub(crate) fn license(msdos: &Path) -> Result<Vec<u8>, InputError> {
     let path = msdos.join("LICENSE");
     std::fs::read(&path)
         .map(|text| fat::dos_text(&text))

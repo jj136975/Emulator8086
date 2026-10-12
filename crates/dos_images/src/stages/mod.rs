@@ -13,6 +13,10 @@
 //! `msdos` puts MS-DOS 4.00 on a volume for the floppy and the hard disk,
 //! and `check` has DOS 4's CHKDSK check each.
 //!
+//! Before stage 1, `run` reads the files of the inputs that stages 5 and 6
+//! put on the disks (`InputFiles`), so that one missing fails the run at
+//! once, not after the build; stages 1 and 2 read theirs first thing.
+//!
 //! The invariant: a stage takes what the stages before it made, and the
 //! inputs, and hands what it made to those after it; only a stage that
 //! makes an output of the tool writes into the output directory, and only
@@ -37,6 +41,7 @@ pub(crate) use hard_disk::DoomDisk;
 use crate::failure::Failure;
 use crate::pins::Pins;
 use crate::report::Report;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -50,6 +55,29 @@ pub(crate) struct Inputs {
     /// D8M13H.EXE, DOOM1.WAD and README.TXT of Doom8088's release, and its
     /// GPL text, COPYING.
     pub doom8088: PathBuf,
+}
+
+/// A file of the inputs that cannot be read, and why.
+pub(crate) type InputError = (PathBuf, io::Error);
+
+/// The files of the inputs that go onto the disks, each as the disks take
+/// it.
+pub(crate) struct InputFiles {
+    /// The source's license, the disks' LICENSE.TXT (`msdos::license`).
+    pub license: Vec<u8>,
+    /// Doom8088's files by name, for \DOOM on the hard disk
+    /// (`hard_disk::doom8088_files`).
+    pub doom8088: Vec<(String, Vec<u8>)>,
+}
+
+impl InputFiles {
+    /// Reads the files of `inputs` that go onto the disks.
+    fn read(inputs: &Inputs) -> Result<Self, InputError> {
+        Ok(Self {
+            license: msdos::license(&inputs.msdos)?,
+            doom8088: hard_disk::doom8088_files(&inputs.doom8088)?,
+        })
+    }
 }
 
 /// Where the outputs go, below the output directory.
@@ -96,6 +124,8 @@ pub(crate) fn run(inputs: &Inputs, out: &Path) -> Result<Report, Failure> {
         std::fs::create_dir_all(&directory).map_err(|error| Failure::Output(directory, error))?;
     }
     clear_outputs(out)?;
+    let input_files =
+        InputFiles::read(inputs).map_err(|(path, error)| Failure::Input(path, error))?;
 
     println!("Stage 1: the FreeDOS host floppy");
     let host = host::floppy(&inputs.freedos).map_err(Failure::Host)?;
@@ -114,10 +144,10 @@ pub(crate) fn run(inputs: &Inputs, out: &Path) -> Result<Report, Failure> {
         disk: build_disk,
     })?;
     println!("Stage 5: the MS-DOS 4.00 floppy");
-    let floppy = floppy::make(&built, inputs, &pins, out).map_err(Failure::Floppy)?;
+    let floppy = floppy::make(&built, &input_files, &pins, out).map_err(Failure::Floppy)?;
     println!("Stage 6: the hard disk with Doom8088");
     let doom_disk =
-        hard_disk::make(&built, &floppy, inputs, &pins, out).map_err(Failure::HardDisk)?;
+        hard_disk::make(&built, &floppy, &input_files, &pins, out).map_err(Failure::HardDisk)?;
 
     println!("Stage 7: the report");
     let report = Report {
