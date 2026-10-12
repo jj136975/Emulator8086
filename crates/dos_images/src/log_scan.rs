@@ -57,19 +57,21 @@ fn has_message(line: &str, word: &str, codes: &[&[u8]]) -> bool {
 }
 
 /// Whether `line` tells of an error: a fatal one, an error of MASM (A2...),
-/// C (C2...), LINK (L2...) or NMAKE (U1...), or a tool out of memory.
+/// C (C2..., and D2... of its command line), LINK (L2...) or NMAKE
+/// (U1...), or a tool out of memory.
 pub(crate) fn is_error(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.contains("fatal error")
         || lower.contains("out of memory")
-        || has_message(line, "error ", &[b"A2", b"C2", b"L2", b"U1"])
+        || has_message(line, "error ", &[b"A2", b"C2", b"D2", b"L2", b"U1"])
 }
 
 /// The warnings of the tools in `log`: the lines with a warning of MASM
-/// (A4...), C (C4...), LINK (L4...) or LIB and NMAKE (U4...).
+/// (A4...), C (C4..., and D4... of its command line), LINK (L4...) or LIB
+/// and NMAKE (U4...).
 pub(crate) fn warnings(log: &str) -> usize {
     lines(log)
-        .filter(|line| has_message(line, "warning ", &[b"A4", b"C4", b"L4", b"U4"]))
+        .filter(|line| has_message(line, "warning ", &[b"A4", b"C4", b"D4", b"L4", b"U4"]))
         .count()
 }
 

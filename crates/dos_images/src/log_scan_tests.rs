@@ -16,15 +16,16 @@ const LOG: &str = "===== MESSAGES \r\n\
                    ===== CMD\\IFSFUNCX \r\n\
                    done\r\n";
 
-/// What MASM, C, LINK and NMAKE report as an error, and a tool out of
-/// memory, is an error; their warnings, a source's own notes and a file
-/// named for errors are none.
+/// What MASM, C (its command line too), LINK and NMAKE report as an error,
+/// and a tool out of memory, is an error; their warnings, a source's own
+/// notes and a file named for errors are none.
 #[test]
 fn errors_are_told_from_warnings_and_notes() {
     for error in [
         "IFSINIT.ASM(12): error A2009: Symbol not defined: FOO",
         "fc.c(3) : error C2065: 'y' : undefined",
         "foo.c(1) : fatal error C1001: Internal Compiler Error",
+        "Command line error D2003 : missing source file name",
         "LINK : error L2029: '_main' : unresolved external",
         "LINK : fatal error L1093: object not found",
         "NMAKE : error U1034: syntax error : separator missing",
@@ -36,6 +37,7 @@ fn errors_are_told_from_warnings_and_notes() {
     for fine in [
         "LINK : warning L4021: no stack segment",
         "memm.asm(10): warning A4100: Impure memory reference",
+        "Command line warning D4002 : ignoring unknown flag '-Gx'",
         "LIB : warning U4155: services : module not in library",
         "***** Possible stack size error in DOS_Open *****",
         "SHARE_ERROR... pass 1",
@@ -54,10 +56,11 @@ fn errors_are_told_from_warnings_and_notes() {
 fn the_warnings_of_the_tools_are_counted() {
     let log = "LINK : warning L4021: no stack segment\r\n\
                memm.asm(10): warning A4100: Impure memory reference\r\n\
+               Command line warning D4002 : ignoring unknown flag '-Gx'\r\n\
                LIB : warning U4155: services : module not in library\r\n\
                WARNING!!! Debug fields are being included!!!\r\n\
                warning A4\r\n";
-    assert_eq!(warnings(log), 3);
+    assert_eq!(warnings(log), 4);
     assert_eq!(warnings(LOG), 1);
 }
 
