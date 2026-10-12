@@ -1,9 +1,10 @@
 //! What the About panel lists, asked of machines built the way the command
-//! line builds them.
+//! line builds them, and read off the panel drawn over one.
 
 use std::sync::mpsc::channel;
 
 use super::*;
+use crate::gui::overlay::testing::Shell;
 use crate::wall_clock::HostClock;
 use emu8086_core::io::disk_spec::parse_disk_specs;
 use emu8086_core::io::keyboard::KeyboardController;
@@ -33,6 +34,22 @@ fn drive(name: &str, image: &str, size: &str, access: &'static str) -> Drive {
         size: size.to_string(),
         access,
     }
+}
+
+/// The ROM is listed by the name it was loaded under, asked of the machine
+/// on every frame: one that another tool loads, as Machine > Load ROM does,
+/// is listed at once, and a machine none was loaded into says so.
+#[test]
+fn the_rom_is_listed_by_the_name_it_was_loaded_under() {
+    let mut about = Shell::with_panel(machine(&[], &[], None), "About");
+    assert!(about.screen().shows("ROM: none"));
+
+    about
+        .target
+        .runtime
+        .load_rom_image(&[0x90; 16], "small.bin")
+        .unwrap();
+    assert!(about.frame(Vec::new()).shows("ROM: small.bin"));
 }
 
 /// The drives that hold a disk are listed in the order of their numbers,
