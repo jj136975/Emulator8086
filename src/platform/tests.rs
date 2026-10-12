@@ -31,18 +31,20 @@ const HOST_NAMES: [&str; 6] = [
 /// What only some hosts can do: a browser's one thread cannot be put to
 /// sleep, nor stand still until a future is ready or a channel has an
 /// answer, and it cannot start another.
-const HOST_CALLS: [&str; 7] = [
+const HOST_CALLS: [&str; 8] = [
     "thread::sleep",
     "thread::park",
     "thread::spawn",
+    "thread::scope",
     "thread::Builder",
     "block_on",
     ".recv(",
     ".recv_timeout(",
 ];
 
-/// The clocks of `std::time`, which panic on a host std has no clock for.
-/// `Duration` is not one of them: it reads nothing.
+/// The clocks of `std::time`, which panic on a host std has no clock for,
+/// named below `time::`; `web_time` spells its own the same, and only
+/// `platform` names those. `Duration` is not one of them: it reads nothing.
 const STD_CLOCKS: [&str; 3] = ["Instant", "SystemTime", "UNIX_EPOCH"];
 
 fn is_test_source(path: &Path) -> bool {
@@ -64,7 +66,8 @@ fn rust_sources(dir: &Path, found: &mut Vec<PathBuf>) {
 
 /// What `line` holds of code: all of it but a comment, which a `//` begins
 /// outside a string and a character literal. A string is read as a line
-/// holds it: one that runs on over lines is not followed.
+/// holds it: one that runs on over lines is not followed. A block comment
+/// is read as code: the sources have none.
 fn code_of(line: &str) -> &str {
     let bytes = line.as_bytes();
     let mut in_string = false;
@@ -74,7 +77,24 @@ fn code_of(line: &str) -> &str {
             // The escaped character is the string's, whatever it is.
             (true, b'\\') => at += 1,
             (true, b'"') => in_string = false,
-            (false, b'"') => in_string = true,
+            (false, b'"') => {
+                // A raw string, r"..." or r#"..."#, escapes nothing: it
+                // ends at a quote followed by as many hashes as opened it.
+                let hashes = bytes[..at].iter().rev().take_while(|b| **b == b'#').count();
+                if at > hashes && bytes[at - hashes - 1] == b'r' {
+                    let closes = |end: usize| {
+                        bytes[end] == b'"'
+                            && bytes[end + 1..].iter().take(hashes).all(|b| *b == b'#')
+                            && bytes.len() > end + hashes
+                    };
+                    match (at + 1..bytes.len()).find(|end| closes(*end)) {
+                        Some(end) => at = end + hashes,
+                        None => return line,
+                    }
+                } else {
+                    in_string = true;
+                }
+            }
             // A character literal, such as '"' or '\'', is passed over
             // whole; a lifetime, such as 'a, has no quote to close it.
             (false, b'\'') => {
@@ -117,18 +137,18 @@ fn offences(source: &str, is_test: bool) -> Vec<(usize, String)> {
     // glob of `time`.
     for clock in STD_CLOCKS {
         for (at, _) in code.match_indices(&format!("time::{clock}")) {
-            found.push((line_of(at), format!("std::time's {clock}")));
+            found.push((line_of(at), format!("time::{clock}")));
         }
     }
     for (at, _) in code.match_indices("time::{") {
         let group = &code[at..];
         let group = &group[..group.find('}').unwrap_or(group.len())];
         for clock in STD_CLOCKS.iter().filter(|clock| group.contains(**clock)) {
-            found.push((line_of(at), format!("std::time's {clock}")));
+            found.push((line_of(at), format!("time::{clock}")));
         }
     }
     for (at, _) in code.match_indices("time::*") {
-        found.push((line_of(at), "std::time's clocks".to_string()));
+        found.push((line_of(at), "time::*".to_string()));
     }
     found.sort();
     found
@@ -204,6 +224,7 @@ fn what_depends_on_the_host_is_caught() {
         "thread::sleep(IDLE_POLL);",
         "std::thread::park();",
         "std::thread::spawn(move || run());",
+        "std::thread::scope(|scope| scope.spawn(run));",
         "let worker = std::thread::Builder::new().spawn(run);",
         "let answer = answers.recv();",
         "let answer = answers.recv_timeout(PATIENCE);",
@@ -219,6 +240,8 @@ fn what_depends_on_the_host_is_caught() {
         "let now = std::time::SystemTime::now();",
         "let site = \"https://example.org\"; let started = std::time::Instant::now();",
         "let quote = '\"'; std::thread::sleep(FRAME);",
+        "let raw = r#\"say \"hi\"\"#; std::thread::sleep(FRAME);",
+        "let prefix = r\"\\\\?\\\"; std::thread::sleep(FRAME);",
     ] {
         assert!(
             !offences(offence, false).is_empty(),
@@ -250,6 +273,8 @@ fn what_every_host_can_do_is_not_caught() {
         "/// Never `std::time::Instant` here.",
         "let site = \"https://example.org\"; // std::thread::sleep(FRAME)",
         "let quote = '\"'; // std::thread::sleep(FRAME)",
+        "let prefix = r\"\\\\?\\\"; // std::thread::sleep(FRAME)",
+        "let raw = r#\"say \"hi\"\"#; // block_on",
         "fn first<'a>(words: &'a [&str]) -> &'a str { words[0] } // block_on",
         "platform::wait(duration);",
         "platform::spawn(async move { ready.send(start_up.await) });",
